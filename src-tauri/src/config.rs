@@ -132,6 +132,8 @@ pub struct DoubaoStreamingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default)]
+    pub last_polish_prompt_id: Option<String>,
     #[serde(default = "default_hotkey")]
     pub hotkey: serde_norway::Value,
     #[serde(default = "default_hotkey_mode")]
@@ -824,6 +826,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
             app: AppSettings {
+                last_polish_prompt_id: None,
                 hotkey: default_hotkey(),
                 hotkey_mode: default_hotkey_mode(),
                 remove_trailing_period: true,
@@ -1062,6 +1065,12 @@ impl ConfigManager {
         // deserialization issues that can cause silent fallback to defaults.
         *self.cached_config.write().unwrap() = Self::read_config_from_disk(&self.config_path);
         Ok(())
+    }
+
+    pub fn remember_polish_prompt(&self, id: &str) -> Result<(), String> {
+        let mut config = self.get_editable_config()?;
+        config["app"]["last_polish_prompt_id"] = serde_norway::Value::String(id.into());
+        self.save_config(&config)
     }
 
     /// Get config as editable YAML value (reads from disk for settings UI).
@@ -1335,6 +1344,25 @@ min_silence_duration: 0.3
         let json = serde_json::json!({ "id": "p1", "default_add": "yes" });
         let item = normalize_prompt_item(&to_norway(json), 0);
         assert!(!item.default_add);
+    }
+
+    #[test]
+    fn recent_polish_template_survives_restart_without_resetting_settings() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        let before = manager.load_config().unwrap();
+        let yaml = serde_norway::to_value(&before).unwrap();
+        manager.save_config(&yaml).unwrap();
+        manager.remember_polish_prompt("recent-template").unwrap();
+        let restarted = ConfigManager::new(data.path(), resources.path());
+        let after = restarted.load_config().unwrap();
+        assert_eq!(
+            after.app.last_polish_prompt_id.as_deref(),
+            Some("recent-template")
+        );
+        assert_eq!(after.app.hotkey, before.app.hotkey);
+        assert_eq!(after.app.keep_clipboard, before.app.keep_clipboard);
     }
 
     // ── hotkey_value_to_string (legacy array → string) ─────────────────

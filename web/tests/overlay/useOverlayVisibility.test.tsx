@@ -42,6 +42,14 @@ function visibility(visible: boolean, generation: number) {
 }
 
 describe("overlay visibility animation", () => {
+  it("animates only opacity, without scaling the pill", () => {
+    mount();
+    visibility(true, 1);
+    visibility(false, 2);
+    expect(animate.mock.calls[0][0]).toEqual([{ opacity: "0" }, { opacity: "1" }]);
+    expect(animate.mock.calls[1][0]).toEqual([{ opacity: "1" }, { opacity: "0" }]);
+  });
+
   it("waits for the exit animation before hiding the native window", async () => {
     mount();
     visibility(true, 1);

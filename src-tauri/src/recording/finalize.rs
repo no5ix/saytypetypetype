@@ -84,8 +84,13 @@ pub(super) async fn finalize_on_failure(
         return;
     }
 
-    overlay::hide(app);
-    set_app_state(app, app_inner, app_state::AppState::Idle).await;
+    if !app_inner
+        .feedback_visible
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        overlay::hide(app);
+        set_app_state(app, app_inner, app_state::AppState::Idle).await;
+    }
 }
 
 /// Run recognized text through the finishing pipeline: optional LLM polishing
@@ -250,6 +255,8 @@ pub(super) async fn deliver_text(
 ) {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
+    overlay::set_decision_keys_enabled(app_handle, false);
+
     // Both modes auto-paste the recognized text. keep_clipboard (ON) leaves the
     // recognized text in the clipboard after pasting; !keep_clipboard (OFF,
     // default) restores whatever the clipboard held beforehand.
@@ -264,17 +271,11 @@ pub(super) async fn deliver_text(
     };
 
     if let Err(e) = app_handle.clipboard().write_text(final_text) {
-        log_rec!(error, "Clipboard write failed: {}", e);
-        emit_hint(
-            app_handle,
-            &format!("剪贴板写入失败: {}", e),
-            "error",
-            "text",
-        );
+        overlay::show_output_error(app_handle, app_inner, &format!("剪贴板写入失败: {}", e)).await;
+        return;
     }
 
-    // Simulate paste keystroke
-    let _result = crate::paste::simulate_paste();
+    let result = crate::paste::simulate_paste();
 
     // Restore original clipboard content when keep_clipboard is OFF. When ON,
     // original_clipboard is None, so the recognized text stays in the clipboard.
@@ -282,6 +283,16 @@ pub(super) async fn deliver_text(
         if let Err(e) = app_handle.clipboard().write_text(&original) {
             log_rec!(error, "Failed to restore clipboard: {}", e);
         }
+    }
+
+    if !result.ok {
+        overlay::show_output_error(
+            app_handle,
+            app_inner,
+            result.message.as_deref().unwrap_or("模拟粘贴失败"),
+        )
+        .await;
+        return;
     }
 
     // Record usage stats and retain/delete the WAV according to user settings.
@@ -294,5 +305,6 @@ pub(super) async fn deliver_text(
         polish,
     )
     .await;
+    overlay::show_success(app_handle, app_inner, keep_clipboard).await;
     cue::emit_cue(app_handle, app_inner, "end");
 }

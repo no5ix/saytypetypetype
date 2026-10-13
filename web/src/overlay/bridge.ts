@@ -1,7 +1,7 @@
 /**
  * Overlay bridge — typed API for the overlay renderer.
  * Audio capture and cue playback are handled entirely in the backend (cpal +
- * rodio), so this only exposes event listening, config, and the retry action.
+ * rodio), so this only exposes events, layout metrics, and visibility completion.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -29,18 +29,6 @@ export function onOverlayEvent(listener: (event: OverlayEvent) => void): () => v
   };
 }
 
-/** Retry the latest failed recording directly from the overlay. */
-export async function retryLatestFailedTranscription(): Promise<void> {
-  await invoke("retry_latest_failed_transcription");
-}
-
-/** Retry a parked polish (decision-window text) from the overlay.
- * Returns false when nothing was pending, so the caller can fall back to the
- * transcription retry. */
-export async function retryPendingPolish(): Promise<boolean> {
-  return invoke("retry_pending_polish");
-}
-
 /** Layout constants shared with the macOS native renderer (`overlay::shared`).
  * Fetched once at startup so the Windows pill sizes identically to the macOS
  * native pill (text width is still measured in the DOM). Field names match the
@@ -64,8 +52,6 @@ export interface OverlayLayoutMetrics {
   wave_durations: number[];
   wave_peaks: number[];
   wave_settle_seconds: number;
-  retry_size: number;
-  retry_gap_left: number;
 }
 
 /** Fetch the shared overlay layout constants (single source of truth with Rust). */

@@ -1,122 +1,65 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
+import { onOverlayEvent } from "@/overlay/bridge";
 import {
-  onOverlayEvent,
-  retryLatestFailedTranscription,
-  retryPendingPolish,
-} from "@/overlay/bridge";
-import { type AppState, type HintLevel, INITIAL_OVERLAY_STATE, type OverlayState } from "./types";
+  type AppState,
+  type HintLevel,
+  INITIAL_OVERLAY_STATE,
+  type OverlayState,
+  type Shortcut,
+} from "./types";
 
 type Action =
   | { type: "reset" }
   | { type: "state"; state: AppState }
   | { type: "transcript"; finalText?: string; partialText?: string }
-  | {
-      type: "hint";
-      text?: string;
-      level?: HintLevel;
-      variant?: string;
-      retryable?: boolean;
-      hotkey?: string;
-      actions?: string;
-    }
-  | { type: "retry-hide" }
-  | { type: "retrying"; value: boolean }
-  | { type: "retry-error"; message: string };
+  | { type: "hint"; text?: string; level?: HintLevel; variant?: string }
+  | { type: "shortcuts"; shortcuts: Shortcut[] }
+  | { type: "appearance"; theme: OverlayState["theme"] };
 
-/** Pure state transition — exported for unit tests. */
 export function reducer(state: OverlayState, action: Action): OverlayState {
   switch (action.type) {
     case "reset":
-      return { ...INITIAL_OVERLAY_STATE };
+      return { ...INITIAL_OVERLAY_STATE, theme: state.theme };
+    case "shortcuts":
+      return { ...state, shortcuts: action.shortcuts };
+    case "appearance":
+      return { ...state, theme: action.theme };
     case "state": {
-      // Entering any non-idle state hides the retry affordance; entering any
-      // state clears a lingering info-level hint (mirrors main-overlay.ts).
-      const retryVisible = action.state === "idle" ? state.retryVisible : false;
-      let hintText = state.hintText;
-      let hintVariant = state.hintVariant;
-      let hintActions = state.hintActions;
-      let retryHotkey = state.retryHotkey;
-      if (state.hintLevel === "info") {
-        hintText = "";
-        hintVariant = "text";
-        hintActions = "";
-        retryHotkey = "";
-      }
+      const clearHint =
+        action.state !== "idle" || (state.hintLevel === "info" && state.hintVariant !== "success");
       return {
         ...state,
         appState: action.state,
-        retryVisible,
-        retrying: false,
-        hintText,
-        hintVariant,
-        hintActions,
-        retryHotkey,
+        shortcuts: action.state === "idle" ? state.shortcuts : [],
+        ...(clearHint ? { hintText: "", hintLevel: "info" as const, hintVariant: "text" } : {}),
       };
     }
     case "transcript":
+      return { ...state, finalText: action.finalText || "", partialText: action.partialText || "" };
+    case "hint":
       return {
         ...state,
-        finalText: action.finalText || "",
-        partialText: action.partialText || "",
+        hintText: action.text || "",
+        hintLevel: action.level || "info",
+        hintVariant: action.variant || "text",
       };
-    case "hint": {
-      const hintText = action.text || "";
-      const hintLevel = action.level || "info";
-      const hintVariant = action.variant || "text";
-      const hintActions = action.actions || "";
-      const retryHotkey = action.hotkey || "";
-      const showRetry = action.retryable === true && hintLevel === "error" && hintText.length > 0;
-      return {
-        ...state,
-        hintText,
-        hintLevel,
-        hintVariant,
-        hintActions,
-        retryHotkey,
-        retryVisible: showRetry,
-        retrying: false,
-      };
-    }
-    case "retry-hide":
-      return { ...state, retryVisible: false, retrying: false };
-    case "retrying":
-      return { ...state, retrying: action.value };
-    case "retry-error":
-      return {
-        ...state,
-        hintText: action.message,
-        hintLevel: "error",
-        hintVariant: "text",
-        hintActions: "",
-        retryVisible: true,
-        retrying: false,
-      };
-    default:
-      return state;
   }
 }
 
-export interface UseOverlayState {
-  state: OverlayState;
-  waveActive: boolean;
-  onRetry: () => Promise<void>;
-}
-
-export function useOverlayState(): UseOverlayState {
+export function useOverlayState() {
   const [state, dispatch] = useReducer(reducer, INITIAL_OVERLAY_STATE);
   const [waveActive, setWaveActive] = useState(false);
   const appState = useRef<AppState>(INITIAL_OVERLAY_STATE.appState);
-
   useEffect(() => {
-    const unlisten = onOverlayEvent((event) => {
-      const { type, payload = {} } = event;
+    return onOverlayEvent(({ type, payload = {} }) => {
       switch (type) {
         case "reset":
+          appState.current = "idle";
           dispatch({ type: "reset" });
           setWaveActive(false);
           break;
         case "state": {
-          const next = (payload as { state?: AppState }).state;
+          const next = payload.state as AppState | undefined;
           if (next) {
             appState.current = next;
             dispatch({ type: "state", state: next });
@@ -124,72 +67,35 @@ export function useOverlayState(): UseOverlayState {
           }
           break;
         }
-        case "transcript": {
-          const p = payload as { finalText?: string; partialText?: string };
-          dispatch({ type: "transcript", finalText: p.finalText, partialText: p.partialText });
-          break;
-        }
-        case "audio:level": {
-          if (appState.current === "recording") {
-            setWaveActive((payload as { active?: boolean }).active === true);
-          }
-          break;
-        }
-        case "hint": {
-          const p = payload as {
-            text?: string;
-            level?: HintLevel;
-            variant?: string;
-            retryable?: boolean;
-            hotkey?: string;
-            actions?: string;
-          };
+        case "transcript":
           dispatch({
-            type: "hint",
-            text: p.text,
-            level: p.level,
-            variant: p.variant,
-            retryable: p.retryable,
-            hotkey: p.hotkey,
-            actions: p.actions,
+            type: "transcript",
+            finalText: payload.finalText as string,
+            partialText: payload.partialText as string,
           });
           break;
-        }
-        // "appearance" only concerns the macOS native renderer; ignored here.
-        default:
+        case "audio:level":
+          if (appState.current === "recording") setWaveActive(payload.active === true);
+          break;
+        case "hint":
+          dispatch({
+            type: "hint",
+            text: payload.text as string,
+            level: payload.level as HintLevel,
+            variant: payload.variant as string,
+          });
+          break;
+        case "shortcuts":
+          dispatch({ type: "shortcuts", shortcuts: (payload.shortcuts as Shortcut[]) || [] });
+          break;
+        case "appearance":
+          dispatch({
+            type: "appearance",
+            theme: (payload.theme as OverlayState["theme"]) || "system",
+          });
           break;
       }
     });
-    return unlisten;
   }, []);
-
-  // Retry affordance auto-hides after 5s (mirrors main-overlay.ts retryHideTimer).
-  useEffect(() => {
-    if (!state.retryVisible) return;
-    const timer = window.setTimeout(() => dispatch({ type: "retry-hide" }), 5000);
-    return () => window.clearTimeout(timer);
-  }, [state.retryVisible]);
-
-  const onRetry = useCallback(async () => {
-    if (!state.retryVisible || state.retrying) return;
-    dispatch({ type: "retrying", value: true });
-    try {
-      // A parked polish takes precedence (its text is still unpasted); fall
-      // back to the transcription retry when nothing is pending. No explicit
-      // retry-hide on success: entering finishing hides the affordance, a
-      // re-armed failure re-shows it via its hint event, and a delivered
-      // outcome hides the whole overlay — dispatching here could instead kill
-      // a re-armed hint that raced the invoke resolution.
-      const handled = await retryPendingPolish();
-      if (!handled) await retryLatestFailedTranscription();
-    } catch (error: unknown) {
-      const message =
-        (error instanceof Error && error.message) ||
-        (typeof error === "string" && error) ||
-        "重试失败";
-      dispatch({ type: "retry-error", message });
-    }
-  }, [state.retryVisible, state.retrying]);
-
-  return { state, waveActive, onRetry };
+  return { state, waveActive };
 }

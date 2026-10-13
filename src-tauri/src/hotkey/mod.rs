@@ -22,7 +22,7 @@ use tauri::{AppHandle, Manager};
 use crate::config::PromptItem;
 
 // Re-export the public API so callers keep using `crate::hotkey::xxx`.
-pub use label::current_hotkey_label;
+pub use label::{current_hotkey_label, format_hotkey_label};
 pub use listener::{ensure_hotkey_active, reset_recording};
 pub use matcher::MatcherState;
 pub use parse::parse_hotkey_string;

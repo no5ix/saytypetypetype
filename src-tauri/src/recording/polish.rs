@@ -4,7 +4,7 @@
 //! Instead it is parked here while the overlay explains why polishing failed and
 //! offers three ways out:
 //!
-//! - the main hotkey (or the overlay retry button) runs the polish again,
+//! - the main hotkey runs the polish again,
 //! - ESC discards the text — nothing is pasted and nothing is recorded,
 //! - Enter pastes the raw text immediately, without polishing,
 //! - doing nothing pastes the raw text once the decision window lapses.
@@ -26,32 +26,11 @@ use crate::app_state::{self, set_app_state, PendingPolish, PolishRetryCommand};
 use crate::llm::PolishError;
 use crate::overlay;
 
-use super::emit_hint_with_actions;
+use super::emit_hint;
 use super::finalize;
 
 /// How long the user has to retry before the raw text is pasted automatically.
-/// Matches the overlay retry ring's countdown animation so the ring emptying and
-/// the auto-paste happen together.
 const POLISH_DECISION_WINDOW: Duration = Duration::from_secs(5);
-
-/// The actions line rendered under the decision-window error: which key does
-/// what. "（默认）" marks Enter as what happens automatically when the window
-/// lapses. The hotkey segment is omitted when there is no label (a custom
-/// recorded combination may not have one).
-fn decision_actions(hotkey: &str) -> String {
-    if hotkey.is_empty() {
-        "Esc 放弃 · Enter 输出原文（默认）".to_string()
-    } else {
-        format!("{} 重试 · Esc 放弃 · Enter 输出原文（默认）", hotkey)
-    }
-}
-
-/// The actions line shown while a polish retry is in flight. No "（默认）"
-/// here: an interrupted retry has no timeout fallback — the keys are the only
-/// way out.
-fn retrying_actions() -> String {
-    "Esc 放弃 · Enter 输出原文".to_string()
-}
 
 /// Park a failed polish and show the reason, arming the retry affordance and the
 /// auto-deliver timer. The caller must not hide the overlay afterwards.
@@ -80,21 +59,8 @@ pub(super) async fn arm_pending_polish(
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
     overlay::set_decision_keys_enabled(app_handle, true);
 
-    // Headline plus provider detail: the decision window renders two lines, so
-    // the actionable wording (e.g. which llm.<provider> field is missing) has
-    // room next to the actions hint.
-    let hotkey = crate::hotkey::current_hotkey_label(app_inner).await;
-    overlay::emit_polish_decision_hint(
-        app_handle,
-        app_inner,
-        &error.user_message(),
-        &decision_actions(&hotkey),
-    )
-    .await;
-    // No mouse interaction for the decision window: it has no clickable
-    // affordance (the actions row names keys, the border carries the
-    // countdown), so the overlay stays click-through and never blocks the
-    // app underneath. The ASR failure panel keeps its retry button.
+    overlay::emit_polish_decision_hint(app_handle, app_inner, &error.user_message()).await;
+    // The keyboard-only decision window stays click-through.
     let app_handle = app_handle.clone();
     let app_inner = Arc::clone(app_inner);
     tauri::async_runtime::spawn(async move {
@@ -132,6 +98,7 @@ pub(crate) async fn cancel_pending(app_handle: &AppHandle, app_inner: &Arc<app_s
         "Discarding pending polish ({} chars) via ESC",
         pending.raw_text.chars().count()
     );
+    overlay::hide(app_handle);
     dismiss_overlay(app_handle, app_inner).await;
 }
 
@@ -208,7 +175,6 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
     *app_inner.polish_retry_cmd_tx.lock().await = Some(cmd_tx);
 
     // Stop the countdown ring and the click target while the request is in flight.
-    overlay::set_overlay_retry_interaction(&app_handle, false);
     // Back to Finishing: the overlay only spins its indicator while connecting or
     // finishing, so a retry left in Idle would show a dead dot instead of the
     // same spinner the first polish shows.
@@ -216,13 +182,7 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
     // Decision keys stay live across the retry: ESC aborts and discards, Enter
     // aborts and pastes the raw text.
     overlay::set_decision_keys_enabled(&app_handle, true);
-    emit_hint_with_actions(
-        &app_handle,
-        "润色中…",
-        "info",
-        "progress",
-        &retrying_actions(),
-    );
+    emit_hint(&app_handle, "润色中", "info", "progress");
 
     // What ended the polish call: its own outcome, or an ESC/Enter interruption.
     enum Step {
@@ -333,10 +293,11 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
 /// Tear down the decision window: the decision keys (ESC/Enter) and the retry
 /// affordance go away and the overlay hides, leaving the app idle.
 async fn dismiss_overlay(app_handle: &AppHandle, app_inner: &Arc<app_state::AppInner>) {
-    overlay::set_decision_keys_enabled(app_handle, false);
-    overlay::set_overlay_retry_interaction(app_handle, false);
-    overlay::hide(app_handle);
-    set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
+    if !app_inner.feedback_visible.load(Ordering::SeqCst) {
+        overlay::set_decision_keys_enabled(app_handle, false);
+        overlay::hide(app_handle);
+        set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
+    }
 }
 
 /// Load the model registry from the app's resource and data directories.

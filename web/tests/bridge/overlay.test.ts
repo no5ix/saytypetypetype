@@ -13,13 +13,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mockListen,
 }));
 
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  onOverlayEvent,
-  retryLatestFailedTranscription,
-  retryPendingPolish,
-} from "@/overlay/bridge";
+import { onOverlayEvent } from "@/overlay/bridge";
 
 describe("overlay bridge", () => {
   describe("onOverlayEvent", () => {
@@ -42,21 +37,6 @@ describe("overlay bridge", () => {
       await vi.waitFor(() => {
         expect(unlistenFn).toHaveBeenCalled();
       });
-    });
-  });
-
-  describe("retryLatestFailedTranscription", () => {
-    it("invokes retry_latest_failed_transcription", async () => {
-      await retryLatestFailedTranscription();
-      expect(invoke).toHaveBeenCalledWith("retry_latest_failed_transcription");
-    });
-  });
-
-  describe("retryPendingPolish", () => {
-    it("invokes retry_pending_polish and passes the bool through", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(true);
-      await expect(retryPendingPolish()).resolves.toBe(true);
-      expect(invoke).toHaveBeenCalledWith("retry_pending_polish");
     });
   });
 });

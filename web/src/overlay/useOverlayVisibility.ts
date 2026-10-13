@@ -14,18 +14,12 @@ export function useOverlayVisibility(ref: React.RefObject<HTMLDivElement | null>
       const pill = ref.current;
       // Read the displayed frame before cancelling an interrupted animation.
       const current = getComputedStyle(pill);
-      const from =
-        visible || animation
-          ? { opacity: current.opacity, transform: current.transform }
-          : { opacity: "0", transform: "scale(0.8)" };
+      const from = visible || animation ? { opacity: current.opacity } : { opacity: "0" };
       animation?.cancel();
       visible = nextVisible;
       generation = nextGeneration;
-      const target = nextVisible
-        ? { opacity: "1", transform: "scale(1)" }
-        : { opacity: "0", transform: "scale(0.8)" };
+      const target = nextVisible ? { opacity: "1" } : { opacity: "0" };
       pill.style.opacity = target.opacity;
-      pill.style.transform = target.transform;
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       animation = pill.animate([from, target], {
         duration: reduced ? 0 : nextVisible ? 160 : 120,

@@ -253,9 +253,16 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                 };
                 for action in actions {
                     match action {
-                        HotkeyAction::StartRecording { is_main } => {
-                            spawn_recording_start(app_handle, is_main)
-                        }
+                        HotkeyAction::StartRecording { is_main } => spawn_recording_start(
+                            app_handle,
+                            is_main,
+                            config
+                                .read()
+                                .unwrap()
+                                .matcher
+                                .recording_mode()
+                                .unwrap_or(super::HotkeyMode::Toggle),
+                        ),
                         HotkeyAction::StopRecording { prompt_id } => {
                             spawn_recording_stop(app_handle, prompt_id)
                         }
@@ -280,10 +287,10 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
 }
 
 /// Dispatch a "start recording" action to the async runtime.
-fn spawn_recording_start(app_handle: &tauri::AppHandle, is_main: bool) {
+fn spawn_recording_start(app_handle: &tauri::AppHandle, is_main: bool, mode: super::HotkeyMode) {
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        crate::recording::on_recording_start(handle, is_main).await;
+        crate::recording::on_recording_start(handle, is_main, mode).await;
     });
 }
 

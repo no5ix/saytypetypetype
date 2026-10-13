@@ -6,13 +6,10 @@ export interface OverlayLayoutInput {
   finalText: string;
   partialText: string;
   visibleHintText: string;
-  /** Actions line under the hint (decision keys); measured alongside the hint
-   * so the pill fits the wider of the two rows. */
-  actionsText?: string;
+  /** Reserve a left slot only for error and success icons. */
+  showIcon?: boolean;
   appState: AppState;
-  retryVisible: boolean;
-  /** Current hint level ("info" | "warn" | "error") — drives the left-slot width
-   * (recording+warn reconnects with a spinner, not the waveform). */
+  /** Reconnection warnings hide the recording waveform. */
   hintLevel?: string;
   /** Layout constants fetched from the backend (overlay::shared) so the Windows
    * pill sizes identically to the macOS native pill. */
@@ -52,13 +49,20 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
       if (!measure || !pill) return;
 
       const m = input.metrics;
-      const hasText = Boolean(input.finalText || input.partialText);
+      const hasText = !input.showIcon && Boolean(input.finalText || input.partialText);
       const hintText = input.visibleHintText;
       const hasHint = Boolean(hintText);
       const shouldMeasureHintOnly = hasHint;
 
       if (!hasText && !hasHint) {
-        pill.style.width = "";
+        const indicator = input.showIcon
+          ? m.indicator_w
+          : input.appState === "recording" &&
+              input.hintLevel !== "warn" &&
+              input.hintLevel !== "error"
+            ? m.wave_area_w
+            : 0;
+        pill.style.width = `${m.pad_left + indicator + m.pad_right}px`;
         renderedWidthRef.current = 0;
         layoutWidthRef.current = 0;
         layoutWrapRef.current = false;
@@ -75,29 +79,28 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
       if (hasHint) {
         measure.textContent = hintText;
         hintWidth = Math.ceil(measure.getBoundingClientRect().width);
-        // The actions row shares the width budget with the hint.
-        if (input.actionsText) {
-          measure.textContent = input.actionsText;
-          const actionsWidth = Math.ceil(measure.getBoundingClientRect().width);
-          hintWidth = Math.max(hintWidth, actionsWidth);
-        }
       }
 
-      const retryWidth = input.retryVisible ? m.retry_size + m.retry_gap_left : 0;
-      // Left slot holds the indicator (spinner/dot), or the waveform while
-      // recording — both are followed by GAP. Reconnect (recording+warn) shows a
-      // spinner, so it uses the indicator width. Mirrors shared.rs.
+      // Only errors, success, and the recording waveform reserve an icon slot.
       const reconnecting = input.appState === "recording" && input.hintLevel === "warn";
-      const leftSlotW =
-        input.appState === "recording" && !reconnecting ? m.wave_area_w : m.indicator_w;
+      const leftSlotW = input.showIcon
+        ? m.indicator_w
+        : input.appState === "recording" && !reconnecting
+          ? m.wave_area_w
+          : 0;
       // Chrome mirrors src-tauri/src/overlay/shared.rs (single source of truth).
-      const chrome = m.pad_left + m.pad_right + leftSlotW + m.gap + retryWidth;
+      const chrome = m.pad_left + m.pad_right + leftSlotW + (leftSlotW ? m.gap : 0);
       const lockLayout =
+        !input.showIcon &&
+        hasText &&
         !shouldMeasureHintOnly &&
         (input.appState === "recording" || input.appState === "finishing");
       const shouldWrap =
-        !shouldMeasureHintOnly && (layoutWrapRef.current || measuredWidth > m.single_line_limit);
-      const textWidth = Math.max(measuredWidth, hintWidth) + m.text_slack;
+        !input.showIcon &&
+        hasText &&
+        !shouldMeasureHintOnly &&
+        (layoutWrapRef.current || measuredWidth > m.single_line_limit);
+      const textWidth = Math.max(measuredWidth, hintWidth) + (hasHint ? 2 : m.text_slack);
       const nextWidth = shouldWrap
         ? m.multi_line_width + chrome
         : Math.min(m.single_line_limit + chrome, Math.max(m.min_pill_w, textWidth + chrome));
@@ -135,12 +138,20 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
     input.finalText,
     input.partialText,
     input.visibleHintText,
-    input.actionsText,
+    input.showIcon,
     input.appState,
-    input.retryVisible,
     input.hintLevel,
     input.metrics,
   ]);
 
-  return { measureRef, pillRef, transcriptRef, wrap };
+  return {
+    measureRef,
+    pillRef,
+    transcriptRef,
+    wrap:
+      wrap &&
+      !input.showIcon &&
+      !input.visibleHintText &&
+      Boolean(input.finalText || input.partialText),
+  };
 }

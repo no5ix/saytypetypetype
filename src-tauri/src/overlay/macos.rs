@@ -1,81 +1,29 @@
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel, MainThreadMarker};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplicationActivationOptions,
-    NSAttributedStringNSStringDrawing, NSBezelStyle, NSButton, NSColor, NSFont, NSGlassEffectView,
-    NSGlassEffectViewStyle, NSLayoutConstraint, NSLineBreakMode, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSRunningApplication, NSTextAlignment, NSTextField, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWorkspace,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSFont,
+    NSGlassEffectView, NSGlassEffectViewStyle, NSLayoutConstraint, NSLineBreakMode,
+    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSBundle, NSMutableAttributedString, NSNumber, NSPoint, NSRange,
-    NSRect, NSSize, NSString,
+    NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
+    NSSize, NSString,
 };
 use std::cell::RefCell;
-use std::sync::{Mutex as StdMutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 // Layout constants, Model, and derived-state logic come from the
 // platform-agnostic `shared` module so the macOS native renderer and the
 // Windows WebView stay driven by the same numbers.
 use super::shared::{
-    visible_hint, Model, BOTTOM_OFFSET, DOT_SIZE, FONT_SIZE, GAP, INDICATOR_W, MAX_LINES,
-    MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, RETRY_GAP_LEFT, RETRY_MIN_W,
-    RETRY_RIGHT_INSET, RETRY_SIZE, RETRY_TEXT_PAD, SINGLE_LINE_LIMIT, TEXT_SLACK, WAVE_AREA_W,
-    WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS, WAVE_DURATIONS, WAVE_MAX_H, WAVE_MIN_H, WAVE_N,
-    WAVE_PEAKS, WAVE_SETTLE_SECONDS,
+    visible_hint, Model, Shortcut, BOTTOM_OFFSET, FONT_SIZE, GAP, ICON_SIZE, INDICATOR_W,
+    MAX_LINES, MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, SINGLE_LINE_LIMIT,
+    TEXT_SLACK, WAVE_AREA_W, WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS, WAVE_DURATIONS,
+    WAVE_MAX_H, WAVE_MIN_H, WAVE_N, WAVE_PEAKS, WAVE_SETTLE_SECONDS,
 };
-
-static RETRY_APP: OnceLock<StdMutex<Option<AppHandle>>> = OnceLock::new();
-/// Bundle id of the app the user was in before the overlay stole focus, so a
-/// successful retry can hand keyboard focus back for the paste.
-static PREV_FOREGROUND_BUNDLE: OnceLock<StdMutex<Option<String>>> = OnceLock::new();
-
-fn our_bundle_id() -> Option<String> {
-    NSBundle::mainBundle()
-        .bundleIdentifier()
-        .map(|s| s.to_string())
-}
-
-pub fn capture_foreground_app(app: &AppHandle) {
-    let _ = app.run_on_main_thread(|| {
-        let ws = NSWorkspace::sharedWorkspace();
-        let Some(front) = ws.frontmostApplication() else {
-            return;
-        };
-        let Some(bid) = front.bundleIdentifier() else {
-            return;
-        };
-        let bid = bid.to_string();
-        // If we are already frontmost (e.g. re-arming retry after a failed
-        // attempt), keep the previously captured app instead of ourselves.
-        if our_bundle_id().as_deref() == Some(bid.as_str()) {
-            return;
-        }
-        let slot = PREV_FOREGROUND_BUNDLE.get_or_init(|| StdMutex::new(None));
-        if let Ok(mut guard) = slot.lock() {
-            *guard = Some(bid);
-        }
-    });
-}
-
-pub fn restore_foreground_app(app: &AppHandle) {
-    let bid = PREV_FOREGROUND_BUNDLE
-        .get()
-        .and_then(|slot| slot.lock().ok().and_then(|g| g.clone()));
-    let Some(bid) = bid else {
-        return;
-    };
-    let _ = app.run_on_main_thread(move || {
-        let ns_bid = NSString::from_str(&bid);
-        let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&ns_bid);
-        if let Some(target) = apps.firstObject() {
-            target.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
-        }
-    });
-}
 
 enum GlassKind {
     Liquid(Retained<NSGlassEffectView>),
@@ -102,6 +50,12 @@ struct WaveBar {
     layer: Retained<AnyObject>,
 }
 
+struct ShortcutViews {
+    keycap: Retained<NSView>,
+    key_label: Retained<NSTextField>,
+    label: Retained<NSTextField>,
+}
+
 /// The retained native view tree (built once, updated per render).
 struct Views {
     host: Retained<NSView>,
@@ -111,23 +65,15 @@ struct Views {
     glass: GlassKind,
     container: Retained<NSView>,
     indicator: Retained<NSView>,
-    spinner: Retained<NSProgressIndicator>,
     label: Retained<NSTextField>,
-    /// Smaller muted row under `label` naming the decision keys (ESC/Enter/…).
-    actions_label: Retained<NSTextField>,
+    /// Keyboard hints above the glass, without increasing the pill height.
+    shortcuts_root: Retained<NSView>,
+    shortcut_items: Vec<ShortcutViews>,
+    shortcut_content: Vec<Shortcut>,
     bars: [WaveBar; WAVE_N],
-    retry_view: Retained<NSView>,
-    retry_button: Retained<NSButton>,
-    _retry_target: Retained<AnyObject>,
-    dot_layer: Retained<AnyObject>, // CALayer for the indicator dot
-    retry_track_layer: Retained<AnyObject>, // CALayer for the retry ring track
-    retry_progress_layer: Retained<AnyObject>, // CALayer for the retry countdown ring
-    countdown_layer: Retained<AnyObject>, // CALayer tracing the pill border during the decision window
-    fade_mask: Retained<AnyObject>,       // CAGradientLayer for the multi-line top fade
-    applied_variant: String,              // "" (auto/inherit) | "light" | "dark"
-    /// Previous pill width; `f64::NAN` until the first frame. Drives the
-    /// grow-only animation decision in `render`.
-    last_pill_w: f64,
+    icon_layer: Retained<AnyObject>,
+    fade_mask: Retained<AnyObject>, // CAGradientLayer for the multi-line top fade
+    applied_variant: String,        // "" (auto/inherit) | "light" | "dark"
 }
 
 thread_local! {
@@ -136,29 +82,6 @@ thread_local! {
     static WAVE_ACTIVE: RefCell<bool> = const { RefCell::new(false) };
 }
 
-extern "C" fn retry_clicked(_this: *mut AnyObject, _sel: Sel, _sender: *mut AnyObject) {
-    let Some(lock) = RETRY_APP.get() else {
-        return;
-    };
-    let Ok(guard) = lock.lock() else {
-        return;
-    };
-    let Some(app) = guard.as_ref().cloned() else {
-        return;
-    };
-    tauri::async_runtime::spawn(async move {
-        // The same button serves both retryable failures. A parked polish takes
-        // precedence: its text is still unpasted, so retrying it is what the
-        // ring is counting down against.
-        if crate::recording::retry_pending_polish(app.clone()).await {
-            return;
-        }
-        let _ = crate::recording::retry_latest_failed_transcription(app).await;
-    });
-}
-
-// The center pivot has zero-size bounds. Forward hit testing to its glass
-// child so the retry button remains clickable outside those bounds.
 extern "C" fn pivot_hit_test(this: *mut AnyObject, _sel: Sel, point: NSPoint) -> *mut NSView {
     let view = unsafe { &*(this as *const NSView) };
     if view.isHidden() {
@@ -188,16 +111,33 @@ fn animation_pivot_class() -> &'static AnyClass {
     builder.register()
 }
 
-fn retry_target_class() -> &'static AnyClass {
-    if let Some(cls) = AnyClass::get(c"VoicePasteRetryTarget") {
+extern "C" fn content_appearance_changed(this: *mut AnyObject, _sel: Sel) {
+    unsafe {
+        let _: () = msg_send![
+            super(&*this, class!(NSView)),
+            viewDidChangeEffectiveAppearance
+        ];
+    }
+    VIEWS.with(|v| {
+        // AppKit also sends this during construction and a render's appearance change.
+        if let Ok(slot) = v.try_borrow() {
+            if let Some(views) = slot.as_ref() {
+                sync_foreground(views);
+            }
+        }
+    });
+}
+
+fn overlay_content_class() -> &'static AnyClass {
+    if let Some(cls) = AnyClass::get(c"VoicePasteOverlayContent") {
         return cls;
     }
-    let mut builder =
-        ClassBuilder::new(c"VoicePasteRetryTarget", class!(NSObject)).expect("class builder");
+    let mut builder = ClassBuilder::new(c"VoicePasteOverlayContent", class!(NSView))
+        .expect("overlay content class");
     unsafe {
         builder.add_method(
-            sel!(retryClicked:),
-            retry_clicked as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            sel!(viewDidChangeEffectiveAppearance),
+            content_appearance_changed as extern "C" fn(*mut AnyObject, Sel),
         );
     }
     builder.register()
@@ -224,8 +164,7 @@ fn glass_style(style: &str) -> NSGlassEffectViewStyle {
     }
 }
 
-/// Animate the entire glass pill, including its content, without resizing the window.
-/// Explicit animations leave model geometry untouched so transcript layout can continue.
+/// Fade the entire glass pill, including its content, without changing geometry.
 pub(super) fn animate_visibility(app: &AppHandle, visible: bool) {
     MODEL.with(|m| {
         let mut model = m.borrow_mut();
@@ -241,28 +180,21 @@ pub(super) fn animate_visibility(app: &AppHandle, visible: bool) {
         let Some(views) = slot.as_ref() else {
             return;
         };
+        fade_shortcuts(
+            &views.shortcuts_root,
+            visible && !views.shortcut_content.is_empty(),
+        );
         unsafe {
-            // AppKit keeps this real view in the displayed hierarchy. Its zero-size
-            // origin is constrained to the pill center, so the system's (0, 0)
-            // backing-layer anchor is exactly the desired scaling reference point.
+            // Fade the parent layer so the glass and its content disappear together.
             let layer: *mut AnyObject = msg_send![&*views.pivot, layer];
             if layer.is_null() {
                 return;
             }
-            for (path, key, start, end) in [
-                (
-                    "opacity",
-                    "vp-visibility-opacity",
-                    0.0,
-                    if visible { 1.0 } else { 0.0 },
-                ),
-                (
-                    "transform.scale",
-                    "vp-visibility-scale",
-                    0.8,
-                    if visible { 1.0 } else { 0.8 },
-                ),
-            ] {
+            {
+                let path = "opacity";
+                let key = "vp-visibility-opacity";
+                let start = 0.0;
+                let end = if visible { 1.0 } else { 0.0 };
                 let path = NSString::from_str(path);
                 let key = NSString::from_str(key);
                 let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
@@ -296,11 +228,6 @@ pub(super) fn animate_visibility(app: &AppHandle, visible: bool) {
 
 /// Parse an incoming overlay event and update the native pill on the main thread.
 pub fn dispatch(app: &AppHandle, event: &serde_json::Value) {
-    let slot = RETRY_APP.get_or_init(|| StdMutex::new(None));
-    if let Ok(mut guard) = slot.lock() {
-        *guard = Some(app.clone());
-    }
-
     let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if kind == "audio:level" {
         if let Some(active) = event
@@ -316,7 +243,7 @@ pub fn dispatch(app: &AppHandle, event: &serde_json::Value) {
     // (audio:warmup / recording:start / recording:stop) belong to the WebView worker.
     let relevant = matches!(
         kind,
-        "reset" | "state" | "transcript" | "hint" | "appearance"
+        "reset" | "state" | "transcript" | "hint" | "appearance" | "shortcuts"
     );
     if !relevant {
         return;
@@ -338,14 +265,12 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
         ensure_loaded(app, &mut model);
         match kind {
             "reset" => {
+                model.shortcuts.clear();
                 model.final_text.clear();
                 model.partial_text.clear();
                 model.hint_text.clear();
                 model.hint_level = "info".into();
                 model.hint_variant = "text".into();
-                model.hint_retryable = false;
-                model.hint_actions.clear();
-                model.retry_hotkey.clear();
                 model.layout_width = 0.0;
                 model.layout_wrap = false;
                 WAVE_ACTIVE.with(|w| *w.borrow_mut() = false);
@@ -358,15 +283,17 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                     model.app_state = s.into();
                     // Mirror app.js: entering these states clears info-level hints.
                     if matches!(s, "idle" | "connecting" | "recording" | "finishing")
-                        && model.hint_level == "info"
+                        && (s != "idle"
+                            || (model.hint_level == "info" && model.hint_variant != "success"))
                     {
+                        model.hint_level = "info".into();
                         model.hint_text.clear();
                         model.hint_variant = "text".into();
-                        model.hint_retryable = false;
-                        model.hint_actions.clear();
-                        model.retry_hotkey.clear();
                     }
                     // Collapse the waveform when not actively recording.
+                    if s != "idle" {
+                        model.shortcuts.clear();
+                    }
                     if s != "recording" {
                         WAVE_ACTIVE.with(|w| *w.borrow_mut() = false);
                     }
@@ -400,20 +327,12 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("text")
                     .into();
-                model.hint_retryable = payload
-                    .and_then(|p| p.get("retryable"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                model.hint_actions = payload
-                    .and_then(|p| p.get("actions"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .into();
-                model.retry_hotkey = payload
-                    .and_then(|p| p.get("hotkey"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .into();
+            }
+            "shortcuts" => {
+                model.shortcuts = payload
+                    .and_then(|p| p.get("shortcuts"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
             }
             "appearance" => {
                 if let Some(s) = payload
@@ -512,6 +431,7 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         }
         if let Some(old) = slot.take() {
             old.host.removeFromSuperview();
+            old.shortcuts_root.removeFromSuperview();
         }
 
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
@@ -519,97 +439,30 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         // Layer-backed so the hint-text pulse (a layer.opacity animation) works.
         label.setWantsLayer(true);
 
-        // The actions row (e.g. "R ⌥ 重试 · Esc 丢弃 · Enter 输出原文") under an
-        // error hint or a polish-in-progress hint. Same size as the hint text
-        // above and center-aligned across the pill, so the decision keys read
-        // as the primary affordance rather than a footnote.
-        let actions_label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        actions_label.setFont(Some(&NSFont::systemFontOfSize(FONT_SIZE)));
-        actions_label.setTextColor(Some(&NSColor::labelColor()));
-        actions_label.setAlignment(NSTextAlignment::Center);
-        actions_label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        actions_label.setHidden(true);
+        // A separate root stays anchored to the window, outside width animations.
+        let shortcuts_root = NSView::new(mtm);
+        shortcuts_root.setTranslatesAutoresizingMaskIntoConstraints(false);
+        shortcuts_root.setWantsLayer(true);
+        shortcuts_root.setAlphaValue(0.0);
+        content.addSubview(&shortcuts_root);
 
         let indicator = NSView::new(mtm);
         indicator.setWantsLayer(true);
-        let dot_layer = make_dot_layer();
+        let icon_layer = make_icon_layer();
         unsafe {
             let ind_layer: *mut AnyObject = msg_send![&*indicator, layer];
-            if !ind_layer.is_null() {
-                let _: () = msg_send![ind_layer, addSublayer: &*dot_layer];
-            }
+            if !ind_layer.is_null() { let _: () = msg_send![ind_layer, addSublayer: &*icon_layer]; }
         }
 
-        let spinner = NSProgressIndicator::new(mtm);
-        spinner.setStyle(NSProgressIndicatorStyle::Spinning);
-        spinner.setIndeterminate(true);
-        spinner.setDisplayedWhenStopped(false);
-        spinner.setHidden(true);
-
-        let container = NSView::new(mtm);
+        let container = unsafe {
+            let raw: *mut NSView = msg_send![overlay_content_class(), new];
+            Retained::from_raw(raw).expect("overlay content view")
+        };
         // Clip overflowing transcript lines (multi-line keeps only the latest lines).
         container.setWantsLayer(true);
         set_clip(&container);
         container.addSubview(&indicator);
-        container.addSubview(&spinner);
         container.addSubview(&label);
-        container.addSubview(&actions_label);
-
-        let retry_view = NSView::new(mtm);
-        retry_view.setWantsLayer(true);
-        set_layer_color(&retry_view, &NSColor::clearColor(), RETRY_SIZE / 2.0);
-        let retry_track_layer = make_retry_ring_layer();
-        let retry_progress_layer = make_retry_ring_layer();
-        // The decision window has no retry button; its countdown traces the
-        // pill's own border instead. Lives on the container's layer so it
-        // follows the pill frame.
-        let countdown_layer = make_retry_ring_layer();
-        unsafe {
-            let container_layer: *mut AnyObject = msg_send![&*container, layer];
-            if !container_layer.is_null() {
-                let _: () = msg_send![container_layer, addSublayer: &*countdown_layer];
-            }
-        }
-        unsafe {
-            let retry_layer: *mut AnyObject = msg_send![&*retry_view, layer];
-            if !retry_layer.is_null() {
-                let _: () = msg_send![retry_layer, addSublayer: &*retry_track_layer];
-                let _: () = msg_send![retry_layer, addSublayer: &*retry_progress_layer];
-            }
-        }
-        let retry_target = unsafe {
-            let cls = retry_target_class();
-            let obj: *mut AnyObject = msg_send![cls, new];
-            Retained::from_raw(obj).expect("retry target init")
-        };
-        let retry_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str("重试"),
-                Some(&retry_target),
-                Some(sel!(retryClicked:)),
-                mtm,
-            )
-        };
-        retry_button.setBordered(true);
-        retry_button.setTransparent(false);
-        retry_button.setShowsBorderOnlyWhileMouseInside(true);
-        retry_button.setBezelStyle(NSBezelStyle::AccessoryBarAction);
-        retry_button.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-        retry_button.setContentTintColor(Some(&NSColor::systemRedColor()));
-        retry_button.setBezelColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            1.0, 0.231, 0.231, 0.10,
-        )));
-        retry_button.setAttributedTitle(&retry_title_attr(""));
-        unsafe {
-            let cell: *mut AnyObject = msg_send![&*retry_button, cell];
-            if !cell.is_null() {
-                let _: () = msg_send![cell, setHighlightsBy: 1usize];
-                let _: () = msg_send![cell, setShowsStateBy: 0usize];
-            }
-        }
-        retry_view.addSubview(&retry_button);
-        retry_view.setHidden(true);
-        container.addSubview(&retry_view);
 
         // Each fixed view hosts a capsule layer anchored at its horizontal midline.
         let bars: [WaveBar; WAVE_N] = std::array::from_fn(|_| unsafe {
@@ -651,6 +504,10 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         };
         let host = NSView::new(mtm);
         host.setWantsLayer(true);
+        unsafe {
+            let supports: bool = msg_send![&*host, respondsToSelector: sel!(setClipsToBounds:)];
+            if supports { let _: () = msg_send![&*host, setClipsToBounds: false]; }
+        }
         host.setTranslatesAutoresizingMaskIntoConstraints(false);
         content.addSubview(&host);
         let width_constraint = host.widthAnchor().constraintEqualToConstant(MIN_PILL_W);
@@ -678,6 +535,10 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             host.bottomAnchor().constraintEqualToAnchor_constant(&content.bottomAnchor(), -BOTTOM_OFFSET),
             width_constraint.clone(),
             height_constraint.clone(),
+            shortcuts_root.centerXAnchor().constraintEqualToAnchor(&content.centerXAnchor()),
+            shortcuts_root.widthAnchor().constraintEqualToAnchor_constant(&content.widthAnchor(), -64.0),
+            shortcuts_root.heightAnchor().constraintEqualToConstant(18.0),
+            shortcuts_root.bottomAnchor().constraintEqualToAnchor_constant(&host.topAnchor(), -16.0),
             pivot.centerXAnchor().constraintEqualToAnchor(&host.centerXAnchor()),
             pivot.centerYAnchor().constraintEqualToAnchor(&host.centerYAnchor()),
             pivot.widthAnchor().constraintEqualToConstant(0.0),
@@ -703,20 +564,14 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             glass,
             container,
             indicator,
-            spinner,
             label,
-            actions_label,
+            shortcuts_root,
+            shortcut_items: Vec::new(),
+            shortcut_content: Vec::new(),
             bars,
-            retry_view,
-            retry_button,
-            _retry_target: retry_target,
-            dot_layer,
-            retry_track_layer,
-            retry_progress_layer,
-            countdown_layer,
+            icon_layer,
             fade_mask: make_fade_mask(),
             applied_variant: "<unset>".into(),
-            last_pill_w: f64::NAN,
         });
     });
 }
@@ -753,152 +608,78 @@ fn apply_variant(window: &AnyObject, variant: &str) {
     }
 }
 
-/// Create the indicator dot as a standalone CALayer. Color + position are set
-/// per render; the corner radius set here makes it a circle.
-fn make_dot_layer() -> Retained<AnyObject> {
+/// Lucide Check / Info geometry in the same 24-unit view box as the web icons.
+fn make_icon_layer() -> Retained<AnyObject> {
     unsafe {
-        let cls = objc2::runtime::AnyClass::get(c"CALayer").expect("CALayer");
-        let obj: *mut AnyObject = msg_send![cls, alloc];
-        let obj: *mut AnyObject = msg_send![obj, init];
-        let layer = Retained::from_raw(obj).expect("CALayer init");
-        let _: () = msg_send![&*layer, setCornerRadius: DOT_SIZE / 2.0];
+        let cls = AnyClass::get(c"CAShapeLayer").expect("CAShapeLayer");
+        let raw: *mut AnyObject = msg_send![cls, new];
+        let layer = Retained::from_raw(raw).expect("icon layer");
+        let clear: *mut AnyObject = msg_send![&*NSColor::clearColor(), CGColor];
+        let _: () = msg_send![&*layer, setFillColor: clear];
+        let _: () = msg_send![&*layer, setLineWidth: 2.0f64];
+        let round = NSString::from_str("round");
+        let _: () = msg_send![&*layer, setLineCap: &*round];
+        let _: () = msg_send![&*layer, setLineJoin: &*round];
         layer
     }
 }
 
-fn make_retry_ring_layer() -> Retained<AnyObject> {
+fn sync_foreground(views: &Views) {
     unsafe {
-        let cls = objc2::runtime::AnyClass::get(c"CAShapeLayer").expect("CAShapeLayer");
-        let obj: *mut AnyObject = msg_send![cls, alloc];
-        let obj: *mut AnyObject = msg_send![obj, init];
-        let layer = Retained::from_raw(obj).expect("CAShapeLayer init");
-        let clear = NSColor::clearColor();
-        let clear_cg: *mut AnyObject = msg_send![&*clear, CGColor];
-        let _: () = msg_send![&*layer, setFillColor: clear_cg];
-        let _: () = msg_send![&*layer, setLineWidth: 1.6f64];
-        let cap = NSString::from_str("round");
-        let _: () = msg_send![&*layer, setLineCap: &*cap];
-        let _: () = msg_send![&*layer, setStrokeEnd: 1.0f64];
-        layer
-    }
-}
-
-fn set_retry_ring_path(layer: &AnyObject, width: f64) {
-    unsafe {
-        let cls = objc2::runtime::AnyClass::get(c"NSBezierPath").expect("NSBezierPath");
-        let inset = 1.9;
-        let left = inset;
-        let right = width - inset;
-        let top = RETRY_SIZE - inset;
-        let bottom = inset;
-        let radius = (top - bottom) / 2.0;
-        let center_y = RETRY_SIZE / 2.0;
-        let left_center = NSPoint {
-            x: left + radius,
-            y: center_y,
-        };
-        let right_center = NSPoint {
-            x: right - radius,
-            y: center_y,
-        };
-        let path: *mut AnyObject = msg_send![cls, bezierPath];
-        let _: () = msg_send![path, moveToPoint: NSPoint { x: width / 2.0, y: top }];
-        let _: () = msg_send![path, lineToPoint: NSPoint { x: left + radius, y: top }];
-        let _: () = msg_send![
-            path,
-            appendBezierPathWithArcWithCenter: left_center,
-            radius: radius,
-            startAngle: 90.0f64,
-            endAngle: 270.0f64,
-            clockwise: false
-        ];
-        let _: () = msg_send![path, lineToPoint: NSPoint { x: right - radius, y: bottom }];
-        let _: () = msg_send![
-            path,
-            appendBezierPathWithArcWithCenter: right_center,
-            radius: radius,
-            startAngle: 270.0f64,
-            endAngle: 90.0f64,
-            clockwise: false
-        ];
-        let _: () = msg_send![path, closePath];
-        let cg_path: *mut AnyObject = msg_send![path, CGPath];
-        let _: () = msg_send![layer, setPath: cg_path];
-    }
-}
-
-/// Trace the pill's rounded-rect border for the decision-window countdown
-/// layer. Inset by half the line width so the stroke sits fully inside the
-/// pill frame, matching the corner radius used for the glass.
-fn set_pill_border_path(layer: &AnyObject, pill_w: f64, pill_h: f64, radius: f64) {
-    let inset = 1.0; // half of the 2.0 line width
-    let rect = NSRect {
-        origin: NSPoint { x: inset, y: inset },
-        size: NSSize {
-            width: (pill_w - inset * 2.0).max(1.0),
-            height: (pill_h - inset * 2.0).max(1.0),
-        },
-    };
-    unsafe {
-        let cls = objc2::runtime::AnyClass::get(c"NSBezierPath").expect("NSBezierPath");
-        let path: *mut AnyObject = msg_send![
-            cls,
-            bezierPathWithRoundedRect: rect,
-            xRadius: radius,
-            yRadius: radius
-        ];
-        let cg_path: *mut AnyObject = msg_send![path, CGPath];
-        let _: () = msg_send![layer, setPath: cg_path];
-    }
-}
-
-fn set_retry_countdown(layer: &AnyObject, on: bool) {
-    unsafe {
-        let key = NSString::from_str("retry-countdown");
-        if on {
-            let existing: *mut AnyObject = msg_send![layer, animationForKey: &*key];
-            if !existing.is_null() {
-                return;
+        // Use the glass content's appearance, which can differ from the window
+        // when Liquid Glass adapts to the backdrop.
+        let appearance: Retained<NSAppearance> = msg_send![&*views.container, effectiveAppearance];
+        let _: () = msg_send![&*views.shortcuts_root, setAppearance: &*appearance];
+        let update = RcBlock::new(|| {
+            let color = NSColor::labelColor();
+            let cg: *mut AnyObject = msg_send![&*color, CGColor];
+            let _: () = msg_send![&*views.icon_layer, setStrokeColor: cg];
+            let background = color.colorWithAlphaComponent(0.12);
+            let background_cg: *mut AnyObject = msg_send![&*background, CGColor];
+            for item in &views.shortcut_items {
+                item.key_label.setTextColor(Some(&color));
+                item.label.setTextColor(Some(&color));
+                let layer: *mut AnyObject = msg_send![&*item.keycap, layer];
+                let _: () = msg_send![layer, setBackgroundColor: background_cg];
             }
-            let anim_cls =
-                objc2::runtime::AnyClass::get(c"CABasicAnimation").expect("CABasicAnimation");
-            let path = NSString::from_str("strokeStart");
-            let anim: *mut AnyObject = msg_send![anim_cls, animationWithKeyPath: &*path];
-            let _: () = msg_send![anim, setFromValue: &*NSNumber::numberWithDouble(0.0)];
-            let _: () = msg_send![anim, setToValue: &*NSNumber::numberWithDouble(1.0)];
-            let _: () = msg_send![anim, setDuration: 5.0f64];
-            let _: () = msg_send![anim, setRemovedOnCompletion: false];
-            let fill = NSString::from_str("forwards");
-            let _: () = msg_send![anim, setFillMode: &*fill];
-            let tcls = objc2::runtime::AnyClass::get(c"CAMediaTimingFunction")
-                .expect("CAMediaTimingFunction");
-            let tname = NSString::from_str("linear");
-            let tf: *mut AnyObject = msg_send![tcls, functionWithName: &*tname];
-            let _: () = msg_send![anim, setTimingFunction: tf];
-            let _: () = msg_send![layer, addAnimation: anim, forKey: &*key];
-        } else {
-            let _: () = msg_send![layer, removeAnimationForKey: &*key];
-            let _: () = msg_send![layer, setOpacity: 1.0f32];
-            let _: () = msg_send![layer, setStrokeStart: 0.0f64];
-            let _: () = msg_send![layer, setStrokeEnd: 1.0f64];
-        }
+        });
+        appearance.performAsCurrentDrawingAppearance(&update);
     }
 }
 
-fn set_layer_color(view: &NSView, color: &NSColor, corner: f64) {
+fn set_icon(layer: &AnyObject, success: bool) {
     unsafe {
-        let layer: *mut AnyObject = msg_send![view, layer];
-        if layer.is_null() {
-            return;
+        let cls = AnyClass::get(c"NSBezierPath").expect("NSBezierPath");
+        let path: *mut AnyObject = msg_send![cls, bezierPath];
+        let scale = ICON_SIZE / 24.0;
+        let point = |x: f64, y: f64| NSPoint {
+            x: x * scale,
+            y: (24.0 - y) * scale,
+        };
+        if success {
+            // Lucide Check: M20 6 9 17l-5-5.
+            let _: () = msg_send![path, moveToPoint: point(20.0, 6.0)];
+            let _: () = msg_send![path, lineToPoint: point(9.0, 17.0)];
+            let _: () = msg_send![path, lineToPoint: point(4.0, 12.0)];
+        } else {
+            let _: () = msg_send![path, appendBezierPathWithOvalInRect: NSRect {
+                origin: NSPoint { x: 2.0 * scale, y: 2.0 * scale },
+                size: NSSize { width: 20.0 * scale, height: 20.0 * scale }
+            }];
+            let _: () = msg_send![path, moveToPoint: point(12.0, 16.0)];
+            let _: () = msg_send![path, lineToPoint: point(12.0, 12.0)];
+            let _: () = msg_send![path, moveToPoint: point(12.0, 8.0)];
+            let _: () = msg_send![path, lineToPoint: point(12.01, 8.0)];
         }
-        let cg: *mut AnyObject = msg_send![color, CGColor];
-        let _: () = msg_send![layer, setBackgroundColor: cg];
-        let _: () = msg_send![layer, setCornerRadius: corner];
+        let cg_path: *mut AnyObject = msg_send![path, CGPath];
+        let _: () = msg_send![layer, setPath: cg_path];
+        let _: () = msg_send![layer, setLineWidth: 2.0 * scale];
+        let _: () = msg_send![layer, setBounds: NSRect { origin: NSPoint { x: 0.0, y: 0.0 }, size: NSSize { width: ICON_SIZE, height: ICON_SIZE } }];
+        let _: () =
+            msg_send![layer, setPosition: NSPoint { x: INDICATOR_W / 2.0, y: INDICATOR_W / 2.0 }];
     }
 }
 
-/// Build a vertical gradient layer (clear at top → opaque below) used as a mask
-/// so multi-line transcript fades out at the top instead of hard-clipping.
 fn make_fade_mask() -> Retained<AnyObject> {
     unsafe {
         let cls = objc2::runtime::AnyClass::get(c"CAGradientLayer").expect("CAGradientLayer");
@@ -998,29 +779,10 @@ fn set_corner(view: &NSView, radius: f64) {
     }
 }
 
-/// Set a view's frame, animating via Core Animation when `animate` is true so it
-/// grows in lockstep with the pill surface in `render`; instant when false.
-/// Used for content within the constrained glass. Waveform frames stay anchored in the
-/// indicator slot; each capsule animates independently inside its fixed view.
-fn set_frame(view: &NSView, frame: NSRect, animate: bool) {
-    if animate {
-        unsafe {
-            let ctx: *mut AnyObject = msg_send![class!(NSAnimationContext), currentContext];
-            let _: () = msg_send![ctx, setDuration: 0.1f64];
-            let animator: *mut AnyObject = msg_send![view, animator];
-            if !animator.is_null() {
-                (&*(animator as *const NSView)).setFrame(frame);
-            }
-        }
-    } else {
-        view.setFrame(frame);
-    }
-}
-
 /// Fixed bar frames keep the waveform anchored while the pill grows.
 /// Capsule bounds animate around a fixed center, preserving rounded ends.
 fn layout_bars(views: &Views, pill_h: f64, active: bool, show: bool) {
-    let area_left = PAD_LEFT + (INDICATOR_W - WAVE_AREA_W) / 2.0;
+    let area_left = PAD_LEFT;
     for (i, bar) in views.bars.iter().enumerate() {
         bar.view.setHidden(!show);
         bar.view.setFrame(NSRect {
@@ -1151,27 +913,112 @@ fn transcript_attr(model: &Model) -> Retained<NSAttributedString> {
     Retained::into_super(attr)
 }
 
-fn retry_title_attr(hotkey: &str) -> Retained<NSAttributedString> {
-    // "重试 (R ⌥)" — label + the configured hotkey, matching settings symbols.
-    let text = if hotkey.is_empty() {
-        "重试".to_string()
-    } else {
-        format!("重试 ({hotkey})")
-    };
-    let attr = NSMutableAttributedString::from_nsstring(&NSString::from_str(&text));
-    let font = NSFont::systemFontOfSize(12.0);
-    let range = NSRange::new(0, text.encode_utf16().count());
-    let color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.231, 0.231, 1.0);
+fn fade_shortcuts(view: &NSView, visible: bool) {
     unsafe {
-        attr.addAttribute_value_range(objc2_app_kit::NSFontAttributeName, &font, range);
-        attr.addAttribute_value_range(objc2_app_kit::NSForegroundColorAttributeName, &color, range);
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if layer.is_null() {
+            return;
+        }
+        let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+        let from: f32 = if presentation.is_null() {
+            msg_send![layer, opacity]
+        } else {
+            msg_send![presentation, opacity]
+        };
+        let target = if visible { 1.0f32 } else { 0.0f32 };
+        let _: () = msg_send![class!(CATransaction), begin];
+        let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+        view.setAlphaValue(target as f64);
+        let _: () = msg_send![class!(CATransaction), commit];
+        let animation: *mut AnyObject = msg_send![class!(CABasicAnimation), animationWithKeyPath: &*NSString::from_str("opacity")];
+        let _: () = msg_send![animation, setFromValue: &*NSNumber::numberWithDouble(from as f64)];
+        let _: () = msg_send![animation, setToValue: &*NSNumber::numberWithDouble(target as f64)];
+        let _: () = msg_send![animation, setDuration: if visible { 0.16f64 } else { 0.12f64 }];
+        let timing: *mut AnyObject = msg_send![class!(CAMediaTimingFunction), functionWithName: &*NSString::from_str(if visible { "easeOut" } else { "easeIn" })];
+        let _: () = msg_send![animation, setTimingFunction: timing];
+        let _: () = msg_send![layer, addAnimation: animation, forKey: &*NSString::from_str("vp-shortcuts-opacity")];
     }
-    Retained::into_super(attr)
+}
+
+fn update_shortcuts(views: &mut Views, shortcuts: &[Shortcut], mtm: MainThreadMarker) {
+    if views.shortcut_content == shortcuts {
+        return;
+    }
+    views.shortcut_content = shortcuts.to_vec();
+    if shortcuts.is_empty() {
+        fade_shortcuts(&views.shortcuts_root, false);
+        return; // Keep the rendered items alive until their fade finishes.
+    }
+    for item in views.shortcut_items.drain(..) {
+        item.keycap.removeFromSuperview();
+        item.label.removeFromSuperview();
+    }
+    let mut widths = Vec::new();
+    for shortcut in shortcuts {
+        let key_label = NSTextField::labelWithString(&NSString::from_str(&shortcut.key), mtm);
+        key_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        key_label.setAlignment(NSTextAlignment::Center);
+        let key_size = key_label.intrinsicContentSize();
+        let keycap = NSView::new(mtm);
+        keycap.setWantsLayer(true);
+        set_corner(&keycap, 4.0);
+        keycap.addSubview(&key_label);
+        let label = NSTextField::labelWithString(&NSString::from_str(&shortcut.label), mtm);
+        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        let label_size = label.intrinsicContentSize();
+        views.shortcuts_root.addSubview(&keycap);
+        views.shortcuts_root.addSubview(&label);
+        widths.push((
+            key_size.width.ceil() + 8.0,
+            label_size.width.ceil(),
+            key_size.height.ceil(),
+            label_size.height.ceil(),
+        ));
+        views.shortcut_items.push(ShortcutViews {
+            keycap,
+            key_label,
+            label,
+        });
+    }
+    let total: f64 = widths.iter().map(|w| w.0 + 4.0 + w.1).sum::<f64>()
+        + 14.0 * widths.len().saturating_sub(1) as f64;
+    let mut x = (views.shortcuts_root.bounds().size.width - total) / 2.0;
+    for (item, (key_w, label_w, key_h, label_h)) in views.shortcut_items.iter().zip(widths) {
+        item.keycap.setFrame(NSRect {
+            origin: NSPoint { x, y: 0.0 },
+            size: NSSize {
+                width: key_w,
+                height: 18.0,
+            },
+        });
+        item.key_label.setFrame(NSRect {
+            origin: NSPoint {
+                x: 0.0,
+                y: (18.0 - key_h) / 2.0,
+            },
+            size: NSSize {
+                width: key_w,
+                height: key_h,
+            },
+        });
+        item.label.setFrame(NSRect {
+            origin: NSPoint {
+                x: x + key_w + 4.0,
+                y: (18.0 - label_h) / 2.0,
+            },
+            size: NSSize {
+                width: label_w,
+                height: label_h,
+            },
+        });
+        x += key_w + 4.0 + label_w + 14.0;
+    }
+    fade_shortcuts(&views.shortcuts_root, true);
 }
 
 fn hint_color(level: &str) -> Retained<NSColor> {
     match level {
-        "error" => NSColor::systemRedColor(),
+        "error" => NSColor::labelColor(),
         "warn" => NSColor::systemOrangeColor(),
         _ => NSColor::labelColor(),
     }
@@ -1197,21 +1044,8 @@ fn render(app: &AppHandle, model: &mut Model) {
     let hint = visible_hint(model);
     let has_hint = !hint.is_empty();
     let has_text = !model.final_text.is_empty() || !model.partial_text.is_empty();
-    let has_actions = has_hint && !model.hint_actions.is_empty();
-    // The retry button belongs to the ASR-failure affordance. The polish
-    // decision window has no button: its actions row and the pill-border
-    // countdown carry the affordance instead.
-    let show_retry =
-        model.hint_retryable && model.hint_level == "error" && has_hint && !has_actions;
-    let show_countdown = has_actions && model.hint_retryable && model.hint_level == "error";
-    // Build the retry button title ("重试 (R ⌥)") and size the button to fit it,
-    // so the label + hotkey live inside the button rather than in the message.
-    let retry_title = retry_title_attr(&model.retry_hotkey);
-    let retry_w = if show_retry {
-        (retry_title.size().width.ceil() + RETRY_TEXT_PAD).max(RETRY_MIN_W)
-    } else {
-        0.0
-    };
+    let success = model.hint_variant == "success";
+    let show_icon = model.hint_level == "error" || success;
 
     VIEWS.with(|v| {
         let mut slot = v.borrow_mut();
@@ -1233,17 +1067,13 @@ fn render(app: &AppHandle, model: &mut Model) {
             views
                 .label
                 .setTextColor(Some(&hint_color(&model.hint_level)));
+        } else if success {
+            views.label.setStringValue(&NSString::from_str(""));
         } else {
             let attr = transcript_attr(model);
             views.label.setAttributedStringValue(&attr);
         }
-        // The actions row rides along under a hint (polish decision window /
-        // polish retry); it names the keys that act on the current state.
-        if has_actions {
-            let s = NSString::from_str(&model.hint_actions);
-            views.actions_label.setStringValue(&s);
-        }
-        views.actions_label.setHidden(!has_actions);
+        update_shortcuts(views, &model.shortcuts, mtm);
 
         // --- Decide wrap, measure width ---
         // Single-line mode first to measure the natural width.
@@ -1253,40 +1083,56 @@ fn render(app: &AppHandle, model: &mut Model) {
         views
             .label
             .setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        let natural = views.label.intrinsicContentSize();
-        let mut measured_w = natural.width.ceil();
-        // The actions row shares the width budget: the pill must fit the wider
-        // of the two rows.
-        let actions_natural = if has_actions {
-            let size = views.actions_label.intrinsicContentSize();
-            measured_w = measured_w.max(size.width.ceil());
-            size
-        } else {
-            NSSize {
-                width: 0.0,
-                height: 0.0,
-            }
-        };
-
-        let lock_layout =
-            !has_hint && matches!(model.app_state.as_str(), "recording" | "finishing");
-        let want_wrap = !has_hint && (model.layout_wrap || measured_w > SINGLE_LINE_LIMIT);
-
-        // Waveform occupies the indicator slot while recording (the dot is gone
-        // in this state). Hidden during a network reconnect (warn hint), where the
-        // slot shows a spinner instead.
-        let show_wave = model.app_state == "recording" && model.hint_level != "warn";
-
-        // Chrome around the text (left pad + indicator/waveform slot + gap + right
-        // action area). The waveform reuses the indicator slot, so it adds no width.
-        let retry_reserve = if show_retry {
-            RETRY_GAP_LEFT + retry_w + (RETRY_RIGHT_INSET - PAD_RIGHT)
+        // Measure the cell with clipping, independent of its previous narrow frame.
+        views.label.setLineBreakMode(NSLineBreakMode::ByClipping);
+        let natural = views
+            .label
+            .cell()
+            .map(|cell| cell.cellSize())
+            .unwrap_or_else(|| views.label.intrinsicContentSize());
+        views
+            .label
+            .setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        let measured_w = if has_hint || (has_text && !success) {
+            natural.width.ceil()
         } else {
             0.0
         };
-        let chrome = PAD_LEFT + INDICATOR_W + GAP + PAD_RIGHT + retry_reserve;
-        let text_w = measured_w + TEXT_SLACK;
-        let next_width = if want_wrap {
+        let lock_layout = !show_icon
+            && has_text
+            && !has_hint
+            && matches!(model.app_state.as_str(), "recording" | "finishing");
+        let want_wrap = !show_icon
+            && has_text
+            && !has_hint
+            && (model.layout_wrap || measured_w > SINGLE_LINE_LIMIT);
+
+        // Reconnecting uses text only; recording keeps its waveform.
+        let show_wave = model.app_state == "recording"
+            && model.hint_level != "warn"
+            && model.hint_level != "error";
+
+        // Chrome around the text (left pad + indicator/waveform slot + gap + right
+        // action area). The waveform reuses the indicator slot, so it adds no width.
+        let left_slot = if show_wave {
+            WAVE_AREA_W + if has_text || has_hint { GAP } else { 0.0 }
+        } else if show_icon {
+            INDICATOR_W + if has_hint { GAP } else { 0.0 }
+        } else {
+            0.0
+        };
+        let chrome = PAD_LEFT + left_slot + PAD_RIGHT;
+        let text_w = measured_w
+            + if has_text && !has_hint && !show_icon {
+                TEXT_SLACK
+            } else if has_hint {
+                2.0 // Protect the last glyph against fractional font metrics.
+            } else {
+                0.0
+            };
+        let next_width = if success && !has_hint {
+            PAD_LEFT + INDICATOR_W + PAD_RIGHT
+        } else if want_wrap {
             MULTI_LINE_WIDTH + chrome
         } else {
             (SINGLE_LINE_LIMIT + chrome).min((text_w + chrome).max(MIN_PILL_W))
@@ -1322,33 +1168,26 @@ fn render(app: &AppHandle, model: &mut Model) {
             let max_visible = one_line_h * (MAX_LINES as f64) + 4.0;
             let visible = full.min(max_visible);
             ((visible + 16.0).max(56.0), full, visible)
-        } else if has_actions {
-            // Two stacked rows: the hint (allowed to wrap onto a second line,
-            // tail-truncated) over the single-line actions row.
+        } else if model.hint_level == "error" {
+            // Error text may wrap; keyboard actions remain outside the pill.
             views.label.setUsesSingleLineMode(false);
-            views.label.setMaximumNumberOfLines(2);
+            views.label.setMaximumNumberOfLines(3);
             views
                 .label
                 .setLineBreakMode(NSLineBreakMode::ByWordWrapping);
             views.label.setPreferredMaxLayoutWidth(text_area_w);
             let label_h = views.label.intrinsicContentSize().height.ceil();
-            let block = label_h + 4.0 + actions_natural.height.ceil();
-            ((block + 16.0).max(56.0), label_h, label_h)
+            ((label_h + 16.0).max(PILL_H_SINGLE), label_h, label_h)
         } else {
             (PILL_H_SINGLE, one_line_h, one_line_h)
         };
 
-        // Auto Layout centers both the host and the zero-size scale pivot.
-        // AppKit owns the entire view/layer hierarchy, including the glass.
-        let prev_pill_w = views.last_pill_w;
-        let growing = !prev_pill_w.is_nan() && pill_w > prev_pill_w + 0.5;
-        views.last_pill_w = pill_w;
-        let animate = growing && !has_hint;
+        // Geometry updates immediately; only visibility uses fade animations.
         unsafe {
             let _: () = msg_send![class!(NSAnimationContext), beginGrouping];
             let ctx: *mut AnyObject = msg_send![class!(NSAnimationContext), currentContext];
-            let _: () = msg_send![ctx, setDuration: if animate { 0.1f64 } else { 0.0f64 }];
-            let _: () = msg_send![ctx, setAllowsImplicitAnimation: animate];
+            let _: () = msg_send![ctx, setDuration: 0.0f64];
+            let _: () = msg_send![ctx, setAllowsImplicitAnimation: false];
         }
         views.width_constraint.setConstant(pill_w);
         views.height_constraint.setConstant(pill_h);
@@ -1357,7 +1196,7 @@ fn render(app: &AppHandle, model: &mut Model) {
             let host_layer: *mut AnyObject = msg_send![&*views.host, layer];
             let _: () = msg_send![host_layer, layoutIfNeeded];
         }
-        let radius = if model.layout_wrap || has_actions {
+        let radius = if model.layout_wrap || model.hint_level == "error" {
             16.0
         } else {
             pill_h / 2.0
@@ -1379,7 +1218,7 @@ fn render(app: &AppHandle, model: &mut Model) {
                 height: pill_h,
             },
         };
-        set_frame(&views.container, container_bounds, animate);
+        views.container.setFrame(container_bounds);
         unsafe {
             let _: () = msg_send![class!(NSAnimationContext), endGrouping];
         }
@@ -1387,44 +1226,14 @@ fn render(app: &AppHandle, model: &mut Model) {
         let faded = model.layout_wrap && full_h > visible_text_h + 1.0;
         apply_top_fade(&views.container, &views.fade_mask, faded, container_bounds);
 
-        // Indicator slot (left): spinner while connecting/finishing/reconnecting
-        // (unless error), a red dot on error, otherwise empty — recording shows the
-        // waveform in this slot instead.
-        let show_spinner = model.hint_level != "error"
-            && (matches!(model.app_state.as_str(), "connecting" | "finishing")
-                || (model.app_state == "recording" && model.hint_level == "warn"));
-        let spinner_size = 16.0;
-        views.spinner.setFrame(NSRect {
-            origin: NSPoint {
-                x: PAD_LEFT + (INDICATOR_W - spinner_size) / 2.0,
-                y: (pill_h - spinner_size) / 2.0,
-            },
-            size: NSSize {
-                width: spinner_size,
-                height: spinner_size,
-            },
-        });
-        views.spinner.setHidden(!show_spinner);
-        unsafe {
-            if show_spinner {
-                views.spinner.startAnimation(None);
-            } else {
-                views.spinner.stopAnimation(None);
-            }
-        }
-
-        let dot_color = if model.hint_level == "error" {
-            NSColor::systemRedColor()
-        } else if model.app_state == "recording" {
-            NSColor::systemGreenColor()
-        } else {
-            NSColor::tertiaryLabelColor()
-        };
-        // Indicator view occupies the slot; the dot is a centered sublayer that can
-        // pulse (recording) independently of the view's frame.
+        views.indicator.setHidden(!show_icon);
         views.indicator.setFrame(NSRect {
             origin: NSPoint {
-                x: PAD_LEFT,
+                x: if success && !has_hint {
+                    (pill_w - INDICATOR_W) / 2.0
+                } else {
+                    PAD_LEFT
+                },
                 y: ((pill_h - INDICATOR_W) / 2.0).round(),
             },
             size: NSSize {
@@ -1432,152 +1241,44 @@ fn render(app: &AppHandle, model: &mut Model) {
                 height: INDICATOR_W,
             },
         });
-        views.indicator.setHidden(show_spinner || show_wave);
-        let dot_bounds = NSRect {
-            origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize {
-                width: DOT_SIZE,
-                height: DOT_SIZE,
-            },
-        };
-        let dot_center = NSPoint {
-            x: INDICATOR_W / 2.0,
-            y: INDICATOR_W / 2.0,
-        };
-        unsafe {
-            let dl = &*views.dot_layer;
-            let _: () = msg_send![dl, setBounds: dot_bounds];
-            let _: () = msg_send![dl, setPosition: dot_center];
-            let cg: *mut AnyObject = msg_send![&*dot_color, CGColor];
-            let _: () = msg_send![dl, setBackgroundColor: cg];
+        if show_icon {
+            set_icon(&views.icon_layer, success);
         }
-
-        // Label, right of the indicator slot. The slot holds spinner/dot/waveform
-        // (all INDICATOR_W wide), so label_x is constant regardless of state.
-        // Anchored so the bottom `visible_text_h` of the text sits in the (vertically
-        // centered) visible window: single-line is just centered; multi-line lets the
-        // LATEST lines show while older lines overflow upward and get clipped by the
-        // container (top fade is a later refinement).
-        let label_x = PAD_LEFT + INDICATOR_W + GAP;
-        if has_actions {
-            // Center the two-row block: hint on top, actions underneath. The
-            // actions row spans the full pill width with centered text, per
-            // the decision-window design.
-            let actions_h = actions_natural.height.ceil();
-            let block_h = visible_text_h + 4.0 + actions_h;
-            let pad_v = ((pill_h - block_h) / 2.0).round();
-            views.label.setFrame(NSRect {
-                origin: NSPoint {
-                    x: label_x,
-                    y: pad_v + actions_h + 4.0,
-                },
-                size: NSSize {
-                    width: text_area_w,
-                    height: full_h,
-                },
-            });
-            views.actions_label.setFrame(NSRect {
-                origin: NSPoint { x: 0.0, y: pad_v },
-                size: NSSize {
-                    width: pill_w,
-                    height: actions_h,
-                },
-            });
+        views.label.setHidden((!has_text || success) && !has_hint);
+        let center_text = has_hint && !show_wave && !show_icon;
+        views.label.setAlignment(if center_text {
+            NSTextAlignment::Center
         } else {
-            let pad_v = ((pill_h - visible_text_h) / 2.0).round();
-            views.label.setFrame(NSRect {
-                origin: NSPoint {
-                    x: label_x,
-                    y: pad_v,
+            NSTextAlignment::Left
+        });
+        views.label.setFrame(NSRect {
+            origin: NSPoint {
+                x: if center_text {
+                    PAD_LEFT.max(PAD_RIGHT)
+                } else {
+                    PAD_LEFT + left_slot
                 },
-                size: NSSize {
-                    width: text_area_w,
-                    height: full_h,
+                y: ((pill_h - visible_text_h) / 2.0).round(),
+            },
+            size: NSSize {
+                width: if center_text {
+                    pill_w - 2.0 * PAD_LEFT.max(PAD_RIGHT)
+                } else {
+                    text_area_w
                 },
-            });
-        }
+                height: full_h,
+            },
+        });
+        sync_foreground(views);
 
         let wave_active = WAVE_ACTIVE.with(|w| *w.borrow());
         layout_bars(views, pill_h, wave_active, show_wave);
 
         // Hint-text pulse (a gentle breathing opacity) for connecting/润色/重试/
         // 重连/录制中提示; off for transcript text, errors, and idle.
-        let should_pulse = has_hint && model.hint_level != "error" && model.app_state != "idle";
+        let should_pulse =
+            has_hint && model.hint_level != "error" && !success && model.app_state != "idle";
         set_label_pulse(&views.label, should_pulse);
-
-        views.retry_view.setHidden(!show_retry);
-        if show_retry {
-            let retry_x = pill_w - RETRY_RIGHT_INSET - retry_w;
-            let retry_y = ((pill_h - RETRY_SIZE) / 2.0).round();
-            views.retry_view.setFrame(NSRect {
-                origin: NSPoint {
-                    x: retry_x,
-                    y: retry_y,
-                },
-                size: NSSize {
-                    width: retry_w,
-                    height: RETRY_SIZE,
-                },
-            });
-            views.retry_button.setFrame(NSRect {
-                origin: NSPoint { x: 0.0, y: 0.0 },
-                size: NSSize {
-                    width: retry_w,
-                    height: RETRY_SIZE,
-                },
-            });
-            views.retry_button.setAttributedTitle(&retry_title);
-            unsafe {
-                let bg = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.231, 0.231, 0.08);
-                let border = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.231, 0.231, 0.84);
-                let view_layer: *mut AnyObject = msg_send![&*views.retry_view, layer];
-                if !view_layer.is_null() {
-                    let bg_cg: *mut AnyObject = msg_send![&*bg, CGColor];
-                    let _: () = msg_send![view_layer, setBackgroundColor: bg_cg];
-                    let _: () = msg_send![view_layer, setCornerRadius: RETRY_SIZE / 2.0];
-                }
-                let ring_frame = NSRect {
-                    origin: NSPoint { x: 0.0, y: 0.0 },
-                    size: NSSize {
-                        width: retry_w,
-                        height: RETRY_SIZE,
-                    },
-                };
-                let _: () = msg_send![&*views.retry_track_layer, setFrame: ring_frame];
-                let _: () = msg_send![&*views.retry_progress_layer, setFrame: ring_frame];
-                set_retry_ring_path(&views.retry_track_layer, retry_w);
-                set_retry_ring_path(&views.retry_progress_layer, retry_w);
-                let track = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.231, 0.231, 0.18);
-                let track_cg: *mut AnyObject = msg_send![&*track, CGColor];
-                let _: () = msg_send![&*views.retry_track_layer, setStrokeColor: track_cg];
-                let border_cg: *mut AnyObject = msg_send![&*border, CGColor];
-                let _: () = msg_send![&*views.retry_progress_layer, setStrokeColor: border_cg];
-            }
-        }
-        set_retry_countdown(&views.retry_progress_layer, show_retry);
-
-        // Decision-window countdown: the pill's own border empties over the 5s
-        // window, replacing the button ring the ASR affordance uses.
-        unsafe {
-            let hidden: u8 = if show_countdown { 0 } else { 1 };
-            let _: () = msg_send![&*views.countdown_layer, setHidden: hidden];
-            if show_countdown {
-                let frame = NSRect {
-                    origin: NSPoint { x: 0.0, y: 0.0 },
-                    size: NSSize {
-                        width: pill_w,
-                        height: pill_h,
-                    },
-                };
-                let _: () = msg_send![&*views.countdown_layer, setFrame: frame];
-                set_pill_border_path(&views.countdown_layer, pill_w, pill_h, radius);
-                let _: () = msg_send![&*views.countdown_layer, setLineWidth: 2.0f64];
-                let border = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.231, 0.231, 0.84);
-                let border_cg: *mut AnyObject = msg_send![&*border, CGColor];
-                let _: () = msg_send![&*views.countdown_layer, setStrokeColor: border_cg];
-            }
-        }
-        set_retry_countdown(&views.countdown_layer, show_countdown);
 
         // Keep the pill visible throughout an active session (so the indicator
         // stays up while waiting for the first transcript); only hide it when idle
@@ -1586,7 +1287,7 @@ fn render(app: &AppHandle, model: &mut Model) {
             model.app_state.as_str(),
             "connecting" | "recording" | "finishing"
         );
-        let empty = !has_hint && !has_text && !active;
+        let empty = !has_hint && !has_text && !active && !success;
         views.glass.view().setHidden(empty);
     });
 }

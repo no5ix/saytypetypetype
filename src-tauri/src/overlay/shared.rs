@@ -10,31 +10,21 @@
 // the Windows WebView receives them via get_overlay_layout_metrics. ---
 #[cfg(target_os = "macos")]
 pub const FONT_SIZE: f64 = 14.0;
-pub const PAD_LEFT: f64 = 14.0;
+pub const PAD_LEFT: f64 = 16.0;
 pub const PAD_RIGHT: f64 = 16.0;
-pub const INDICATOR_W: f64 = 22.0;
-pub const GAP: f64 = 12.0;
+pub const INDICATOR_W: f64 = 16.0;
 #[cfg(target_os = "macos")]
-pub const DOT_SIZE: f64 = 14.0;
+pub const ICON_SIZE: f64 = 16.0;
+pub const GAP: f64 = 12.0;
 pub const PILL_H_SINGLE: f64 = 40.0;
 pub const SINGLE_LINE_LIMIT: f64 = 520.0;
 pub const MULTI_LINE_WIDTH: f64 = 520.0;
-pub const MIN_PILL_W: f64 = 116.0;
+pub const MIN_PILL_W: f64 = 48.0;
 pub const TEXT_SLACK: f64 = 10.0;
 #[cfg(target_os = "macos")]
 pub const MAX_LINES: usize = 3;
 #[cfg(target_os = "macos")]
 pub const BOTTOM_OFFSET: f64 = 48.0;
-
-// --- Retry affordance geometry ---
-pub const RETRY_SIZE: f64 = 22.0;
-#[cfg(target_os = "macos")]
-pub const RETRY_MIN_W: f64 = 38.0;
-#[cfg(target_os = "macos")]
-pub const RETRY_TEXT_PAD: f64 = 24.0;
-pub const RETRY_GAP_LEFT: f64 = 8.0;
-#[cfg(target_os = "macos")]
-pub const RETRY_RIGHT_INSET: f64 = 26.0;
 
 // --- Waveform (4 bars in the indicator slot, recording only) ---
 pub const WAVE_N: usize = 4;
@@ -67,22 +57,56 @@ impl WaveActivity {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct Shortcut {
+    pub key: String,
+    pub label: String,
+}
+
+impl Shortcut {
+    pub fn new(key: impl Into<String>, label: &str) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// Recording hints use raw signal timing, independently of waveform smoothing.
+pub struct RecordingHints {
+    pub toggle: bool,
+    pub shortcuts: Vec<Shortcut>,
+    pub last_signal: std::time::Instant,
+    pub shown: bool,
+}
+
+impl RecordingHints {
+    pub fn update(&mut self, signal: bool, now: std::time::Instant) -> bool {
+        if signal {
+            self.last_signal = now;
+        }
+        if self.toggle
+            && !self.shown
+            && now.duration_since(self.last_signal) >= std::time::Duration::from_secs(2)
+        {
+            self.shown = true;
+            return true;
+        }
+        false
+    }
+}
+
 /// Logical overlay state used to derive display text. Parallels the Windows
 /// WebView's `OverlayState`; only the macOS renderer holds a live instance.
 #[derive(Default)]
 #[cfg(any(target_os = "macos", test))]
 pub struct Model {
+    pub shortcuts: Vec<Shortcut>,
     pub final_text: String,
     pub partial_text: String,
     pub hint_text: String,
     pub hint_level: String,   // "info" | "warn" | "error"
-    pub hint_variant: String, // "text" | "progress" | "retry"
-    pub hint_retryable: bool,
-    /// Actions line rendered under the hint (smaller, muted): names the keys
-    /// that act on the current state, e.g. "R ⌥ 重试 · Esc 丢弃 · Enter 输出原文".
-    /// Empty for hints without a decision affordance.
-    pub hint_actions: String,
-    pub retry_hotkey: String, // formatted main hotkey label, e.g. "R ⌥"
+    pub hint_variant: String, // "text" | "progress" | "retry" | "success"
     pub app_state: String,    // "idle" | "connecting" | "recording" | "finishing"
     /// Sticky pill layout (prevents width jitter while recording/finishing).
     pub layout_width: f64,
@@ -99,11 +123,14 @@ pub struct Model {
 /// the Windows WebView keeps an aligned TS copy in `overlayText`.
 #[cfg(any(target_os = "macos", test))]
 pub fn visible_hint(model: &Model) -> String {
+    if model.hint_variant == "success" {
+        return model.hint_text.clone();
+    }
     let visual_state = model.app_state.as_str();
     let zh = true; // app is Chinese-first; matches the WebView's isZhLocale default.
     if visual_state == "connecting" {
         return if zh {
-            "准备中…".into()
+            "准备中".into()
         } else {
             "Preparing…".into()
         };
@@ -113,7 +140,7 @@ pub fn visible_hint(model: &Model) -> String {
         // in; then yield to the live text below.
         if model.final_text.is_empty() && model.partial_text.is_empty() {
             return if zh {
-                "重试中…".into()
+                "重试中".into()
             } else {
                 "Retrying…".into()
             };
@@ -122,13 +149,15 @@ pub fn visible_hint(model: &Model) -> String {
     }
     if visual_state == "finishing" && model.hint_variant == "progress" {
         return if zh {
-            "润色中…".into()
+            "润色中".into()
         } else {
             "Polishing…".into()
         };
     }
-    // The retry label + hotkey live inside the retry button, not in the message
-    // text, so the hint is just the error message.
+    if visual_state == "finishing" && model.hint_text.is_empty() {
+        return "识别中".into();
+    }
+    // Action shortcuts live above the pill; its body contains only the hint.
     model.hint_text.clone()
 }
 
@@ -156,8 +185,6 @@ pub struct LayoutMetrics {
     pub wave_durations: [f64; WAVE_N],
     pub wave_peaks: [f64; WAVE_N],
     pub wave_settle_seconds: f64,
-    pub retry_size: f64,
-    pub retry_gap_left: f64,
 }
 
 impl LayoutMetrics {
@@ -181,8 +208,6 @@ impl LayoutMetrics {
             wave_durations: WAVE_DURATIONS,
             wave_peaks: WAVE_PEAKS,
             wave_settle_seconds: WAVE_SETTLE_SECONDS,
-            retry_size: RETRY_SIZE,
-            retry_gap_left: RETRY_GAP_LEFT,
         }
     }
 }
@@ -202,10 +227,10 @@ mod tests {
 
     #[test]
     fn visible_hint_state_placeholders() {
-        assert_eq!(visible_hint(&model("connecting", "", "text")), "准备中…");
-        assert_eq!(visible_hint(&model("finishing", "", "progress")), "润色中…");
+        assert_eq!(visible_hint(&model("connecting", "", "text")), "准备中");
+        assert_eq!(visible_hint(&model("finishing", "", "progress")), "润色中");
         // Retry placeholder only while no transcript has streamed in yet.
-        assert_eq!(visible_hint(&model("finishing", "", "retry")), "重试中…");
+        assert_eq!(visible_hint(&model("finishing", "", "retry")), "重试中");
         // Once transcript text arrives during a retry, yield to the live text.
         let mut m = model("finishing", "", "retry");
         m.final_text = "你好".into();
@@ -219,6 +244,50 @@ mod tests {
             "录制中…"
         );
         assert_eq!(visible_hint(&model("idle", "出错了", "text")), "出错了");
+    }
+
+    #[test]
+    fn recording_hints_show_at_two_seconds_and_remain_after_speech() {
+        let now = std::time::Instant::now();
+        let mut hints = RecordingHints {
+            toggle: true,
+            shortcuts: vec![],
+            last_signal: now,
+            shown: false,
+        };
+        assert!(!hints.update(false, now + std::time::Duration::from_millis(1999)));
+        assert!(hints.update(false, now + std::time::Duration::from_secs(2)));
+        assert!(!hints.update(true, now + std::time::Duration::from_secs(3)));
+        assert!(hints.shown);
+    }
+
+    #[test]
+    fn recording_hints_reset_pause_on_signal_without_waveform_hold() {
+        let now = std::time::Instant::now();
+        let mut hints = RecordingHints {
+            toggle: true,
+            shortcuts: vec![],
+            last_signal: now,
+            shown: false,
+        };
+        assert!(!hints.update(true, now + std::time::Duration::from_secs(1)));
+        assert!(!hints.update(false, now + std::time::Duration::from_millis(2999)));
+        assert!(hints.update(false, now + std::time::Duration::from_secs(3)));
+        let mut hold = RecordingHints {
+            toggle: false,
+            shortcuts: vec![],
+            last_signal: now,
+            shown: false,
+        };
+        assert!(!hold.update(false, now + std::time::Duration::from_secs(30)));
+        assert!(!hold.shown);
+    }
+
+    #[test]
+    fn visible_hint_does_not_mistake_an_empty_success_for_processing() {
+        assert_eq!(visible_hint(&model("idle", "", "success")), "");
+        assert_eq!(visible_hint(&model("finishing", "", "success")), "");
+        assert_eq!(visible_hint(&model("finishing", "", "text")), "识别中");
     }
 
     fn speech() -> Vec<f32> {

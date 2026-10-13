@@ -12,9 +12,9 @@ use super::capture;
 use super::cue;
 use super::finalize;
 use super::history;
+use super::reset_matcher_recording;
 use super::session;
 use super::wav;
-use super::{emit_hint, reset_matcher_recording};
 
 /// Start recording from idle state. Used by both toggle and hold modes.
 pub(super) async fn start_recording(app_handle: AppHandle) {
@@ -30,12 +30,8 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
         Err(e) => {
             *recording_state.0.lock().unwrap() = false;
             log_rec!(error, "Failed to load config: {}", e);
-            emit_hint(
-                &app_handle,
-                &format!("配置加载失败: {}", e),
-                "error",
-                "text",
-            );
+            overlay::show_restart_error(&app_handle, &app_inner, &format!("配置加载失败: {}", e))
+                .await;
             return;
         }
     };
@@ -43,6 +39,10 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     // Prompt-specific LLM validation is deferred to finalize_and_paste: the
     // prompt is resolved from the stop chord (not known at start), and a bad
     // LLM config surfaces there with the provider's own reason plus a retry.
+
+    let _ = app_handle.emit("overlay:event", serde_json::json!({
+        "type": "appearance", "payload": { "theme": config.app.theme, "overlayStyle": config.app.overlay_style }
+    }));
 
     // Settle any parked polish before recording again. Otherwise its auto-paste
     // timer would fire mid-recording and drop the previous transcript into
@@ -54,7 +54,6 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     *app_inner.current_recording_wav.lock().await = None;
     *app_inner.current_retry_of.lock().await = None;
     *app_inner.current_failure_ts.lock().await = None;
-    overlay::set_overlay_retry_interaction(&app_handle, false);
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     // Re-position before showing so the overlay follows the current display layout
     // (e.g. after an external monitor was connected/disconnected).
@@ -68,9 +67,9 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     if let Err(e) = capture::start_capture(app_handle.clone(), Arc::clone(&app_inner)).await {
         *recording_state.0.lock().unwrap() = false;
         set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-        overlay::hide(&app_handle);
         log_rec!(warn, "Native audio warmup failed: {}", e);
-        emit_hint(&app_handle, &e, "error", "text");
+        reset_matcher_recording(&app_handle);
+        overlay::show_restart_error(&app_handle, &app_inner, &e).await;
         return;
     }
 
@@ -112,6 +111,8 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
 
     cue::emit_cue(&app_handle, &app_inner, "start");
     set_app_state(&app_handle, &app_inner, app_state::AppState::Recording).await;
+
+    overlay::begin_recording_hints(&app_handle, &app_inner).await;
 
     // 5. Connect the ASR session in the background; attach it once ready.
     let connect_handle = app_handle.clone();
@@ -165,7 +166,6 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     app_inner.pending_audio.lock().await.clear();
                     history::discard_recording_artifacts(&app_inner).await;
-                    overlay::set_overlay_retry_interaction(&app_handle, false);
                     overlay::hide(&app_handle);
                     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
                     return;
@@ -204,7 +204,6 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             app_inner.pending_audio.lock().await.clear();
             *app_inner.accumulated_text.lock().await = String::new();
             history::discard_recording_artifacts(&app_inner).await;
-            overlay::set_overlay_retry_interaction(&app_handle, false);
             overlay::hide(&app_handle);
             set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
             return;
@@ -286,12 +285,14 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
     // 11. Clear cross-reconnect accumulated text for the next recording.
     *app_inner.accumulated_text.lock().await = String::new();
 
-    // 12. Hide overlay
-    overlay::set_overlay_retry_interaction(&app_handle, false);
-    overlay::hide(&app_handle);
-
-    // 13. Set state back to idle
-    set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+    // Successful output owns its feedback lifetime.
+    if !app_inner
+        .feedback_visible
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        overlay::hide(&app_handle);
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+    }
 }
 
 /// Tear down an in-flight retry or a shown retryable failure: discard any
@@ -307,7 +308,6 @@ pub(super) async fn abort_retry_or_failure(
     *app_inner.current_failure_ts.lock().await = None;
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.accumulated_text.lock().await = String::new();
-    overlay::set_overlay_retry_interaction(app_handle, false);
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     overlay::hide(app_handle);
     // set_app_state(Idle) also re-syncs (disables) the ESC shortcut.

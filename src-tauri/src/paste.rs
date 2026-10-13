@@ -7,9 +7,9 @@ use std::os::windows::process::CommandExt;
 
 #[derive(serde::Serialize)]
 pub struct PasteResult {
-    ok: bool,
+    pub(crate) ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    pub(crate) message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     permission_error: Option<String>,
 }

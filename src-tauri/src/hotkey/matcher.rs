@@ -50,6 +50,10 @@ pub struct MatcherState {
 }
 
 impl MatcherState {
+    pub fn recording_mode(&self) -> Option<HotkeyMode> {
+        self.recording
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

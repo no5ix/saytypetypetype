@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::app_state;
-use crate::overlay;
 
 use super::wav;
 
@@ -82,19 +81,21 @@ pub(crate) async fn current_recording_wav_string(
 /// Record a transcription failure into stats, arm the overlay retry affordance,
 /// and remember its timestamp so the main hotkey can retry it.
 pub(crate) async fn record_transcription_failure(
-    app: &AppHandle,
+    _app: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
     message: &str,
 ) -> String {
     let audio_path = current_recording_wav_string(app_inner).await;
+    let retryable = audio_path
+        .as_ref()
+        .is_some_and(|path| std::path::Path::new(path).is_file());
     let retry_of = app_inner.current_retry_of.lock().await.clone();
     let ts = app_inner
         .stats
         .lock()
         .await
         .record_failure(message, audio_path, retry_of);
-    *app_inner.current_failure_ts.lock().await = Some(ts.clone());
-    overlay::set_overlay_retry_interaction(app, true);
+    *app_inner.current_failure_ts.lock().await = retryable.then(|| ts.clone());
     ts
 }
 

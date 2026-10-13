@@ -368,6 +368,16 @@ pub(crate) async fn append_audio_samples(
         );
     }
 
+    if !samples.is_empty() {
+        let signal = crate::recording::audio_chunk_has_signal(&samples);
+        let mut hints = state.recording_hints.lock().await;
+        if let Some(hints) = hints.as_mut() {
+            if hints.update(signal, std::time::Instant::now()) {
+                crate::overlay::emit_shortcuts(app, &hints.shortcuts);
+            }
+        }
+    }
+
     // Hold the `asr_session` lock across the decision so buffering stays ordered
     // against the background connect task's drain (same lock), guaranteeing no
     // buffered chunk is silently dropped between drain and session-attach.

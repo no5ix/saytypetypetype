@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -19,10 +18,6 @@ use super::{emit_hint, is_current_epoch};
 /// PCM chunk size (samples) fed to the ASR session when replaying a stored
 /// recording. Matches the live capture chunk size.
 const RETRY_CHUNK_SIZE: usize = 1600;
-
-/// Delay before pasting a retried transcription so the OS has time to hand
-/// focus back to the window the user was in.
-const FOCUS_RESTORE_DELAY_MS: u64 = 150;
 
 pub(crate) async fn retry_history_transcription(
     app_handle: AppHandle,
@@ -56,7 +51,6 @@ async fn fail_retry(
     );
     *app_inner.current_failure_ts.lock().await = Some(failure_ts);
     overlay::emit_retryable_error_hint(app_handle, app_inner, message).await;
-    overlay::set_overlay_retry_interaction(app_handle, true);
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
     overlay::schedule_retry_overlay_hide(app_handle.clone(), Arc::clone(app_inner));
 }
@@ -83,7 +77,6 @@ async fn retry_history_transcription_inner(
         return Err("录音文件为空，无法重试".to_string());
     }
 
-    overlay::set_overlay_retry_interaction(&app_handle, false);
     set_app_state(&app_handle, &app_inner, app_state::AppState::Finishing).await;
     // Clear the stale failure hint + old transcript, then show a "retrying"
     // placeholder while the connection is established. The overlay yields this
@@ -152,15 +145,17 @@ async fn retry_history_transcription_inner(
         session.close();
         return Err("重试已取消".to_string());
     }
-    // Hand focus back to the app the user was in before clicking retry, then give
-    // the OS a moment to switch, so the paste keystroke lands in the right window.
-    overlay::restore_foreground_app(&app_handle);
-    tokio::time::sleep(Duration::from_millis(FOCUS_RESTORE_DELAY_MS)).await;
-    finalize::finalize_and_paste(&app_handle, &app_inner, text.clone()).await;
+    let outcome = finalize::finalize_and_paste(&app_handle, &app_inner, text.clone()).await;
     session.close();
     *app_inner.current_failure_ts.lock().await = None;
-    set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-    overlay::hide(&app_handle);
+    if outcome != finalize::FinalizeOutcome::Deferred
+        && !app_inner
+            .feedback_visible
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        overlay::hide(&app_handle);
+    }
     Ok(serde_json::json!({ "ok": true, "text": text }))
 }
 

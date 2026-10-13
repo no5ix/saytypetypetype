@@ -39,6 +39,10 @@ pub enum PolishRetryCommand {
 }
 
 pub struct AppInner {
+    pub overlay_epoch: std::sync::atomic::AtomicU64,
+    pub feedback_visible: std::sync::atomic::AtomicBool,
+    pub recording_hints: Mutex<Option<crate::overlay::shared::RecordingHints>>,
+    pub recording_mode: Mutex<hotkey::HotkeyMode>,
     pub state: Mutex<AppState>,
     pub config_manager: ConfigManager,
     pub hotword_manager: HotwordManager,
@@ -78,7 +82,7 @@ pub struct AppInner {
     pub native_audio: Mutex<Option<crate::recording::NativeAudioCapture>>,
     /// A failed LLM polish awaiting the user's decision. While this is set the
     /// recognized text has NOT been pasted yet: the overlay shows why polishing
-    /// failed, the main hotkey (or retry button) retries, ESC discards the text,
+    /// failed, the main hotkey retries, ESC discards the text,
     /// Enter pastes the raw text immediately, and a timer delivers it
     /// automatically if the user does nothing.
     pub pending_polish: Mutex<Option<PendingPolish>>,
@@ -107,6 +111,10 @@ pub fn create_app_state(
     stats_service: StatsService,
 ) -> AppHandle {
     Arc::new(AppInner {
+        overlay_epoch: std::sync::atomic::AtomicU64::new(0),
+        feedback_visible: std::sync::atomic::AtomicBool::new(false),
+        recording_hints: Mutex::new(None),
+        recording_mode: Mutex::new(hotkey::HotkeyMode::Toggle),
         state: Mutex::new(AppState::Idle),
         config_manager,
         hotword_manager,
@@ -169,6 +177,13 @@ pub(crate) async fn set_app_state(
     app_inner: &Arc<AppInner>,
     next_state: AppState,
 ) {
+    if next_state != AppState::Idle {
+        crate::overlay::invalidate_feedback(app_inner);
+        crate::overlay::emit_shortcuts(app, &[]);
+    }
+    if next_state != AppState::Recording {
+        *app_inner.recording_hints.lock().await = None;
+    }
     *app_inner.state.lock().await = next_state.clone();
     // Reset sound activity so a new session starts with resting bars.
     if next_state != AppState::Recording {

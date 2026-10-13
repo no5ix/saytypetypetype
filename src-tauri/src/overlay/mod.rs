@@ -44,8 +44,25 @@ pub(crate) fn show(app: &AppHandle) {
 }
 
 pub(crate) fn hide(app: &AppHandle) {
+    let expected = app.try_state::<Arc<app_state::AppInner>>().map(|inner| {
+        invalidate_feedback(&inner);
+        inner.overlay_epoch.load(Ordering::SeqCst)
+    });
+    hide_for_epoch(app, expected);
+}
+
+fn hide_for_epoch(app: &AppHandle, expected: Option<u64>) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        if let Some(inner) = handle.try_state::<Arc<app_state::AppInner>>() {
+            if let Some(epoch) = expected {
+                if inner.overlay_epoch.load(Ordering::SeqCst) != epoch {
+                    return;
+                }
+            }
+            invalidate_feedback(&inner);
+        }
+        emit_shortcuts(&handle, &[]);
         let generation = VISIBILITY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         #[cfg(target_os = "macos")]
         macos::animate_visibility(&handle, false);
@@ -82,23 +99,6 @@ pub(crate) fn complete_hide(app: &AppHandle, generation: u64) {
 pub fn handle_event(app: &AppHandle, event: &serde_json::Value) {
     #[cfg(target_os = "macos")]
     macos::dispatch(app, event);
-}
-
-/// Remember the app the user is currently working in, so we can hand keyboard
-/// focus back to it after a retry (clicking the native retry button activates the
-/// overlay, which would otherwise swallow the paste). No-op off macOS.
-#[allow(unused_variables)]
-pub fn capture_foreground_app(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    macos::capture_foreground_app(app);
-}
-
-/// Reactivate the app captured by [`capture_foreground_app`] so the subsequent
-/// paste lands in the window the user was in. No-op off macOS.
-#[allow(unused_variables)]
-pub fn restore_foreground_app(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    macos::restore_foreground_app(app);
 }
 
 /// Create the overlay window in code. tauri.conf.json declares it with
@@ -182,16 +182,133 @@ pub(crate) fn position_overlay(app_handle: &AppHandle) {
     }
 }
 
-pub(crate) fn set_overlay_retry_interaction(app_handle: &AppHandle, enabled: bool) {
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.set_ignore_cursor_events(!enabled);
+pub(crate) fn invalidate_feedback(inner: &app_state::AppInner) {
+    inner.overlay_epoch.fetch_add(1, Ordering::SeqCst);
+    inner.feedback_visible.store(false, Ordering::SeqCst);
+}
+
+pub(crate) fn emit_shortcuts(app: &AppHandle, shortcuts: &[shared::Shortcut]) {
+    let _ = app.emit(
+        "overlay:event",
+        serde_json::json!({
+            "type": "shortcuts", "payload": { "shortcuts": shortcuts }
+        }),
+    );
+}
+
+pub(crate) async fn begin_recording_hints(app: &AppHandle, inner: &app_state::AppInner) {
+    let config = inner.config_manager.load_config().ok();
+    let hotkey = hotkey::current_hotkey_label(&app.state::<Arc<app_state::AppInner>>()).await;
+    let prompts = inner.config_manager.load_prompts();
+    let selected = select_hint_prompt(
+        &prompts,
+        config
+            .as_ref()
+            .and_then(|c| c.app.last_polish_prompt_id.as_deref()),
+        config.as_ref().and_then(|c| c.app.hotkey.as_str()),
+    );
+    let mut shortcuts = vec![shared::Shortcut::new("Esc", "取消")];
+    if !hotkey.is_empty() {
+        shortcuts.push(shared::Shortcut::new(hotkey, "结束"));
     }
-    if enabled {
-        // The user's app is still frontmost here; remember it so a successful retry
-        // can return focus before pasting (clicking the retry button activates the
-        // overlay otherwise). Self-capture is filtered out inside the helper.
-        capture_foreground_app(app_handle);
+    if let Some(prompt) = selected {
+        shortcuts.push(shared::Shortcut::new(
+            hotkey::format_hotkey_label(&prompt.hotkey),
+            "文本润色",
+        ));
     }
+    *inner.recording_hints.lock().await = Some(shared::RecordingHints {
+        toggle: *inner.recording_mode.lock().await == hotkey::HotkeyMode::Toggle,
+        shortcuts,
+        last_signal: std::time::Instant::now(),
+        shown: false,
+    });
+}
+
+fn select_hint_prompt<'a>(
+    prompts: &'a [crate::config::PromptItem],
+    recent: Option<&str>,
+    main_hotkey: Option<&str>,
+) -> Option<&'a crate::config::PromptItem> {
+    let main_keys = main_hotkey.and_then(hotkey::parse_hotkey_string);
+    let eligible = |(index, p): &(usize, &crate::config::PromptItem)| {
+        let Some(keys) = hotkey::parse_hotkey_string(&p.hotkey) else {
+            return false;
+        };
+        p.hotkey_mode != "hold"
+            && main_keys.as_ref() != Some(&keys)
+            && !prompts[..*index]
+                .iter()
+                .any(|earlier| hotkey::parse_hotkey_string(&earlier.hotkey).as_ref() == Some(&keys))
+    };
+    let candidates = || {
+        prompts
+            .iter()
+            .enumerate()
+            .filter(eligible)
+            .map(|(_, prompt)| prompt)
+    };
+    candidates()
+        .find(|p| Some(p.id.as_str()) == recent)
+        .or_else(|| candidates().next())
+}
+
+pub(crate) async fn show_restart_error(
+    app: &AppHandle,
+    inner: &Arc<app_state::AppInner>,
+    text: &str,
+) {
+    app_state::set_app_state(app, inner, app_state::AppState::Idle).await;
+    emit_retryable_error_hint(app, inner, text).await;
+    show(app);
+    schedule_retry_overlay_hide(app.clone(), Arc::clone(inner));
+}
+
+pub(crate) async fn show_output_error(
+    app: &AppHandle,
+    inner: &Arc<app_state::AppInner>,
+    text: &str,
+) {
+    log_rec!(error, "Text output failed: {}", text);
+    app_state::set_app_state(app, inner, app_state::AppState::Idle).await;
+    invalidate_feedback(inner);
+    inner.feedback_visible.store(true, Ordering::SeqCst);
+    let _ = app.emit(
+        "overlay:event",
+        serde_json::json!({
+            "type": "hint", "payload": { "text": text, "level": "error", "variant": "text" }
+        }),
+    );
+    emit_shortcuts(app, &[shared::Shortcut::new("Esc", "取消")]);
+    show(app);
+    schedule_retry_overlay_hide(app.clone(), Arc::clone(inner));
+}
+
+pub(crate) async fn show_success(
+    app: &AppHandle,
+    inner: &Arc<app_state::AppInner>,
+    keep_clipboard: bool,
+) {
+    app_state::set_app_state(app, inner, app_state::AppState::Idle).await;
+    invalidate_feedback(inner);
+    inner.feedback_visible.store(true, Ordering::SeqCst);
+    emit_shortcuts(app, &[]);
+    let _ = app.emit(
+        "overlay:event",
+        serde_json::json!({
+            "type": "hint", "payload": {
+                "text": if keep_clipboard { "已保存到剪切板" } else { "" },
+                "level": "info", "variant": "success"
+            }
+        }),
+    );
+    show(app);
+    let epoch = inner.overlay_epoch.load(Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        hide_for_epoch(&app, Some(epoch));
+    });
 }
 
 /// Emit a retryable error hint, tagged with the main hotkey label so the overlay
@@ -201,6 +318,8 @@ pub(crate) async fn emit_retryable_error_hint(
     app_inner: &Arc<app_state::AppInner>,
     text: &str,
 ) {
+    invalidate_feedback(app_inner);
+    app_inner.feedback_visible.store(true, Ordering::SeqCst);
     let hotkey = hotkey::current_hotkey_label(app_inner).await;
     let _ = app.emit(
         "overlay:event",
@@ -215,31 +334,44 @@ pub(crate) async fn emit_retryable_error_hint(
             }
         }),
     );
+    emit_shortcuts(app, &error_shortcuts(&hotkey, false));
 }
 
-/// Emit a polish decision-window hint: the error headline plus the `actions`
-/// line the overlay renders underneath (e.g. "Fn 重试 · Esc 丢弃 · Enter 输出原文").
+fn error_shortcuts(hotkey: &str, polish: bool) -> Vec<shared::Shortcut> {
+    let mut shortcuts = Vec::new();
+    if !hotkey.is_empty() {
+        shortcuts.push(shared::Shortcut::new(hotkey, "重试"));
+    }
+    shortcuts.push(shared::Shortcut::new("Esc", "取消"));
+    if polish {
+        shortcuts.push(shared::Shortcut::new("Enter", "输出原文"));
+    }
+    shortcuts
+}
+
+/// Show a polish failure with explicit timeout wording and keyboard actions above it.
 pub(crate) async fn emit_polish_decision_hint(
     app: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
     text: &str,
-    actions: &str,
 ) {
+    invalidate_feedback(app_inner);
+    app_inner.feedback_visible.store(true, Ordering::SeqCst);
     let hotkey = hotkey::current_hotkey_label(app_inner).await;
     let _ = app.emit(
         "overlay:event",
         serde_json::json!({
             "type": "hint",
             "payload": {
-                "text": text,
+                "text": format!("{}\n5 秒后输出原文", text),
                 "level": "error",
                 "variant": "text",
                 "retryable": true,
-                "hotkey": hotkey,
-                "actions": actions
+                "hotkey": hotkey
             }
         }),
     );
+    emit_shortcuts(app, &error_shortcuts(&hotkey, true));
 }
 
 pub(crate) fn schedule_retry_overlay_hide(
@@ -249,19 +381,26 @@ pub(crate) fn schedule_retry_overlay_hide(
     // While the retry is shown (idle), keep ESC live so it can dismiss the failure.
     // set_app_state(Idle) just disabled it, so re-enable it here.
     set_escape_enabled_now(&app_handle, true);
+    let epoch = app_inner.overlay_epoch.load(Ordering::SeqCst);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let still_idle = {
-            let s = app_inner.state.lock().await;
-            matches!(*s, app_state::AppState::Idle)
-        };
-        if still_idle {
-            // The retry affordance is gone once the overlay hides, so drop the
-            // pending failure: the hotkey reverts to starting a new recording.
-            *app_inner.current_failure_ts.lock().await = None;
-            set_escape_enabled_now(&app_handle, false);
-            set_overlay_retry_interaction(&app_handle, false);
-            hide(&app_handle);
+        let still_idle = matches!(*app_inner.state.lock().await, app_state::AppState::Idle);
+        if still_idle && app_inner.overlay_epoch.load(Ordering::SeqCst) == epoch {
+            let mut failure = app_inner.current_failure_ts.lock().await;
+            if app_inner.overlay_epoch.load(Ordering::SeqCst) != epoch {
+                return;
+            }
+            *failure = None;
+            drop(failure);
+            let handle = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                if app_inner.overlay_epoch.load(Ordering::SeqCst) != epoch {
+                    return;
+                }
+                // The timer belongs to this error; a later retry/new session invalidates it.
+                set_escape_enabled_now(&handle, false);
+                hide_for_epoch(&handle, Some(epoch));
+            });
         }
     });
 }
@@ -329,3 +468,75 @@ pub(crate) fn set_decision_keys_enabled(app: &AppHandle, enabled: bool) {
 /// the overlay window's content view, above the transparent WebView.
 #[cfg(target_os = "macos")]
 mod macos;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn prompt(id: &str, key: &str, mode: &str) -> crate::config::PromptItem {
+        serde_json::from_value(serde_json::json!({ "id": id, "hotkey": key, "hotkey_mode": mode }))
+            .unwrap()
+    }
+    #[test]
+    fn recent_hint_template_falls_back_to_first_usable_binding() {
+        let prompts = vec![
+            prompt("no-key", "", "toggle"),
+            prompt("hold", "ControlLeft", "hold"),
+            prompt("first", "F14", "toggle"),
+            prompt("recent", "F15", "toggle"),
+        ];
+        assert_eq!(
+            select_hint_prompt(&prompts, Some("recent"), Some("F13"))
+                .unwrap()
+                .id,
+            "recent"
+        );
+        assert_eq!(
+            select_hint_prompt(&prompts, Some("deleted"), Some("F13"))
+                .unwrap()
+                .id,
+            "first"
+        );
+        assert_eq!(
+            select_hint_prompt(&prompts, Some("hold"), Some("F13"))
+                .unwrap()
+                .id,
+            "first"
+        );
+        assert!(select_hint_prompt(&prompts[..2], None, Some("F13")).is_none());
+    }
+    #[test]
+    fn hint_template_cannot_claim_another_bindings_shortcut() {
+        let prompts = vec![
+            prompt("main-conflict", "F13", "toggle"),
+            prompt("first", "F14", "toggle"),
+            prompt("duplicate", "F14", "toggle"),
+        ];
+        assert_eq!(
+            select_hint_prompt(&prompts, Some("main-conflict"), Some("F13"))
+                .unwrap()
+                .id,
+            "first"
+        );
+        assert_eq!(
+            select_hint_prompt(&prompts, Some("duplicate"), Some("F13"))
+                .unwrap()
+                .id,
+            "first"
+        );
+    }
+    #[test]
+    fn error_actions_only_offer_raw_output_for_polish() {
+        assert_eq!(
+            error_shortcuts("Fn", false)
+                .iter()
+                .map(|s| s.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["重试", "取消"]
+        );
+        assert_eq!(error_shortcuts("Fn", true).last().unwrap().key, "Enter");
+        assert_eq!(
+            error_shortcuts("", false),
+            vec![shared::Shortcut::new("Esc", "取消")]
+        );
+    }
+}
