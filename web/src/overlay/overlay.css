@@ -141,3 +141,24 @@ html[data-overlay-theme="light"] .shortcut-row {
     background: rgba(230, 230, 230, 0.82);
   }
 }
+
+/* The flex layout fixes the bottom midpoint; only the inner surface resizes. */
+.overlay-group {
+  --resize-duration: 200ms;
+  transition: width var(--resize-duration) ease-out;
+  transform-origin: center bottom;
+}
+.overlay-group[data-resizing="recording"] {
+  --resize-duration: 140ms;
+}
+.overlay-group .pill {
+  transition:
+    height var(--resize-duration) ease-out,
+    border-radius var(--resize-duration) ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay-group,
+  .overlay-group .pill {
+    transition: none;
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { OverlayLayoutMetrics } from "@/overlay/bridge";
 import type { AppState } from "./types";
 
@@ -40,6 +40,43 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
   const renderedWidthRef = useRef(0);
   const rafRef = useRef(0);
   const [wrap, setWrap] = useState(false);
+  const [targetWidth, setTargetWidth] = useState(0);
+
+  // Measure the final layout outside the animated element. Reading its current
+  // scrollWidth during a transition would mistake the narrower frame for overflow.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: content and wrapping change the measured DOM height even when width is unchanged
+  useLayoutEffect(() => {
+    const group = pillRef.current;
+    const surface = group?.querySelector<HTMLElement>(".pill");
+    if (!group || !surface || !targetWidth) return;
+    const measure = surface.cloneNode(true) as HTMLElement;
+    Object.assign(measure.style, {
+      position: "fixed",
+      left: "-9999px",
+      visibility: "hidden",
+      width: `${targetWidth}px`,
+      height: "auto",
+      minHeight: `${input.metrics.pill_h_single}px`,
+      transition: "none",
+      animation: "none",
+    });
+    measure.setAttribute("aria-hidden", "true");
+    group.appendChild(measure);
+    const height = Math.ceil(measure.getBoundingClientRect().height);
+    measure.remove();
+    if (height > 0) surface.style.height = `${height}px`;
+    group.dataset.resizing = input.appState === "recording" ? "recording" : "state";
+  }, [
+    targetWidth,
+    wrap,
+    input.finalText,
+    input.partialText,
+    input.visibleHintText,
+    input.showIcon,
+    input.hintLevel,
+    input.appState,
+    input.metrics,
+  ]);
 
   useEffect(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -62,7 +99,9 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
               input.hintLevel !== "error"
             ? m.wave_area_w
             : 0;
-        pill.style.width = `${m.pad_left + indicator + m.pad_right}px`;
+        const width = m.pad_left + indicator + m.pad_right;
+        pill.style.width = `${width}px`;
+        setTargetWidth(width);
         renderedWidthRef.current = 0;
         layoutWidthRef.current = 0;
         layoutWrapRef.current = false;
@@ -114,21 +153,11 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
       }
       setWrap(layoutWrapRef.current);
 
-      let width = layoutWidthRef.current || nextWidth;
+      const width = layoutWidthRef.current || nextWidth;
       if (width !== renderedWidthRef.current) {
         renderedWidthRef.current = width;
         pill.style.width = `${width}px`;
-      }
-
-      // Recover any sub-pixel overflow the estimate missed (single-line only).
-      if (!layoutWrapRef.current && !shouldMeasureHintOnly && transcriptRef.current) {
-        const overflow = transcriptRef.current.scrollWidth - transcriptRef.current.clientWidth;
-        if (overflow > 0) {
-          width += overflow + 6;
-          layoutWidthRef.current = Math.max(layoutWidthRef.current || 0, width);
-          renderedWidthRef.current = width;
-          pill.style.width = `${width}px`;
-        }
+        setTargetWidth(width);
       }
     });
     return () => {

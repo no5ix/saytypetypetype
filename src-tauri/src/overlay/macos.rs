@@ -12,7 +12,8 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
     NSSize, NSString,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 // Layout constants, Model, and derived-state logic come from the
@@ -76,12 +77,15 @@ struct Views {
     bars: [WaveBar; WAVE_N],
     icon_layer: Retained<AnyObject>,
     fade_mask: Retained<AnyObject>, // CAGradientLayer for the multi-line top fade
-    applied_variant: String,        // "" (auto/inherit) | "light" | "dark"
+    resize: Option<Resize>,
+    radius: f64,
+    applied_variant: String, // "" (auto/inherit) | "light" | "dark"
 }
 
 thread_local! {
     static MODEL: RefCell<Model> = RefCell::new(Model::default());
     static VIEWS: RefCell<Option<Views>> = const { RefCell::new(None) };
+    static RESIZE_TICK_PENDING: Cell<bool> = const { Cell::new(false) };
     static WAVE_ACTIVE: RefCell<bool> = const { RefCell::new(false) };
 }
 
@@ -557,11 +561,11 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             shortcuts_height.clone(),
             shortcuts_root.bottomAnchor().constraintEqualToAnchor_constant(&host.topAnchor(), -16.0),
             pivot.centerXAnchor().constraintEqualToAnchor(&host.centerXAnchor()),
-            pivot.centerYAnchor().constraintEqualToAnchor(&host.centerYAnchor()),
+            pivot.bottomAnchor().constraintEqualToAnchor(&host.bottomAnchor()),
             pivot.widthAnchor().constraintEqualToConstant(0.0),
             pivot.heightAnchor().constraintEqualToConstant(0.0),
             glass.view().centerXAnchor().constraintEqualToAnchor(&pivot.centerXAnchor()),
-            glass.view().centerYAnchor().constraintEqualToAnchor(&pivot.centerYAnchor()),
+            glass.view().bottomAnchor().constraintEqualToAnchor(&pivot.bottomAnchor()),
             glass.view().widthAnchor().constraintEqualToAnchor(&host.widthAnchor()),
             glass.view().heightAnchor().constraintEqualToAnchor(&host.heightAnchor()),
         ]));
@@ -591,6 +595,8 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             bars,
             icon_layer,
             fade_mask: make_fade_mask(),
+            resize: None,
+            radius: PILL_H_SINGLE / 2.0,
             applied_variant: "<unset>".into(),
         });
     });
@@ -1079,6 +1085,84 @@ fn hint_color(level: &str) -> Retained<NSColor> {
     }
 }
 
+// Resize real views each frame so AppKit also lays out its internal glass and
+// text drawing layers. Animating only their backing layers leaves those internals
+// at the destination size and makes the visible surface drift.
+struct Resize {
+    from: (NSSize, f64),
+    to: (NSSize, f64),
+    started: Instant,
+    duration: f64,
+}
+
+impl Resize {
+    fn frame(&self, now: Instant) -> (NSSize, f64) {
+        let t = (now.duration_since(self.started).as_secs_f64() / self.duration).min(1.0);
+        let progress = 1.0 - (1.0 - t).powi(3);
+        let lerp = |from: f64, to: f64| from + (to - from) * progress;
+        (
+            NSSize {
+                width: lerp(self.from.0.width, self.to.0.width),
+                height: lerp(self.from.0.height, self.to.0.height),
+            },
+            lerp(self.from.1, self.to.1),
+        )
+    }
+}
+
+fn resize_frame(views: &mut Views, size: NSSize, radius: f64, duration: f64) -> (NSSize, f64) {
+    let now = Instant::now();
+    // Retarget from the last frame actually laid out, not an extrapolated frame.
+    let current = (
+        NSSize {
+            width: views.width_constraint.constant(),
+            height: views.height_constraint.constant(),
+        },
+        views.radius,
+    );
+    let target = (size, radius);
+    if duration == 0.0 {
+        views.resize = None;
+        return target;
+    }
+    if views
+        .resize
+        .as_ref()
+        .map(|resize| resize.to)
+        .unwrap_or(current)
+        != target
+    {
+        views.resize = Some(Resize {
+            from: current,
+            to: target,
+            started: now,
+            duration,
+        });
+    }
+    if let Some(resize) = &views.resize {
+        if now.duration_since(resize.started).as_secs_f64() < resize.duration {
+            return resize.frame(now);
+        }
+        views.resize = None;
+    }
+    target
+}
+
+fn schedule_resize_tick(app: &AppHandle) {
+    if RESIZE_TICK_PENDING.with(|pending| pending.replace(true)) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(16)).await;
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            RESIZE_TICK_PENDING.with(|pending| pending.set(false));
+            MODEL.with(|model| render(&handle, &mut model.borrow_mut()));
+        });
+    });
+}
+
 /// The core render: choose content, measure, size the pill, lay out subviews,
 /// position bottom-center. Parallels app.js updateView + scheduleResize.
 fn render(app: &AppHandle, model: &mut Model) {
@@ -1106,6 +1190,12 @@ fn render(app: &AppHandle, model: &mut Model) {
         let mut slot = v.borrow_mut();
         let Some(views) = slot.as_mut() else {
             return;
+        };
+
+        let animate = unsafe {
+            let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let reduced: bool = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+            ns_window.isVisible() && !views.glass.view().isHidden() && !reduced
         };
 
         // Appearance baseline (light/dark/auto) set on the window environment.
@@ -1246,7 +1336,31 @@ fn render(app: &AppHandle, model: &mut Model) {
             (PILL_H_SINGLE, one_line_h, one_line_h)
         };
 
-        // Geometry updates immediately; only visibility uses fade animations.
+        let target_radius = if model.layout_wrap || model.hint_level == "error" {
+            16.0
+        } else {
+            pill_h / 2.0
+        };
+        let duration = if !animate {
+            0.0
+        } else if model.app_state == "recording" {
+            0.14
+        } else {
+            0.2
+        };
+        let (size, radius) = resize_frame(
+            views,
+            NSSize {
+                width: pill_w,
+                height: pill_h,
+            },
+            target_radius,
+            duration,
+        );
+        let pill_w = size.width;
+        let pill_h = size.height;
+        let text_area_w = (pill_w - chrome).max(10.0);
+        views.radius = radius;
         unsafe {
             let _: () = msg_send![class!(NSAnimationContext), beginGrouping];
             let ctx: *mut AnyObject = msg_send![class!(NSAnimationContext), currentContext];
@@ -1256,15 +1370,6 @@ fn render(app: &AppHandle, model: &mut Model) {
         views.width_constraint.setConstant(pill_w);
         views.height_constraint.setConstant(pill_h);
         content.layoutSubtreeIfNeeded();
-        unsafe {
-            let host_layer: *mut AnyObject = msg_send![&*views.host, layer];
-            let _: () = msg_send![host_layer, layoutIfNeeded];
-        }
-        let radius = if model.layout_wrap || model.hint_level == "error" {
-            16.0
-        } else {
-            pill_h / 2.0
-        };
         match &views.glass {
             GlassKind::Liquid(g) => {
                 // Style may change live between Clear and Regular without recreating.
@@ -1283,9 +1388,6 @@ fn render(app: &AppHandle, model: &mut Model) {
             },
         };
         views.container.setFrame(container_bounds);
-        unsafe {
-            let _: () = msg_send![class!(NSAnimationContext), endGrouping];
-        }
         // Top fade only when the transcript actually overflows the visible lines.
         let faded = model.layout_wrap && full_h > visible_text_h + 1.0;
         apply_top_fade(&views.container, &views.fade_mask, faded, container_bounds);
@@ -1331,6 +1433,17 @@ fn render(app: &AppHandle, model: &mut Model) {
 
         let wave_active = WAVE_ACTIVE.with(|w| *w.borrow());
         layout_bars(views, pill_h, wave_active, show_wave);
+        if show_wave && !has_text && !has_hint {
+            for (i, bar) in views.bars.iter().enumerate() {
+                let mut frame = bar.view.frame();
+                frame.origin.x =
+                    (pill_w - WAVE_AREA_W) / 2.0 + i as f64 * (WAVE_BAR_W + WAVE_BAR_GAP);
+                bar.view.setFrame(frame);
+            }
+        }
+        unsafe {
+            let _: () = msg_send![class!(NSAnimationContext), endGrouping];
+        }
 
         // Hint-text pulse (a gentle breathing opacity) for connecting/润色/重试/
         // 重连/录制中提示; off for transcript text, errors, and idle.
@@ -1347,5 +1460,19 @@ fn render(app: &AppHandle, model: &mut Model) {
         );
         let empty = !has_hint && !has_text && !active && !success;
         views.glass.view().setHidden(empty);
+        unsafe {
+            let layer: *mut AnyObject = msg_send![&*content, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, layoutIfNeeded];
+            }
+        }
     });
+    if VIEWS.with(|views| {
+        views
+            .borrow()
+            .as_ref()
+            .is_some_and(|views| views.resize.is_some())
+    }) {
+        schedule_resize_tick(app);
+    }
 }

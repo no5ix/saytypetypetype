@@ -94,6 +94,47 @@ describe("overlay presentation", () => {
     expect(container.querySelector(".pill")?.getAttribute("data-wrap")).toBe("single");
     expect(container.querySelector(".pill")?.textContent).toBe("");
   });
+  it("measures multiline height at the target width and ignores animated overflow", () => {
+    let measuredHeight = 40;
+    const widths: number[] = [];
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("pill")) {
+        widths.push(Number.parseFloat(this.style.width));
+        return { width: Number.parseFloat(this.style.width), height: measuredHeight } as DOMRect;
+      }
+      return { width: (this.textContent?.length || 0) * 14 } as DOMRect;
+    });
+    // A transitioning transcript can report large overflow at its current width.
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(5000);
+    const { container } = render(<OverlayApp />);
+    const group = container.querySelector<HTMLElement>(".overlay-group");
+    const surface = container.querySelector<HTMLElement>(".pill");
+    if (!group || !surface) throw new Error("Overlay surface missing");
+    emit("state", { state: "recording" });
+    emit("transcript", { finalText: "长".repeat(50) });
+    measuredHeight = 56;
+    flushLayout();
+    expect(group.style.width).toBe("586px");
+    expect(surface.style.height).toBe("56px");
+    // Text can add another line without changing the locked width.
+    measuredHeight = 74;
+    emit("transcript", { finalText: "长".repeat(100) });
+    flushLayout();
+    expect(group.style.width).toBe("586px");
+    expect(surface.style.height).toBe("74px");
+    measuredHeight = 40;
+    emit("hint", { variant: "success", text: "" });
+    flushLayout();
+    expect(container.querySelector(".overlay-group")).toBe(group);
+    expect(container.querySelector(".pill")).toBe(surface);
+    expect(group.style.width).toBe("48px");
+    expect(surface.style.height).toBe("40px");
+    expect(widths.at(-1)).toBe(48);
+    expect(container.querySelector('[aria-hidden="true"].pill')).toBeNull();
+  });
+
   it("renders error shortcuts above the pill without retry buttons or countdowns", () => {
     const { container } = render(<OverlayApp />);
     emit("hint", { level: "error", text: "API Key 无效\n5 秒后输出原文" });
