@@ -15,8 +15,9 @@ web/
 │   │   ├── index.tsx             #   OverlayApp root: state + layout + pill
 │   │   ├── bridge.ts             #   Overlay IPC wrappers (events + retry)
 │   │   ├── types.ts              #   OverlayState / AppState / HintLevel
-│   │   ├── useOverlayState.ts    #   overlay:event → reducer; audio:level → bars
+│   │   ├── useOverlayState.ts    #   overlay:event → reducer; audio:level → sound activity
 │   │   ├── useOverlayLayout.ts   #   measureText → pill width + wrap
+│   │   ├── Waveform.tsx          #   Local animation gated by sound activity
 │   │   └── overlay.css           #   Overlay-only styles (spin/ring/pulse)
 │   ├── settings/                 # Settings React app
 │   │   ├── index.tsx             #   Root mount (createRoot)
@@ -75,18 +76,18 @@ SettingsApp
 
 ### Overlay Window (React, Windows only)
 
-The overlay is a React app rooted at `web/src/overlay/index.tsx` (`OverlayApp`), used only on Windows. On macOS the overlay is a WebView-less native Window whose pill is rendered by `overlay/macos.rs` (see [Architecture](./architecture.md)). Audio is captured in the backend (cpal); the renderer only paints text, the retry affordance, and a waveform whose per-bar heights the backend pre-computes and ships inside the `audio:level` event.
+The overlay is a React app rooted at `web/src/overlay/index.tsx` (`OverlayApp`), used only on Windows. On macOS the overlay is a WebView-less native Window whose pill is rendered by `overlay/macos.rs` (see [Architecture](./architecture.md)). Audio is captured in the backend (cpal); the renderer only paints text, the retry affordance, and a waveform animated locally from the backend sound-activity flag (`audio:level`, payload `{ active: boolean }`). Sound detection uses the same raw PCM peak/RMS gate as recording validation; animation dimensions and timing come from shared layout metrics.
 
 ```
 OverlayApp  (web/src/overlay/index.tsx)
 ├── useOverlayState   (overlay:event reducer: reset/state/transcript/hint;
-│                      audio:level → waveHeights[]; retry auto-hide 5s)
+│                      audio:level → waveActive; retry auto-hide 5s)
 ├── useOverlayLayout  (measureText → pill width + single/multi wrap)
 ├── getOverlayLayoutMetrics()  (fetch shared::LayoutMetrics from backend on mount)
 └── pill  (data-wrap drives single-line vs multi-line CSS)
     ├── indicator   (spinner while connecting/finishing; red dot on error;
     │                hidden while recording — the waveform takes its slot)
-    ├── waveform    (4 fixed bars, scaleY from backend heights)
+    ├── waveform    (4 centered rounded bars, local height animation gated by sound activity)
     ├── body        (transcript final+partial OR hint text — mutually exclusive)
     └── retry button (error + retryable only; calls retryLatestFailedTranscription)
 ```
@@ -159,7 +160,7 @@ sequenceDiagram
     BE->>Mic: cpal input stream (16kHz, mono, f32)
     loop Every chunk (~100ms / 1600 samples)
         Mic->>BE: f32 samples
-        BE->>BE: compute_audio_level → emit overlay:event (audio:level)
+        BE->>BE: detect sound activity → emit overlay:event (audio:level)
         BE->>ASR: session.append_audio(samples)
         ASR-->>BE: AsrEvent::Transcript
         BE->>FE: emit overlay:event (transcript / audio:level)

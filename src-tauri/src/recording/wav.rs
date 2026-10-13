@@ -95,9 +95,17 @@ pub fn recording_has_audio_signal(samples: &[f32]) -> bool {
         return false;
     }
     let tail = &samples[CUE_SKIP..];
-    let peak = tail.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
-    let rms = (tail.iter().map(|&s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
-    // A quiet mic noise floor sits well below these; speech clears both easily.
+    audio_chunk_has_signal(tail)
+}
+
+/// Raw PCM gate shared by recording validation and the overlay sound detector.
+/// Unlike a VAD probability or display loudness, these values are amplitudes.
+pub(crate) fn audio_chunk_has_signal(samples: &[f32]) -> bool {
+    if samples.is_empty() {
+        return false;
+    }
+    let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    let rms = (samples.iter().map(|&s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
     peak >= 0.02 && rms >= 0.004
 }
 

@@ -3,8 +3,8 @@
 //! Single source of truth shared by the macOS native renderer (`overlay.rs`
 //! macos module, which imports these directly) and the event emitters. The
 //! Windows WebView fetches the layout constants via `get_overlay_layout_metrics`
-//! and receives derived values (`waveHeights`) inside event payloads, so the two
-//! renderers are driven by the same numbers instead of hand-mirrored copies.
+//! and receives sound activity inside event payloads. Both renderers animate
+//! locally using the same waveform timing and height constants.
 
 // --- Layout constants (logical px). The macOS renderer imports these directly;
 // the Windows WebView receives them via get_overlay_layout_metrics. ---
@@ -36,31 +36,35 @@ pub const RETRY_GAP_LEFT: f64 = 8.0;
 #[cfg(target_os = "macos")]
 pub const RETRY_RIGHT_INSET: f64 = 26.0;
 
-// --- Waveform (4 bars, right side, recording only) ---
+// --- Waveform (4 bars in the indicator slot, recording only) ---
 pub const WAVE_N: usize = 4;
-pub const WAVE_BAR_W: f64 = 3.0;
+pub const WAVE_BAR_W: f64 = 4.0;
 pub const WAVE_BAR_GAP: f64 = 2.0;
-pub const WAVE_AREA_W: f64 = WAVE_BAR_W * WAVE_N as f64 + WAVE_BAR_GAP * (WAVE_N - 1) as f64; // 18
-pub const WAVE_GAP_LEFT: f64 = 12.0;
+pub const WAVE_AREA_W: f64 = WAVE_BAR_W * WAVE_N as f64 + WAVE_BAR_GAP * (WAVE_N - 1) as f64; // 22
 pub const WAVE_MAX_H: f64 = 22.0;
-pub const WAVE_MIN_H: f64 = 3.0;
-/// Smoothing factor applied to the raw mic level before deriving bar heights.
-pub const WAVE_SMOOTH: f64 = 0.35;
+pub const WAVE_MIN_H: f64 = 4.0;
+pub const WAVE_CORNER_RADIUS: f64 = WAVE_BAR_W / 2.0;
+/// One cycle per bar, in seconds. Different periods keep the bars out of sync.
+pub const WAVE_DURATIONS: [f64; WAVE_N] = [0.85, 0.7, 1.0, 0.8];
+pub const WAVE_PEAKS: [f64; WAVE_N] = [0.65, 1.0, 0.85, 0.55];
+pub const WAVE_SETTLE_SECONDS: f64 = 0.18;
 
-/// Smooth a raw 0..1 mic level (`smoothed` is caller-held state across calls)
-/// and derive the `WAVE_N` per-bar heights — center bars taller via a symmetric
-/// weight. The audio emitter calls this and puts the result in the `audio:level`
-/// payload, so neither renderer re-computes the waveform.
-pub fn wave_heights(smoothed: &mut f64, level: f64) -> [f64; WAVE_N] {
-    *smoothed += (level - *smoothed) * WAVE_SMOOTH;
-    let lvl = smoothed.clamp(0.0, 1.0);
-    let mut out = [WAVE_MIN_H; WAVE_N];
-    for (i, slot) in out.iter_mut().enumerate().take(WAVE_N) {
-        let dist = ((i as f64) - 1.5).abs() / 1.5; // 0 (center) .. 1 (edge)
-        let weight = 1.0 - 0.45 * dist;
-        *slot = WAVE_MIN_H + (WAVE_MAX_H - WAVE_MIN_H) * (lvl * weight).clamp(0.0, 1.0);
+/// Sound activity gates the animation; it never controls its amplitude.
+/// Uses the same raw PCM gate as the recording no-speech check.
+#[derive(Default)]
+pub struct WaveActivity {
+    last_sound: Option<std::time::Instant>,
+}
+
+impl WaveActivity {
+    pub fn update(&mut self, samples: &[f32], now: std::time::Instant) -> bool {
+        if crate::recording::audio_chunk_has_signal(samples) {
+            self.last_sound = Some(now);
+            return true;
+        }
+        self.last_sound
+            .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_millis(300))
     }
-    out
 }
 
 /// Logical overlay state used to derive display text. Parallels the Windows
@@ -144,7 +148,14 @@ pub struct LayoutMetrics {
     pub min_pill_w: f64,
     pub text_slack: f64,
     pub wave_area_w: f64,
-    pub wave_gap_left: f64,
+    pub wave_bar_w: f64,
+    pub wave_bar_gap: f64,
+    pub wave_corner_radius: f64,
+    pub wave_min_h: f64,
+    pub wave_max_h: f64,
+    pub wave_durations: [f64; WAVE_N],
+    pub wave_peaks: [f64; WAVE_N],
+    pub wave_settle_seconds: f64,
     pub retry_size: f64,
     pub retry_gap_left: f64,
 }
@@ -162,7 +173,14 @@ impl LayoutMetrics {
             min_pill_w: MIN_PILL_W,
             text_slack: TEXT_SLACK,
             wave_area_w: WAVE_AREA_W,
-            wave_gap_left: WAVE_GAP_LEFT,
+            wave_bar_w: WAVE_BAR_W,
+            wave_bar_gap: WAVE_BAR_GAP,
+            wave_corner_radius: WAVE_CORNER_RADIUS,
+            wave_min_h: WAVE_MIN_H,
+            wave_max_h: WAVE_MAX_H,
+            wave_durations: WAVE_DURATIONS,
+            wave_peaks: WAVE_PEAKS,
+            wave_settle_seconds: WAVE_SETTLE_SECONDS,
             retry_size: RETRY_SIZE,
             retry_gap_left: RETRY_GAP_LEFT,
         }
@@ -203,28 +221,35 @@ mod tests {
         assert_eq!(visible_hint(&model("idle", "出错了", "text")), "出错了");
     }
 
-    #[test]
-    fn wave_heights_symmetric_and_bounded() {
-        let mut s = 0.0;
-        let h = wave_heights(&mut s, 1.0);
-        // All within [MIN, MAX].
-        assert!(h.iter().all(|&v| (WAVE_MIN_H..=WAVE_MAX_H).contains(&v)));
-        // Symmetric: bar 0 == bar 3, bar 1 == bar 2 (center taller).
-        assert!((h[0] - h[3]).abs() < 1e-9);
-        assert!((h[1] - h[2]).abs() < 1e-9);
-        assert!(h[1] >= h[0]);
+    fn speech() -> Vec<f32> {
+        (0..1600).map(|i| 0.024 * (i as f32 * 0.2).sin()).collect()
     }
 
     #[test]
-    fn wave_heights_smooths_toward_level() {
-        let mut s = 0.0;
-        let first = wave_heights(&mut s, 1.0);
-        // After repeated max input the smoothed value converges upward.
-        for _ in 0..50 {
-            let _ = wave_heights(&mut s, 1.0);
-        }
-        let converged = wave_heights(&mut s, 1.0);
-        assert!(converged[1] > first[1]);
-        assert!(converged[1] <= WAVE_MAX_H + 1e-9);
+    fn wave_activity_rejects_noise_and_isolated_clicks() {
+        let mut activity = WaveActivity::default();
+        let now = std::time::Instant::now();
+        assert!(!activity.update(&[], now));
+        assert!(!activity.update(&[0.0; 1600], now));
+        assert!(!activity.update(&[0.002; 1600], now));
+        // RMS alone is insufficient: low continuous hum must not trigger.
+        assert!(!activity.update(&[0.01; 1600], now));
+        let mut click = [0.0; 1600];
+        click[0] = 0.05;
+        assert!(!activity.update(&click, now));
+        assert!(activity.update(&speech(), now));
+    }
+
+    #[test]
+    fn wave_activity_holds_short_pauses_but_noise_cannot_extend_them() {
+        let mut activity = WaveActivity::default();
+        let now = std::time::Instant::now();
+        assert!(activity.update(&speech(), now));
+        assert!(activity.update(&[0.002; 1600], now + std::time::Duration::from_millis(200)));
+        assert!(!activity.update(&[0.002; 1600], now + std::time::Duration::from_millis(300)));
+        assert!(!activity.update(&[0.002; 1600], now + std::time::Duration::from_millis(500)));
+        assert!(activity.update(&speech(), now + std::time::Duration::from_millis(600)));
+        activity = WaveActivity::default();
+        assert!(!activity.update(&[0.002; 1600], now + std::time::Duration::from_millis(700)));
     }
 }

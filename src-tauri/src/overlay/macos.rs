@@ -23,7 +23,8 @@ use super::shared::{
     visible_hint, Model, BOTTOM_OFFSET, DOT_SIZE, FONT_SIZE, GAP, INDICATOR_W, MAX_LINES,
     MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, RETRY_GAP_LEFT, RETRY_MIN_W,
     RETRY_RIGHT_INSET, RETRY_SIZE, RETRY_TEXT_PAD, SINGLE_LINE_LIMIT, TEXT_SLACK, WAVE_AREA_W,
-    WAVE_BAR_GAP, WAVE_BAR_W, WAVE_MAX_H, WAVE_MIN_H, WAVE_N,
+    WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS, WAVE_DURATIONS, WAVE_MAX_H, WAVE_MIN_H, WAVE_N,
+    WAVE_PEAKS, WAVE_SETTLE_SECONDS,
 };
 
 static RETRY_APP: OnceLock<StdMutex<Option<AppHandle>>> = OnceLock::new();
@@ -75,13 +76,6 @@ pub fn restore_foreground_app(app: &AppHandle) {
     });
 }
 
-// Layout constants, the overlay Model, and `visible_hint` live in `shared`
-// (see `use super::shared::{...}` above) so the macOS renderer and the
-// Windows WebView share one source of truth. Per-render waveform heights are
-// kept in the `WAVE_HEIGHTS` thread-local below — the emitter computes them
-// via `shared::wave_heights` and ships them in the `audio:level` payload, so
-// this renderer no longer smooths/derives bars locally.
-
 enum GlassKind {
     Liquid(Retained<NSGlassEffectView>),
     Vibrancy(Retained<NSVisualEffectView>),
@@ -102,6 +96,11 @@ impl GlassKind {
     }
 }
 
+struct WaveBar {
+    view: Retained<NSView>,
+    layer: Retained<AnyObject>,
+}
+
 /// The retained native view tree (built once, updated per render).
 struct Views {
     glass: GlassKind,
@@ -111,7 +110,7 @@ struct Views {
     label: Retained<NSTextField>,
     /// Smaller muted row under `label` naming the decision keys (ESC/Enter/…).
     actions_label: Retained<NSTextField>,
-    bars: [Retained<NSView>; WAVE_N],
+    bars: [WaveBar; WAVE_N],
     retry_view: Retained<NSView>,
     retry_button: Retained<NSButton>,
     _retry_target: Retained<AnyObject>,
@@ -129,9 +128,7 @@ struct Views {
 thread_local! {
     static MODEL: RefCell<Model> = RefCell::new(Model::default());
     static VIEWS: RefCell<Option<Views>> = const { RefCell::new(None) };
-    /// Latest per-bar waveform heights, pushed by the `audio:level` payload
-    /// and read on every render so bars reflow correctly when the pill resizes.
-    static WAVE_HEIGHTS: RefCell<[f64; WAVE_N]> = const { RefCell::new([WAVE_MIN_H; WAVE_N]) };
+    static WAVE_ACTIVE: RefCell<bool> = const { RefCell::new(false) };
 }
 
 extern "C" fn retry_clicked(_this: *mut AnyObject, _sel: Sel, _sender: *mut AnyObject) {
@@ -199,12 +196,13 @@ pub fn dispatch(app: &AppHandle, event: &serde_json::Value) {
     }
 
     let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    // audio:level carries the emitter-computed per-bar heights
-    // (shared::wave_heights); the native renderer just lays them out — no
-    // local smoothing, no per-bar derivation.
     if kind == "audio:level" {
-        if let Some(heights) = payload_wave_heights(event) {
-            set_wave_heights(app, &heights);
+        if let Some(active) = event
+            .get("payload")
+            .and_then(|p| p.get("active"))
+            .and_then(|v| v.as_bool())
+        {
+            set_wave_activity(app, active);
         }
         return;
     }
@@ -244,7 +242,7 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                 model.retry_hotkey.clear();
                 model.layout_width = 0.0;
                 model.layout_wrap = false;
-                WAVE_HEIGHTS.with(|w| *w.borrow_mut() = [WAVE_MIN_H; WAVE_N]);
+                WAVE_ACTIVE.with(|w| *w.borrow_mut() = false);
             }
             "state" => {
                 if let Some(s) = payload
@@ -264,7 +262,7 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                     }
                     // Collapse the waveform when not actively recording.
                     if s != "recording" {
-                        WAVE_HEIGHTS.with(|w| *w.borrow_mut() = [WAVE_MIN_H; WAVE_N]);
+                        WAVE_ACTIVE.with(|w| *w.borrow_mut() = false);
                     }
                 }
             }
@@ -507,14 +505,28 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         retry_view.setHidden(true);
         container.addSubview(&retry_view);
 
-        // Waveform bars (right side), green and rounded; positioned per render.
-        let bars: [Retained<NSView>; WAVE_N] = std::array::from_fn(|_| {
-            let b = NSView::new(mtm);
-            b.setWantsLayer(true);
-            set_layer_color(&b, &NSColor::systemGreenColor(), WAVE_BAR_W / 2.0);
-            b.setHidden(true);
-            container.addSubview(&b);
-            b
+        // Each fixed view hosts a capsule layer anchored at its horizontal midline.
+        let bars: [WaveBar; WAVE_N] = std::array::from_fn(|_| unsafe {
+            let view = NSView::new(mtm);
+            view.setWantsLayer(true);
+            let cls = AnyClass::get(c"CALayer").expect("CALayer");
+            let raw: *mut AnyObject = msg_send![cls, new];
+            let layer = Retained::from_raw(raw).expect("wave layer");
+            let _: () = msg_send![&*layer, setAnchorPoint: NSPoint { x: 0.5, y: 0.5 }];
+            let _: () = msg_send![&*layer, setPosition: NSPoint { x: WAVE_BAR_W / 2.0, y: WAVE_MAX_H / 2.0 }];
+            let _: () = msg_send![&*layer, setBounds: NSRect {
+                origin: NSPoint { x: 0.0, y: 0.0 },
+                size: NSSize { width: WAVE_BAR_W, height: WAVE_MIN_H },
+            }];
+            let _: () = msg_send![&*layer, setCornerRadius: WAVE_CORNER_RADIUS];
+            let color = NSColor::colorWithSRGBRed_green_blue_alpha(76.0 / 255.0, 210.0 / 255.0, 142.0 / 255.0, 1.0);
+            let cg: *mut AnyObject = msg_send![&*color, CGColor];
+            let _: () = msg_send![&*layer, setBackgroundColor: cg];
+            let parent: *mut AnyObject = msg_send![&*view, layer];
+            let _: () = msg_send![parent, addSublayer: &*layer];
+            view.setHidden(true);
+            container.addSubview(&view);
+            WaveBar { view, layer }
         });
 
         let glass = if want == "liquid" {
@@ -841,10 +853,8 @@ fn set_corner(view: &NSView, radius: f64) {
 
 /// Set a view's frame, animating via Core Animation when `animate` is true so it
 /// grows in lockstep with the pill surface in `render`; instant when false.
-/// Used for glass + container only — the waveform is anchored to a constant x
-/// (left of the pill) and set directly in `layout_bars`, so it deliberately is
-/// NOT animated here (animating it let `audio:level` height updates yank it out
-/// of sync with the still-growing glass, which read as "drift").
+/// Used for glass + container only. Waveform frames stay anchored in the
+/// indicator slot; each capsule animates independently inside its fixed view.
 fn set_frame(view: &NSView, frame: NSRect, animate: bool) {
     if animate {
         unsafe {
@@ -860,67 +870,104 @@ fn set_frame(view: &NSView, frame: NSRect, animate: bool) {
     }
 }
 
-/// Position + size the 4 waveform bars, centered in the indicator slot (LEFT of
-/// the pill) — the waveform replaces the dot during recording. Heights come from
-/// the emitter via `shared::wave_heights` (read back from the `WAVE_HEIGHTS`
-/// thread-local). Hidden unless `show`. The x is a CONSTANT — it does not track
-/// the pill width — so `audio:level` height updates can never shift its position
-/// (no drift while the pill grows).
-fn layout_bars(views: &Views, pill_h: f64, heights: &[f64; WAVE_N], show: bool) {
+/// Fixed bar frames keep the waveform anchored while the pill grows.
+/// Capsule bounds animate around a fixed center, preserving rounded ends.
+fn layout_bars(views: &Views, pill_h: f64, active: bool, show: bool) {
     let area_left = PAD_LEFT + (INDICATOR_W - WAVE_AREA_W) / 2.0;
-    let center_y = pill_h / 2.0;
     for (i, bar) in views.bars.iter().enumerate() {
-        bar.setHidden(!show);
-        if !show {
-            continue;
-        }
-        let h = heights[i].clamp(WAVE_MIN_H, WAVE_MAX_H);
-        let x = area_left + i as f64 * (WAVE_BAR_W + WAVE_BAR_GAP);
-        bar.setFrame(NSRect {
+        bar.view.setHidden(!show);
+        bar.view.setFrame(NSRect {
             origin: NSPoint {
-                x,
-                y: center_y - h / 2.0,
+                x: area_left + i as f64 * (WAVE_BAR_W + WAVE_BAR_GAP),
+                y: (pill_h - WAVE_MAX_H) / 2.0,
             },
             size: NSSize {
                 width: WAVE_BAR_W,
-                height: h,
+                height: WAVE_MAX_H,
             },
         });
+        set_bar_animation(&bar.layer, i, show && active);
     }
 }
 
-/// Parse the `waveHeights` array ([f64; WAVE_N]) out of an `audio:level`
-/// event payload. Returns None if missing or malformed.
-fn payload_wave_heights(event: &serde_json::Value) -> Option<[f64; WAVE_N]> {
-    let arr = event.get("payload")?.get("waveHeights")?.as_array()?;
-    if arr.len() != WAVE_N {
-        return None;
+fn set_bar_animation(layer: &AnyObject, index: usize, active: bool) {
+    unsafe {
+        let key = NSString::from_str("wave-loop");
+        let settle_key = NSString::from_str("wave-settle");
+        let path = NSString::from_str("bounds.size.height");
+        let rest = WAVE_MIN_H;
+        let existing: *mut AnyObject = msg_send![layer, animationForKey: &*key];
+        // Set the model value so cancelling an animation always leaves resting bars.
+        let _: () =
+            msg_send![layer, setValue: &*NSNumber::numberWithDouble(rest), forKeyPath: &*path];
+        if active {
+            if !existing.is_null() {
+                return;
+            }
+            let _: () = msg_send![layer, removeAnimationForKey: &*settle_key];
+            let cls = AnyClass::get(c"CAKeyframeAnimation").expect("CAKeyframeAnimation");
+            let anim: *mut AnyObject = msg_send![cls, animationWithKeyPath: &*path];
+            let peak = WAVE_MAX_H * WAVE_PEAKS[index];
+            let values = NSArray::from_retained_slice(&[
+                NSNumber::numberWithDouble(rest),
+                NSNumber::numberWithDouble(peak),
+                NSNumber::numberWithDouble(peak * 0.45),
+                NSNumber::numberWithDouble(rest),
+            ]);
+            let _: () = msg_send![anim, setValues: &*values];
+            let _: () = msg_send![anim, setDuration: WAVE_DURATIONS[index]];
+            let _: () = msg_send![anim, setRepeatCount: f32::INFINITY];
+            let cls = AnyClass::get(c"CAMediaTimingFunction").expect("CAMediaTimingFunction");
+            let name = NSString::from_str("easeInEaseOut");
+            let timing: *mut AnyObject = msg_send![cls, functionWithName: &*name];
+            let timing = Retained::retain(timing).expect("timing function");
+            let timings = NSArray::from_retained_slice(&[timing.clone(), timing.clone(), timing]);
+            let _: () = msg_send![anim, setTimingFunctions: &*timings];
+            let _: () = msg_send![layer, addAnimation: anim, forKey: &*key];
+        } else if !existing.is_null() {
+            let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+            let value: *mut AnyObject = if presentation.is_null() {
+                std::ptr::null_mut()
+            } else {
+                msg_send![presentation, valueForKeyPath: &*path]
+            };
+            let cls = AnyClass::get(c"CABasicAnimation").expect("CABasicAnimation");
+            let anim: *mut AnyObject = msg_send![cls, animationWithKeyPath: &*path];
+            if !value.is_null() {
+                let _: () = msg_send![anim, setFromValue: value];
+            }
+            let _: () = msg_send![anim, setToValue: &*NSNumber::numberWithDouble(rest)];
+            let _: () = msg_send![anim, setDuration: WAVE_SETTLE_SECONDS];
+            let _: () = msg_send![layer, removeAnimationForKey: &*key];
+            let _: () = msg_send![layer, addAnimation: anim, forKey: &*settle_key];
+        }
     }
-    let mut out = [0.0f64; WAVE_N];
-    for (i, v) in arr.iter().enumerate() {
-        out[i] = v.as_f64()?;
-    }
-    Some(out)
 }
 
-/// Apply a new set of per-bar waveform heights (computed by the emitter via
-/// `shared::wave_heights` and carried in the `audio:level` payload). Caches
-/// them in the `WAVE_HEIGHTS` thread-local and re-lays the bars on the main
-/// thread. No-op unless currently recording.
-pub fn set_wave_heights(app: &AppHandle, heights: &[f64; WAVE_N]) {
-    let app = app.clone();
-    let heights = *heights;
-    let _ = app.clone().run_on_main_thread(move || {
+fn set_wave_activity(app: &AppHandle, active: bool) {
+    let _ = app.run_on_main_thread(move || {
         MODEL.with(|m| {
             let model = m.borrow();
             if model.app_state != "recording" {
                 return;
             }
-            WAVE_HEIGHTS.with(|w| *w.borrow_mut() = heights);
+            let changed = WAVE_ACTIVE.with(|w| {
+                let mut previous = w.borrow_mut();
+                let changed = *previous != active;
+                *previous = active;
+                changed
+            });
+            if !changed {
+                return;
+            }
             VIEWS.with(|v| {
                 if let Some(views) = v.borrow().as_ref() {
-                    let frame = views.glass.view().frame();
-                    layout_bars(views, frame.size.height, &heights, true);
+                    layout_bars(
+                        views,
+                        views.glass.view().frame().size.height,
+                        active,
+                        model.hint_level != "warn",
+                    );
                 }
             });
         });
@@ -1304,10 +1351,8 @@ fn render(app: &AppHandle, model: &mut Model) {
             });
         }
 
-        // Waveform bars (left, beside the indicator), shown only while recording.
-        // Heights come from the WAVE_HEIGHTS thread-local (updated by audio:level).
-        let heights = WAVE_HEIGHTS.with(|w| *w.borrow());
-        layout_bars(views, pill_h, &heights, show_wave);
+        let wave_active = WAVE_ACTIVE.with(|w| *w.borrow());
+        layout_bars(views, pill_h, wave_active, show_wave);
 
         // Hint-text pulse (a gentle breathing opacity) for connecting/润色/重试/
         // 重连/录制中提示; off for transcript text, errors, and idle.

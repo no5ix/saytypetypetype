@@ -56,7 +56,14 @@ export interface OverlayLayoutMetrics {
   min_pill_w: number;
   text_slack: number;
   wave_area_w: number;
-  wave_gap_left: number;
+  wave_bar_w: number;
+  wave_bar_gap: number;
+  wave_corner_radius: number;
+  wave_min_h: number;
+  wave_max_h: number;
+  wave_durations: number[];
+  wave_peaks: number[];
+  wave_settle_seconds: number;
   retry_size: number;
   retry_gap_left: number;
 }

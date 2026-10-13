@@ -329,24 +329,6 @@ pub async fn regenerate_history_transcription(
     crate::recording::regenerate_history_transcription(app, ts).await
 }
 
-/// Compute a 0..1 loudness level from f32 PCM samples for the overlay waveform
-/// (RMS + peak, mild compression). Every platform consumes this via the unified
-/// `audio:level` overlay event.
-fn compute_audio_level(samples: &[f32]) -> Option<f64> {
-    if samples.is_empty() {
-        return None;
-    }
-    let mut sum_squares = 0f64;
-    let mut peak = 0f64;
-    for &sample in samples {
-        let s = sample as f64;
-        sum_squares += s * s;
-        peak = peak.max(s.abs());
-    }
-    let rms = (sum_squares / samples.len() as f64).sqrt();
-    Some((rms * 13.0 + peak * 2.8).powf(0.82).min(1.0))
-}
-
 pub(crate) async fn append_audio_samples(
     app: &AppHandle,
     state: &AppState,
@@ -370,23 +352,18 @@ pub(crate) async fn append_audio_samples(
         .await
         .extend_from_slice(&samples);
 
-    // Drive the overlay waveform from the same PCM the ASR receives, whether the
-    // chunk is sent immediately or buffered. Every renderer — the macOS native
-    // pill (via overlay::handle_event) and the Windows WebView — consumes the
-    // unified `audio:level` event.
-    if let Some(level) = compute_audio_level(&samples) {
-        // Derive the 4 bar heights here (shared::wave_heights) so both renderers
-        // — the macOS native pill and the Windows WebView — consume one computed
-        // value instead of each re-deriving it from `level`.
-        let wave_heights = {
-            let mut smoothed = state.wave_smoothed.lock().await;
-            crate::overlay::shared::wave_heights(&mut smoothed, level)
-        };
+    // Both renderers gate their local animation from the same sound detector.
+    if !samples.is_empty() {
+        let active = state
+            .wave_activity
+            .lock()
+            .await
+            .update(&samples, std::time::Instant::now());
         let _ = app.emit(
             "overlay:event",
             serde_json::json!({
                 "type": "audio:level",
-                "payload": { "level": level, "waveHeights": wave_heights.to_vec() }
+                "payload": { "active": active }
             }),
         );
     }
@@ -741,38 +718,4 @@ pub async fn delete_model(app: AppHandle, model_id: String) -> Result<serde_json
         .map_err(|e| format!("Failed to resolve data dir: {}", e))?;
     model::delete_model(&data_dir, &model_id)?;
     Ok(serde_json::json!({ "ok": true }))
-}
-
-#[cfg(test)]
-mod audio_level_tests {
-    use super::compute_audio_level;
-
-    #[test]
-    fn empty_samples_return_none() {
-        assert_eq!(compute_audio_level(&[]), None);
-    }
-
-    #[test]
-    fn silence_maps_to_zero() {
-        // All-zero PCM: RMS and peak are both 0, so 0^0.82 = 0.
-        let samples = vec![0.0f32; 1600];
-        let level = compute_audio_level(&samples).unwrap();
-        assert!(level < 1e-6);
-    }
-
-    #[test]
-    fn normal_amplitude_stays_in_unit_range() {
-        // A moderate-amplitude sine (~0.1) lands somewhere in 0..1.
-        let samples: Vec<f32> = (0..1600).map(|i| (i as f32 * 0.01).sin() * 0.1).collect();
-        let level = compute_audio_level(&samples).unwrap();
-        assert!(level > 0.0 && level <= 1.0);
-    }
-
-    #[test]
-    fn full_scale_clamps_to_one() {
-        // Full-scale PCM must clamp at 1.0 (the .min(1.0) guard).
-        let samples = vec![1.0f32; 1600];
-        let level = compute_audio_level(&samples).unwrap();
-        assert!((level - 1.0).abs() < 1e-9);
-    }
 }

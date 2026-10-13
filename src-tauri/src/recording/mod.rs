@@ -28,6 +28,7 @@ pub(crate) use polish::repolish_history_entry;
 pub(crate) use polish::retry_pending_polish;
 pub(crate) use regenerate::regenerate_history_transcription;
 pub(crate) use retry::{retry_history_transcription, retry_latest_failed_transcription};
+pub(crate) use wav::audio_chunk_has_signal;
 
 /// Begin a neutral recording triggered by the hotkey matcher — the prompt is
 /// decided later, on stop. If the main hotkey was used while a retryable

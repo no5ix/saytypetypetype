@@ -1,4 +1,4 @@
-import { type CSSProperties, StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../styles/app.css";
 import "./overlay.css";
@@ -6,6 +6,7 @@ import { getOverlayLayoutMetrics, type OverlayLayoutMetrics } from "./bridge";
 import type { OverlayState } from "./types";
 import { useOverlayLayout } from "./useOverlayLayout";
 import { useOverlayState } from "./useOverlayState";
+import { Waveform } from "./Waveform";
 
 // Fallback layout metrics used before the backend fetch resolves. Mirrors
 // src-tauri/src/overlay/shared.rs (the single source of truth); the overlay is
@@ -20,8 +21,15 @@ const FALLBACK_METRICS: OverlayLayoutMetrics = {
   multi_line_width: 520,
   min_pill_w: 116,
   text_slack: 10,
-  wave_area_w: 18,
-  wave_gap_left: 12,
+  wave_area_w: 22,
+  wave_bar_w: 4,
+  wave_bar_gap: 2,
+  wave_corner_radius: 2,
+  wave_min_h: 4,
+  wave_max_h: 22,
+  wave_durations: [0.85, 0.7, 1.0, 0.8],
+  wave_peaks: [0.65, 1.0, 0.85, 0.55],
+  wave_settle_seconds: 0.18,
   retry_size: 22,
   retry_gap_left: 8,
 };
@@ -44,17 +52,8 @@ function retryLabel(hotkey: string): string {
   return hotkey ? `重试 (${hotkey})` : "重试";
 }
 
-// Waveform bar visuals — 4 fixed bars (shared::WAVE_N), heights from the backend.
-const BAR_CLASS =
-  "w-[2.5px] rounded-full bg-[linear-gradient(180deg,var(--color-overlay-accent),#3aa874)] transition-transform duration-75 ease-out will-change-transform";
-const barStyle = (h: number): CSSProperties => ({
-  height: "20px",
-  transform: `scaleY(${(h / 20).toFixed(3)})`,
-  transformOrigin: "center",
-});
-
 function OverlayApp() {
-  const { state, waveHeights, onRetry } = useOverlayState();
+  const { state, waveActive, onRetry } = useOverlayState();
 
   const [metrics, setMetrics] = useState<OverlayLayoutMetrics>(FALLBACK_METRICS);
   useEffect(() => {
@@ -168,19 +167,7 @@ function OverlayApp() {
             </span>
           )}
 
-          {/* Waveform: 4 bars driven by backend-computed heights. Sits right of
-              the indicator (mirrors the macOS native pill) so layout — not text
-              length — fixes its position; the pill can grow without it drifting. */}
-          {showWave && (
-            <span className="flex h-5 shrink-0 items-center" aria-hidden="true">
-              <span className="flex h-5 items-center gap-[2.5px]">
-                <span className={BAR_CLASS} style={barStyle(waveHeights[0] ?? 3)} />
-                <span className={BAR_CLASS} style={barStyle(waveHeights[1] ?? 3)} />
-                <span className={BAR_CLASS} style={barStyle(waveHeights[2] ?? 3)} />
-                <span className={BAR_CLASS} style={barStyle(waveHeights[3] ?? 3)} />
-              </span>
-            </span>
-          )}
+          {showWave && <Waveform active={waveActive} metrics={metrics} />}
 
           {/* Body: transcript or hint (mutually exclusive). */}
           <div className="min-w-0 flex-1 text-[14px] font-medium leading-[1.3]">

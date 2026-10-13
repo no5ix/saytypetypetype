@@ -79,7 +79,7 @@ Each window has its own typed IPC module — `web/src/overlay/bridge.ts` and `we
 ### Data Flow
 
 1. Global hotkey → backend state change (start/stop based on mode)
-2. `recording` state → backend captures mic via **cpal** (CoreAudio/WASAPI, 16kHz mono) → pushes PCM to the ASR session and emits `audio:level` (waveform heights) → overlay renders transcript + waveform
+2. `recording` state → backend captures mic via **cpal** (CoreAudio/WASAPI, 16kHz mono) → pushes PCM to the ASR session and emits `audio:level` (sound-activity flag) → overlay renders transcript + waveform
 3. ASR responses → `overlay:event` → frontend updates text display
 4. Stop → `commitAndAwaitFinal()` → wait for final ASR result → optional LLM processing → clipboard write + simulated paste
 

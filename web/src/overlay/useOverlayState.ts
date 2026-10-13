@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   onOverlayEvent,
   retryLatestFailedTranscription,
   retryPendingPolish,
 } from "@/overlay/bridge";
 import { type AppState, type HintLevel, INITIAL_OVERLAY_STATE, type OverlayState } from "./types";
-
-/** Resting bar heights before the first audio chunk (matches shared::WAVE_MIN_H). */
-const REST_WAVE = [3, 3, 3, 3];
 
 type Action =
   | { type: "reset" }
@@ -101,16 +98,14 @@ export function reducer(state: OverlayState, action: Action): OverlayState {
 
 export interface UseOverlayState {
   state: OverlayState;
-  /** Latest 4-bar waveform heights (logical px), carried in the backend
-   * `audio:level` payload and computed there via `shared::wave_heights`. Updated
-   * ~10×/s; the bars render directly from this with a CSS transition for smoothing. */
-  waveHeights: number[];
+  waveActive: boolean;
   onRetry: () => Promise<void>;
 }
 
 export function useOverlayState(): UseOverlayState {
   const [state, dispatch] = useReducer(reducer, INITIAL_OVERLAY_STATE);
-  const [waveHeights, setWaveHeights] = useState<number[]>(REST_WAVE);
+  const [waveActive, setWaveActive] = useState(false);
+  const appState = useRef<AppState>(INITIAL_OVERLAY_STATE.appState);
 
   useEffect(() => {
     const unlisten = onOverlayEvent((event) => {
@@ -118,13 +113,14 @@ export function useOverlayState(): UseOverlayState {
       switch (type) {
         case "reset":
           dispatch({ type: "reset" });
-          setWaveHeights(REST_WAVE);
+          setWaveActive(false);
           break;
         case "state": {
           const next = (payload as { state?: AppState }).state;
           if (next) {
+            appState.current = next;
             dispatch({ type: "state", state: next });
-            if (next === "idle" || next === "connecting") setWaveHeights(REST_WAVE);
+            setWaveActive(false);
           }
           break;
         }
@@ -134,10 +130,9 @@ export function useOverlayState(): UseOverlayState {
           break;
         }
         case "audio:level": {
-          // The backend derives the per-bar heights (shared::wave_heights) and
-          // ships them here; the renderer no longer smooths/derives locally.
-          const h = (payload as { waveHeights?: number[] }).waveHeights;
-          if (Array.isArray(h) && h.length > 0) setWaveHeights(h);
+          if (appState.current === "recording") {
+            setWaveActive((payload as { active?: boolean }).active === true);
+          }
           break;
         }
         case "hint": {
@@ -196,5 +191,5 @@ export function useOverlayState(): UseOverlayState {
     }
   }, [state.retryVisible, state.retrying]);
 
-  return { state, waveHeights, onRetry };
+  return { state, waveActive, onRetry };
 }

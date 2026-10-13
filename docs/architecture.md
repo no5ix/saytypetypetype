@@ -107,7 +107,7 @@ sequenceDiagram
 
     loop Audio streaming (~100ms chunks)
         Mic->>SM: f32 samples
-        SM->>SM: compute audio level → emit overlay:event (audio:level)
+        SM->>SM: detect sound activity → emit overlay:event (audio:level)
         SM->>ASR: session.append_audio(samples)
         ASR-->>SM: AsrEvent::Transcript { final, partial }
         SM->>FE: overlay:event (transcript update)

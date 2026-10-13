@@ -93,10 +93,8 @@ pub struct AppInner {
     /// retry task. The receiver lives only inside that task, so commands sent
     /// after it finished are dropped with it.
     pub polish_retry_cmd_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<PolishRetryCommand>>>,
-    /// Smoothed mic level feeding the overlay waveform. Updated by the audio
-    /// emitter and consumed by `shared::wave_heights`, so both renderers share one
-    /// smoothing state. Reset to 0 whenever the app leaves the Recording state.
-    pub wave_smoothed: Mutex<f64>,
+    /// Shared sound detector, reset between recording sessions.
+    pub wave_activity: Mutex<crate::overlay::shared::WaveActivity>,
 }
 
 pub type AppHandle = Arc<AppInner>;
@@ -130,7 +128,7 @@ pub fn create_app_state(
         polish_epoch: std::sync::atomic::AtomicU64::new(0),
         polish_retry_active: std::sync::atomic::AtomicBool::new(false),
         polish_retry_cmd_tx: Mutex::new(None),
-        wave_smoothed: Mutex::new(0.0),
+        wave_activity: Mutex::new(crate::overlay::shared::WaveActivity::default()),
     })
 }
 
@@ -172,10 +170,9 @@ pub(crate) async fn set_app_state(
     next_state: AppState,
 ) {
     *app_inner.state.lock().await = next_state.clone();
-    // Reset the waveform smoothing whenever we leave Recording, so the next
-    // session's bars don't start from a stale loudness tail.
+    // Reset sound activity so a new session starts with resting bars.
     if next_state != AppState::Recording {
-        *app_inner.wave_smoothed.lock().await = 0.0;
+        *app_inner.wave_activity.lock().await = crate::overlay::shared::WaveActivity::default();
     }
     sync_escape_shortcut(app, &next_state);
 
