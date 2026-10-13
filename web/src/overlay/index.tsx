@@ -6,6 +6,7 @@ import { getOverlayLayoutMetrics, type OverlayLayoutMetrics } from "./bridge";
 import type { OverlayState } from "./types";
 import { useOverlayLayout } from "./useOverlayLayout";
 import { useOverlayState } from "./useOverlayState";
+import { useOverlayVisibility } from "./useOverlayVisibility";
 import { Waveform } from "./Waveform";
 
 // Fallback layout metrics used before the backend fetch resolves. Mirrors
@@ -89,6 +90,8 @@ function OverlayApp() {
     hintLevel: state.hintLevel,
     metrics,
   });
+
+  useOverlayVisibility(pillRef);
 
   // Auto-scroll the transcript to the latest line as it grows. transcriptRef is
   // a stable ref (intentionally omitted); the effect re-runs on content change.

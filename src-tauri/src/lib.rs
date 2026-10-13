@@ -141,6 +141,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_config,
             commands::get_overlay_layout_metrics,
+            commands::complete_overlay_hide,
             commands::get_audio_config_defaults,
             commands::get_settings_data,
             commands::save_config_object,

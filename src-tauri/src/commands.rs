@@ -719,3 +719,9 @@ pub async fn delete_model(app: AppHandle, model_id: String) -> Result<serde_json
     model::delete_model(&data_dir, &model_id)?;
     Ok(serde_json::json!({ "ok": true }))
 }
+
+/// Called after the WebView's exit animation; stale completions cannot hide a new session.
+#[tauri::command]
+pub fn complete_overlay_hide(app: AppHandle, generation: u64) {
+    crate::overlay::complete_hide(&app, generation);
+}

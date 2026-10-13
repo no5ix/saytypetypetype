@@ -160,9 +160,7 @@ async fn retry_history_transcription_inner(
     session.close();
     *app_inner.current_failure_ts.lock().await = None;
     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(&app_handle);
     Ok(serde_json::json!({ "ok": true, "text": text }))
 }
 

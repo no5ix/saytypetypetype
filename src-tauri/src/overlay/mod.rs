@@ -10,6 +10,7 @@
 
 pub(crate) mod shared;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,64 @@ use tauri::{App, AppHandle, Emitter, Manager};
 
 use crate::app_state;
 use crate::hotkey;
+
+// Updated only on the main thread; a later show invalidates pending hide completions.
+static VISIBILITY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn show(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let generation = VISIBILITY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        #[cfg(target_os = "macos")]
+        macos::animate_visibility(&handle, true);
+        #[cfg(not(target_os = "macos"))]
+        let _ = handle.emit(
+            "overlay:event",
+            serde_json::json!({
+                "type": "visibility", "payload": { "visible": true, "generation": generation }
+            }),
+        );
+        #[cfg(target_os = "macos")]
+        let _ = generation;
+        if let Some(window) = handle.get_window("overlay") {
+            let _ = window.show();
+        }
+    });
+}
+
+pub(crate) fn hide(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let generation = VISIBILITY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        #[cfg(target_os = "macos")]
+        macos::animate_visibility(&handle, false);
+        #[cfg(not(target_os = "macos"))]
+        let _ = handle.emit(
+            "overlay:event",
+            serde_json::json!({
+                "type": "visibility", "payload": { "visible": false, "generation": generation }
+            }),
+        );
+        tauri::async_runtime::spawn(async move {
+            // Native animations run immediately. The WebView acknowledges completion;
+            // its timeout also handles a renderer that has not loaded or stopped responding.
+            let delay = if cfg!(target_os = "macos") { 120 } else { 500 };
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            complete_hide(&handle, generation);
+        });
+    });
+}
+
+pub(crate) fn complete_hide(app: &AppHandle, generation: u64) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if VISIBILITY_GENERATION.load(Ordering::Relaxed) == generation {
+            if let Some(window) = handle.get_window("overlay") {
+                let _ = window.hide();
+            }
+        }
+    });
+}
 
 /// Forward an `overlay:event` to the native macOS renderer. No-op elsewhere.
 #[allow(unused_variables)]
@@ -202,9 +261,7 @@ pub(crate) fn schedule_retry_overlay_hide(
             *app_inner.current_failure_ts.lock().await = None;
             set_escape_enabled_now(&app_handle, false);
             set_overlay_retry_interaction(&app_handle, false);
-            if let Some(overlay) = app_handle.get_window("overlay") {
-                let _ = overlay.hide();
-            }
+            hide(&app_handle);
         }
     });
 }

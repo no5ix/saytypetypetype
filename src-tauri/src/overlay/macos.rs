@@ -4,9 +4,10 @@ use objc2::{class, msg_send, sel, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplicationActivationOptions,
     NSAttributedStringNSStringDrawing, NSBezelStyle, NSButton, NSColor, NSFont, NSGlassEffectView,
-    NSGlassEffectViewStyle, NSLineBreakMode, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSRunningApplication, NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWorkspace,
+    NSGlassEffectViewStyle, NSLayoutConstraint, NSLineBreakMode, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSRunningApplication, NSTextAlignment, NSTextField, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindow, NSWorkspace,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSBundle, NSMutableAttributedString, NSNumber, NSPoint, NSRange,
@@ -103,6 +104,10 @@ struct WaveBar {
 
 /// The retained native view tree (built once, updated per render).
 struct Views {
+    host: Retained<NSView>,
+    pivot: Retained<NSView>,
+    width_constraint: Retained<NSLayoutConstraint>,
+    height_constraint: Retained<NSLayoutConstraint>,
     glass: GlassKind,
     container: Retained<NSView>,
     indicator: Retained<NSView>,
@@ -152,6 +157,37 @@ extern "C" fn retry_clicked(_this: *mut AnyObject, _sel: Sel, _sender: *mut AnyO
     });
 }
 
+// The center pivot has zero-size bounds. Forward hit testing to its glass
+// child so the retry button remains clickable outside those bounds.
+extern "C" fn pivot_hit_test(this: *mut AnyObject, _sel: Sel, point: NSPoint) -> *mut NSView {
+    let view = unsafe { &*(this as *const NSView) };
+    if view.isHidden() {
+        return std::ptr::null_mut();
+    }
+    let parent = unsafe { view.superview() };
+    let local = view.convertPoint_fromView(point, parent.as_deref());
+    view.subviews()
+        .lastObject()
+        .and_then(|child| child.hitTest(local))
+        .map(|hit| Retained::as_ptr(&hit) as *mut NSView)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+fn animation_pivot_class() -> &'static AnyClass {
+    if let Some(cls) = AnyClass::get(c"VoicePasteAnimationPivot") {
+        return cls;
+    }
+    let mut builder = ClassBuilder::new(c"VoicePasteAnimationPivot", class!(NSView))
+        .expect("animation pivot class");
+    unsafe {
+        builder.add_method(
+            sel!(hitTest:),
+            pivot_hit_test as extern "C" fn(*mut AnyObject, Sel, NSPoint) -> *mut NSView,
+        );
+    }
+    builder.register()
+}
+
 fn retry_target_class() -> &'static AnyClass {
     if let Some(cls) = AnyClass::get(c"VoicePasteRetryTarget") {
         return cls;
@@ -186,6 +222,76 @@ fn glass_style(style: &str) -> NSGlassEffectViewStyle {
     } else {
         NSGlassEffectViewStyle::Regular
     }
+}
+
+/// Animate the entire glass pill, including its content, without resizing the window.
+/// Explicit animations leave model geometry untouched so transcript layout can continue.
+pub(super) fn animate_visibility(app: &AppHandle, visible: bool) {
+    MODEL.with(|m| {
+        let mut model = m.borrow_mut();
+        ensure_loaded(app, &mut model);
+        render(app, &mut model);
+    });
+    let was_visible = app
+        .get_window("overlay")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    VIEWS.with(|v| {
+        let slot = v.borrow();
+        let Some(views) = slot.as_ref() else {
+            return;
+        };
+        unsafe {
+            // AppKit keeps this real view in the displayed hierarchy. Its zero-size
+            // origin is constrained to the pill center, so the system's (0, 0)
+            // backing-layer anchor is exactly the desired scaling reference point.
+            let layer: *mut AnyObject = msg_send![&*views.pivot, layer];
+            if layer.is_null() {
+                return;
+            }
+            for (path, key, start, end) in [
+                (
+                    "opacity",
+                    "vp-visibility-opacity",
+                    0.0,
+                    if visible { 1.0 } else { 0.0 },
+                ),
+                (
+                    "transform.scale",
+                    "vp-visibility-scale",
+                    0.8,
+                    if visible { 1.0 } else { 0.8 },
+                ),
+            ] {
+                let path = NSString::from_str(path);
+                let key = NSString::from_str(key);
+                let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+                let from = if was_visible && !presentation.is_null() {
+                    let value: *mut NSNumber = msg_send![presentation, valueForKeyPath: &*path];
+                    if value.is_null() {
+                        1.0
+                    } else {
+                        (&*value).doubleValue()
+                    }
+                } else {
+                    start
+                };
+                let animation: *mut AnyObject =
+                    msg_send![class!(CABasicAnimation), animationWithKeyPath: &*path];
+                let _: () = msg_send![animation, setFromValue: &*NSNumber::numberWithDouble(from)];
+                let _: () = msg_send![animation, setToValue: &*NSNumber::numberWithDouble(end)];
+                let _: () =
+                    msg_send![animation, setDuration: if visible { 0.16f64 } else { 0.12f64 }];
+                let curve = NSString::from_str(if visible { "easeOut" } else { "easeIn" });
+                let timing: *mut AnyObject =
+                    msg_send![class!(CAMediaTimingFunction), functionWithName: &*curve];
+                let _: () = msg_send![animation, setTimingFunction: timing];
+                let _: () = msg_send![animation, setFillMode: &*NSString::from_str("forwards")];
+                let _: () = msg_send![animation, setRemovedOnCompletion: visible];
+                let _: () = msg_send![layer, addAnimation: animation, forKey: &*key];
+            }
+        }
+    });
 }
 
 /// Parse an incoming overlay event and update the native pill on the main thread.
@@ -405,7 +511,7 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             return;
         }
         if let Some(old) = slot.take() {
-            old.glass.view().removeFromSuperview();
+            old.host.removeFromSuperview();
         }
 
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
@@ -543,8 +649,45 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             g.addSubview(&container);
             GlassKind::Vibrancy(g)
         };
+        let host = NSView::new(mtm);
+        host.setWantsLayer(true);
+        host.setTranslatesAutoresizingMaskIntoConstraints(false);
+        content.addSubview(&host);
+        let width_constraint = host.widthAnchor().constraintEqualToConstant(MIN_PILL_W);
+        let height_constraint = host.heightAnchor().constraintEqualToConstant(PILL_H_SINGLE);
+        let pivot = unsafe {
+            let raw: *mut NSView = msg_send![animation_pivot_class(), new];
+            Retained::from_raw(raw).expect("animation pivot view")
+        };
+        pivot.setWantsLayer(true);
+        pivot.setTranslatesAutoresizingMaskIntoConstraints(false);
+        unsafe {
+            // Newer AppKit versions clip view content by default; older versions
+            // have no clipsToBounds property and already allow overflow.
+            let supports_clipping: bool = msg_send![&*pivot, respondsToSelector: sel!(setClipsToBounds:)];
+            if supports_clipping {
+                let _: () = msg_send![&*pivot, setClipsToBounds: false];
+            }
+        }
+        host.addSubview(&pivot);
         glass.view().setWantsLayer(true);
-        content.addSubview(glass.view());
+        glass.view().setTranslatesAutoresizingMaskIntoConstraints(false);
+        pivot.addSubview(glass.view());
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            host.centerXAnchor().constraintEqualToAnchor(&content.centerXAnchor()),
+            host.bottomAnchor().constraintEqualToAnchor_constant(&content.bottomAnchor(), -BOTTOM_OFFSET),
+            width_constraint.clone(),
+            height_constraint.clone(),
+            pivot.centerXAnchor().constraintEqualToAnchor(&host.centerXAnchor()),
+            pivot.centerYAnchor().constraintEqualToAnchor(&host.centerYAnchor()),
+            pivot.widthAnchor().constraintEqualToConstant(0.0),
+            pivot.heightAnchor().constraintEqualToConstant(0.0),
+            glass.view().centerXAnchor().constraintEqualToAnchor(&pivot.centerXAnchor()),
+            glass.view().centerYAnchor().constraintEqualToAnchor(&pivot.centerYAnchor()),
+            glass.view().widthAnchor().constraintEqualToAnchor(&host.widthAnchor()),
+            glass.view().heightAnchor().constraintEqualToAnchor(&host.heightAnchor()),
+        ]));
+        content.layoutSubtreeIfNeeded();
 
         log_app!(
             info,
@@ -553,6 +696,10 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             liquid_glass_available()
         );
         *slot = Some(Views {
+            host,
+            pivot,
+            width_constraint,
+            height_constraint,
             glass,
             container,
             indicator,
@@ -853,7 +1000,7 @@ fn set_corner(view: &NSView, radius: f64) {
 
 /// Set a view's frame, animating via Core Animation when `animate` is true so it
 /// grows in lockstep with the pill surface in `render`; instant when false.
-/// Used for glass + container only. Waveform frames stay anchored in the
+/// Used for content within the constrained glass. Waveform frames stay anchored in the
 /// indicator slot; each capsule animates independently inside its fixed view.
 fn set_frame(view: &NSView, frame: NSRect, animate: bool) {
     if animate {
@@ -1191,29 +1338,25 @@ fn render(app: &AppHandle, model: &mut Model) {
             (PILL_H_SINGLE, one_line_h, one_line_h)
         };
 
-        // --- Lay out: pill bottom-center within the canvas content view ---
-        let content_w = content.bounds().size.width;
-        let glass_frame = NSRect {
-            origin: NSPoint {
-                x: ((content_w - pill_w) / 2.0).round(),
-                y: BOTTOM_OFFSET,
-            },
-            size: NSSize {
-                width: pill_w,
-                height: pill_h,
-            },
-        };
-        // Animate only pill growth (Core Animation on a background thread); snap
-        // instantly when shrinking, on hints, or on the first frame so resets
-        // and placeholder text never play a "shrink-back" animation. Drives glass
-        // + container so the pill surface grows smoothly. The waveform is left
-        // out on purpose: it is anchored to a constant x (left of the pill), so
-        // it never tracks the pill width and cannot drift as the pill grows.
+        // Auto Layout centers both the host and the zero-size scale pivot.
+        // AppKit owns the entire view/layer hierarchy, including the glass.
         let prev_pill_w = views.last_pill_w;
-        let growing = prev_pill_w.is_nan() || pill_w > prev_pill_w + 0.5;
+        let growing = !prev_pill_w.is_nan() && pill_w > prev_pill_w + 0.5;
         views.last_pill_w = pill_w;
         let animate = growing && !has_hint;
-        set_frame(views.glass.view(), glass_frame, animate);
+        unsafe {
+            let _: () = msg_send![class!(NSAnimationContext), beginGrouping];
+            let ctx: *mut AnyObject = msg_send![class!(NSAnimationContext), currentContext];
+            let _: () = msg_send![ctx, setDuration: if animate { 0.1f64 } else { 0.0f64 }];
+            let _: () = msg_send![ctx, setAllowsImplicitAnimation: animate];
+        }
+        views.width_constraint.setConstant(pill_w);
+        views.height_constraint.setConstant(pill_h);
+        content.layoutSubtreeIfNeeded();
+        unsafe {
+            let host_layer: *mut AnyObject = msg_send![&*views.host, layer];
+            let _: () = msg_send![host_layer, layoutIfNeeded];
+        }
         let radius = if model.layout_wrap || has_actions {
             16.0
         } else {
@@ -1237,6 +1380,9 @@ fn render(app: &AppHandle, model: &mut Model) {
             },
         };
         set_frame(&views.container, container_bounds, animate);
+        unsafe {
+            let _: () = msg_send![class!(NSAnimationContext), endGrouping];
+        }
         // Top fade only when the transcript actually overflows the visible lines.
         let faded = model.layout_wrap && full_h > visible_text_h + 1.0;
         apply_top_fade(&views.container, &views.fade_mask, faded, container_bounds);

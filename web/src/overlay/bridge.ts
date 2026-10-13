@@ -72,3 +72,8 @@ export interface OverlayLayoutMetrics {
 export async function getOverlayLayoutMetrics(): Promise<OverlayLayoutMetrics> {
   return invoke("get_overlay_layout_metrics");
 }
+
+/** Hide the native window only after the current exit animation finishes. */
+export function completeOverlayHide(generation: number): Promise<void> {
+  return invoke("complete_overlay_hide", { generation });
+}

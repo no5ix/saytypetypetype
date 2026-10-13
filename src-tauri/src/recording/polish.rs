@@ -335,9 +335,7 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
 async fn dismiss_overlay(app_handle: &AppHandle, app_inner: &Arc<app_state::AppInner>) {
     overlay::set_decision_keys_enabled(app_handle, false);
     overlay::set_overlay_retry_interaction(app_handle, false);
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(app_handle);
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
 }
 

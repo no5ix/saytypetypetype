@@ -59,9 +59,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     // Re-position before showing so the overlay follows the current display layout
     // (e.g. after an external monitor was connected/disconnected).
     overlay::position_overlay(&app_handle);
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.show();
-    }
+    overlay::show(&app_handle);
 
     // 2. Warm up microphone capture (native cpal on macOS + Windows). The capture
     //    owns its own ready signal (a oneshot the input thread fires once the
@@ -70,9 +68,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     if let Err(e) = capture::start_capture(app_handle.clone(), Arc::clone(&app_inner)).await {
         *recording_state.0.lock().unwrap() = false;
         set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-        if let Some(overlay) = app_handle.get_window("overlay") {
-            let _ = overlay.hide();
-        }
+        overlay::hide(&app_handle);
         log_rec!(warn, "Native audio warmup failed: {}", e);
         emit_hint(&app_handle, &e, "error", "text");
         return;
@@ -83,9 +79,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
         log_rec!(warn, "Cancelled during warmup, aborting start");
         capture::stop_capture(&app_inner).await;
         set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-        if let Some(overlay) = app_handle.get_window("overlay") {
-            let _ = overlay.hide();
-        }
+        overlay::hide(&app_handle);
         return;
     }
 
@@ -172,9 +166,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
                     app_inner.pending_audio.lock().await.clear();
                     history::discard_recording_artifacts(&app_inner).await;
                     overlay::set_overlay_retry_interaction(&app_handle, false);
-                    if let Some(overlay) = app_handle.get_window("overlay") {
-                        let _ = overlay.hide();
-                    }
+                    overlay::hide(&app_handle);
                     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
                     return;
                 }
@@ -213,9 +205,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             *app_inner.accumulated_text.lock().await = String::new();
             history::discard_recording_artifacts(&app_inner).await;
             overlay::set_overlay_retry_interaction(&app_handle, false);
-            if let Some(overlay) = app_handle.get_window("overlay") {
-                let _ = overlay.hide();
-            }
+            overlay::hide(&app_handle);
             set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
             return;
         }
@@ -298,9 +288,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
 
     // 12. Hide overlay
     overlay::set_overlay_retry_interaction(&app_handle, false);
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(&app_handle);
 
     // 13. Set state back to idle
     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
@@ -321,9 +309,7 @@ pub(super) async fn abort_retry_or_failure(
     *app_inner.accumulated_text.lock().await = String::new();
     overlay::set_overlay_retry_interaction(app_handle, false);
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(app_handle);
     // set_app_state(Idle) also re-syncs (disables) the ESC shortcut.
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
 }
@@ -368,9 +354,7 @@ pub(super) async fn cancel_recording(app_handle: AppHandle) {
     *app_inner.accumulated_text.lock().await = String::new();
 
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
-    if let Some(overlay) = app_handle.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(&app_handle);
     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
 
     // Resync the hotkey matcher: the recording was cancelled out-of-band

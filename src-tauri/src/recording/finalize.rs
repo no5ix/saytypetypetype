@@ -84,9 +84,7 @@ pub(super) async fn finalize_on_failure(
         return;
     }
 
-    if let Some(overlay) = app.get_window("overlay") {
-        let _ = overlay.hide();
-    }
+    overlay::hide(app);
     set_app_state(app, app_inner, app_state::AppState::Idle).await;
 }
 
