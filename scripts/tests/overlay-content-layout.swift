@@ -144,25 +144,32 @@ func checkContent(_ glass: NSView, name: String) {
 checkContent(NSVisualEffectView(), name: "Vibrancy")
 if #available(macOS 26, *) { checkContent(NSGlassEffectView(), name: "Liquid Glass") }
 
-// State labels must measure their full content even after an icon-only frame.
+// State labels must fit on their first centered frame after a narrow, left-aligned waveform.
 let status = NSTextField(labelWithString: "")
 status.font = .systemFont(ofSize: 14)
 for text in ["准备中", "识别中", "润色中", "准备中"] {
     status.frame = NSRect(x: 16, y: 0, width: 10, height: 20)
+    status.alignment = .left
     status.stringValue = text
     status.usesSingleLineMode = true
     status.maximumNumberOfLines = 1
     status.preferredMaxLayoutWidth = 0
     status.lineBreakMode = .byClipping
+    let leftAlignedWidth = status.cell!.cellSize.width
+    status.alignment = .center
     let measured = status.cell!.cellSize
+    precondition(ceil(leftAlignedWidth) + 2 < measured.width,
+                 "regression fixture must reproduce the old alignment measurement shortfall")
     status.lineBreakMode = .byTruncatingTail
     let textWidth = ceil(measured.width) + 2
     status.frame.size.width = textWidth
+    precondition(textWidth >= measured.width,
+                 "\(text) must have enough room for centered cell padding on its first frame")
     let required = (text as NSString).size(withAttributes: [.font: status.font!]).width
     let drawingWidth = status.cell!.drawingRect(forBounds: status.bounds).width
     precondition(drawingWidth >= required, "\(text) is truncated: available \(drawingWidth), required \(required)")
 }
-print("State labels: full text fits after narrow frames")
+print("State labels: first centered frame fits after a narrow left-aligned waveform")
 
 let fadeView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 18))
 fadeView.wantsLayer = true

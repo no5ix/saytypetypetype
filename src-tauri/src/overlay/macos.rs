@@ -1075,6 +1075,20 @@ fn render(app: &AppHandle, model: &mut Model) {
         }
         update_shortcuts(views, &model.shortcuts, mtm);
 
+        // Reconnecting uses text only; recording keeps its waveform.
+        let show_wave = model.app_state == "recording"
+            && model.hint_level != "warn"
+            && model.hint_level != "error";
+
+        // AppKit cell sizing includes alignment-dependent padding.
+        // Set the final alignment before measuring, including the first status frame.
+        let center_text = has_hint && !show_wave && !show_icon;
+        views.label.setAlignment(if center_text {
+            NSTextAlignment::Center
+        } else {
+            NSTextAlignment::Left
+        });
+
         // --- Decide wrap, measure width ---
         // Single-line mode first to measure the natural width.
         views.label.setUsesSingleLineMode(true);
@@ -1106,11 +1120,6 @@ fn render(app: &AppHandle, model: &mut Model) {
             && has_text
             && !has_hint
             && (model.layout_wrap || measured_w > SINGLE_LINE_LIMIT);
-
-        // Reconnecting uses text only; recording keeps its waveform.
-        let show_wave = model.app_state == "recording"
-            && model.hint_level != "warn"
-            && model.hint_level != "error";
 
         // Chrome around the text (left pad + indicator/waveform slot + gap + right
         // action area). The waveform reuses the indicator slot, so it adds no width.
@@ -1245,12 +1254,6 @@ fn render(app: &AppHandle, model: &mut Model) {
             set_icon(&views.icon_layer, success);
         }
         views.label.setHidden((!has_text || success) && !has_hint);
-        let center_text = has_hint && !show_wave && !show_icon;
-        views.label.setAlignment(if center_text {
-            NSTextAlignment::Center
-        } else {
-            NSTextAlignment::Left
-        });
         views.label.setFrame(NSRect {
             origin: NSPoint {
                 x: if center_text {
