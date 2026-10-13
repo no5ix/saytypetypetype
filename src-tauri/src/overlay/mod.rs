@@ -209,12 +209,12 @@ pub(crate) async fn begin_recording_hints(app: &AppHandle, inner: &app_state::Ap
     );
     let mut shortcuts = vec![shared::Shortcut::new("Esc", "取消")];
     if !hotkey.is_empty() {
-        shortcuts.push(shared::Shortcut::new(hotkey, "结束"));
+        shortcuts.push(shared::Shortcut::new(hotkey, "完成"));
     }
     if let Some(prompt) = selected {
         shortcuts.push(shared::Shortcut::new(
             hotkey::format_hotkey_label(&prompt.hotkey),
-            "文本润色",
+            &prompt.title,
         ));
     }
     *inner.recording_hints.lock().await = Some(shared::RecordingHints {
