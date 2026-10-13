@@ -34,6 +34,17 @@ func checkContent(_ glass: NSView, name: String) {
     let root = window.contentView!
     let host = NSView()
     let shortcuts = NSView()
+    let padded = glass is NSVisualEffectView
+    let shortcutsBackground: NSVisualEffectView? = padded ? NSVisualEffectView() : nil
+    if let background = shortcutsBackground {
+        background.state = .active
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.wantsLayer = true
+        background.layer!.cornerRadius = 12
+        background.layer!.masksToBounds = true
+        shortcuts.addSubview(background)
+    }
     for view in [host, shortcuts, glass] {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.wantsLayer = true
@@ -51,8 +62,8 @@ func checkContent(_ glass: NSView, name: String) {
         glass.topAnchor.constraint(equalTo: host.topAnchor),
         glass.bottomAnchor.constraint(equalTo: host.bottomAnchor),
         shortcuts.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-        shortcuts.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -64),
-        shortcuts.heightAnchor.constraint(equalToConstant: 18),
+        shortcuts.widthAnchor.constraint(equalToConstant: padded ? 98 : 74),
+        shortcuts.heightAnchor.constraint(equalToConstant: padded ? 30 : 18),
         shortcuts.bottomAnchor.constraint(equalTo: host.topAnchor, constant: -16),
     ])
     let content = AdaptiveContent()
@@ -69,14 +80,14 @@ func checkContent(_ glass: NSView, name: String) {
     let label = NSTextField(labelWithString: "准备中")
     label.alignment = .center
     content.addSubview(label)
-    let keycap = NSView(frame: NSRect(x: 285, y: 0, width: 30, height: 18))
+    let keycap = NSView(frame: NSRect(x: padded ? 12 : 0, y: padded ? 6 : 0, width: 30, height: 18))
     keycap.wantsLayer = true
     keycap.layer!.cornerRadius = 4
     let key = NSTextField(labelWithString: "Fn")
-    let action = NSTextField(labelWithString: "结束")
+    let action = NSTextField(labelWithString: "完成")
     key.frame = NSRect(x: 0, y: 0, width: 30, height: 18)
     key.alignment = .center
-    action.frame = NSRect(x: 319, y: 0, width: 40, height: 18)
+    action.frame = NSRect(x: keycap.frame.maxX + 4, y: keycap.frame.minY, width: 40, height: 18)
     keycap.addSubview(key)
     shortcuts.addSubview(keycap)
     shortcuts.addSubview(action)
@@ -96,6 +107,13 @@ func checkContent(_ glass: NSView, name: String) {
     backdrop.orderFrontRegardless()
     window.orderFrontRegardless()
     root.layoutSubtreeIfNeeded()
+    shortcutsBackground?.frame = shortcuts.bounds
+    if let background = shortcutsBackground {
+        precondition(background.frame == shortcuts.bounds)
+        precondition(keycap.frame.minX == 12 && keycap.frame.minY == 6)
+        precondition(abs(shortcuts.bounds.maxX - action.frame.maxX - 12) < 0.1)
+        precondition(background.material == .hudWindow && background.blendingMode == .behindWindow)
+    }
     syncForeground()
     let hintFrame = root.convert(shortcuts.bounds, from: shortcuts)
     let pillFrame = root.convert(host.bounds, from: host)
@@ -170,6 +188,26 @@ for text in ["准备中", "识别中", "润色中", "准备中"] {
     precondition(drawingWidth >= required, "\(text) is truncated: available \(drawingWidth), required \(required)")
 }
 print("State labels: first centered frame fits after a narrow left-aligned waveform")
+
+// Shortcut intrinsic widths omit cell padding: normal action labels must never truncate.
+for text in ["取消", "完成", "重试", "输出原文", "邮件润色", "这是我的模板名称"] {
+    let label = NSTextField(labelWithString: text)
+    label.font = .systemFont(ofSize: 11)
+    label.usesSingleLineMode = true
+    label.lineBreakMode = .byClipping
+    let natural = label.cell!.cellSize
+    precondition(ceil(label.intrinsicContentSize.width) < natural.width,
+                 "fixture must expose the shortcut intrinsic measurement shortfall")
+    let allocated = ceil(natural.width) + 2
+    label.lineBreakMode = .byTruncatingTail
+    label.frame.size = NSSize(width: allocated, height: ceil(natural.height))
+    precondition(label.frame.width >= label.cell!.cellSize.width,
+                 "\(text) must fit including native cell padding on its first frame")
+    let rowWidth = 12 + allocated + 12
+    precondition(rowWidth <= 656 && rowWidth - 24 >= natural.width,
+                 "background padding must be added outside the required text width")
+}
+print("Shortcut labels: native cell padding and background padding fit on the first frame")
 
 let fadeView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 18))
 fadeView.wantsLayer = true

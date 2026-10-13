@@ -68,6 +68,9 @@ struct Views {
     label: Retained<NSTextField>,
     /// Keyboard hints above the glass, without increasing the pill height.
     shortcuts_root: Retained<NSView>,
+    shortcuts_background: Option<Retained<NSVisualEffectView>>,
+    shortcuts_width: Retained<NSLayoutConstraint>,
+    shortcuts_height: Retained<NSLayoutConstraint>,
     shortcut_items: Vec<ShortcutViews>,
     shortcut_content: Vec<Shortcut>,
     bars: [WaveBar; WAVE_N],
@@ -424,7 +427,7 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         let mut slot = v.borrow_mut();
         let recreate = slot
             .as_ref()
-            .map(|x| x.glass.kind() != want)
+            .map(|x| x.glass.kind() != want || x.shortcuts_background.is_some() != (model.style == "vibrancy"))
             .unwrap_or(true);
         if !recreate {
             return;
@@ -445,6 +448,20 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         shortcuts_root.setWantsLayer(true);
         shortcuts_root.setAlphaValue(0.0);
         content.addSubview(&shortcuts_root);
+        let shortcuts_background = if model.style == "vibrancy" {
+            let background = NSVisualEffectView::new(mtm);
+            background.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            background.setState(NSVisualEffectState::Active);
+            background.setMaterial(NSVisualEffectMaterial::HUDWindow);
+            background.setWantsLayer(true);
+            set_corner(&background, 12.0);
+            shortcuts_root.addSubview(&background);
+            Some(background)
+        } else {
+            None
+        };
+        let shortcuts_width = shortcuts_root.widthAnchor().constraintEqualToConstant(0.0);
+        let shortcuts_height = shortcuts_root.heightAnchor().constraintEqualToConstant(18.0);
 
         let indicator = NSView::new(mtm);
         indicator.setWantsLayer(true);
@@ -536,8 +553,8 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             width_constraint.clone(),
             height_constraint.clone(),
             shortcuts_root.centerXAnchor().constraintEqualToAnchor(&content.centerXAnchor()),
-            shortcuts_root.widthAnchor().constraintEqualToAnchor_constant(&content.widthAnchor(), -64.0),
-            shortcuts_root.heightAnchor().constraintEqualToConstant(18.0),
+            shortcuts_width.clone(),
+            shortcuts_height.clone(),
             shortcuts_root.bottomAnchor().constraintEqualToAnchor_constant(&host.topAnchor(), -16.0),
             pivot.centerXAnchor().constraintEqualToAnchor(&host.centerXAnchor()),
             pivot.centerYAnchor().constraintEqualToAnchor(&host.centerYAnchor()),
@@ -566,6 +583,9 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             indicator,
             label,
             shortcuts_root,
+            shortcuts_background,
+            shortcuts_width,
+            shortcuts_height,
             shortcut_items: Vec::new(),
             shortcut_content: Vec::new(),
             bars,
@@ -958,19 +978,28 @@ fn update_shortcuts(views: &mut Views, shortcuts: &[Shortcut], mtm: MainThreadMa
         let key_label = NSTextField::labelWithString(&NSString::from_str(&shortcut.key), mtm);
         key_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         key_label.setAlignment(NSTextAlignment::Center);
-        let key_size = key_label.intrinsicContentSize();
+        let key_size = key_label
+            .cell()
+            .map(|cell| cell.cellSize())
+            .unwrap_or_else(|| key_label.intrinsicContentSize());
         let keycap = NSView::new(mtm);
         keycap.setWantsLayer(true);
         set_corner(&keycap, 4.0);
         keycap.addSubview(&key_label);
         let label = NSTextField::labelWithString(&NSString::from_str(&shortcut.label), mtm);
         label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        let label_size = label.intrinsicContentSize();
+        label.setUsesSingleLineMode(true);
+        label.setLineBreakMode(NSLineBreakMode::ByClipping);
+        let label_size = label
+            .cell()
+            .map(|cell| cell.cellSize())
+            .unwrap_or_else(|| label.intrinsicContentSize());
+        label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         views.shortcuts_root.addSubview(&keycap);
         views.shortcuts_root.addSubview(&label);
         widths.push((
             key_size.width.ceil() + 8.0,
-            label_size.width.ceil(),
+            label_size.width.ceil() + 2.0,
             key_size.height.ceil(),
             label_size.height.ceil(),
         ));
@@ -982,10 +1011,36 @@ fn update_shortcuts(views: &mut Views, shortcuts: &[Shortcut], mtm: MainThreadMa
     }
     let total: f64 = widths.iter().map(|w| w.0 + 4.0 + w.1).sum::<f64>()
         + 14.0 * widths.len().saturating_sub(1) as f64;
-    let mut x = (views.shortcuts_root.bounds().size.width - total) / 2.0;
-    for (item, (key_w, label_w, key_h, label_h)) in views.shortcut_items.iter().zip(widths) {
+    let padded = views.shortcuts_background.is_some();
+    let padding_x = if padded { 12.0 } else { 0.0 };
+    let padding_y = if padded { 6.0 } else { 0.0 };
+    let max_width = unsafe { views.shortcuts_root.superview() }
+        .map(|parent| (parent.bounds().size.width - 64.0).max(0.0))
+        .unwrap_or(656.0);
+    let width = (total + padding_x * 2.0).min(max_width);
+    let height = 18.0 + padding_y * 2.0;
+    views.shortcuts_width.setConstant(width);
+    views.shortcuts_height.setConstant(height);
+    if let Some(background) = &views.shortcuts_background {
+        background.setFrame(NSRect {
+            origin: NSPoint { x: 0.0, y: 0.0 },
+            size: NSSize { width, height },
+        });
+    }
+    // The template is the last action; shorten it without hiding cancel/complete.
+    let overflow = (total + padding_x * 2.0 - width).max(0.0);
+    let mut x = padding_x;
+    let last = widths.len() - 1;
+    for (index, (item, (key_w, label_w, key_h, label_h))) in
+        views.shortcut_items.iter().zip(widths).enumerate()
+    {
+        let label_w = if index == last {
+            (label_w - overflow).max(0.0)
+        } else {
+            label_w
+        };
         item.keycap.setFrame(NSRect {
-            origin: NSPoint { x, y: 0.0 },
+            origin: NSPoint { x, y: padding_y },
             size: NSSize {
                 width: key_w,
                 height: 18.0,
@@ -1004,7 +1059,7 @@ fn update_shortcuts(views: &mut Views, shortcuts: &[Shortcut], mtm: MainThreadMa
         item.label.setFrame(NSRect {
             origin: NSPoint {
                 x: x + key_w + 4.0,
-                y: (18.0 - label_h) / 2.0,
+                y: padding_y + (18.0 - label_h) / 2.0,
             },
             size: NSSize {
                 width: label_w,

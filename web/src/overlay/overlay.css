@@ -16,8 +16,8 @@ body,
   overflow: hidden;
 }
 
-.pill {
-  opacity: 0;
+.pill,
+.shortcut-row {
   color: inherit;
   background: rgba(32, 32, 32, 0.62);
   backdrop-filter: blur(60px) saturate(140%);
@@ -27,6 +27,10 @@ body,
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
     inset 0 -1px 0 rgba(255, 255, 255, 0.04),
     0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pill {
+  opacity: 0;
 }
 
 .pill::before {
@@ -79,6 +83,25 @@ body,
   gap: 14px;
   font-size: 11px;
   color: inherit;
+  width: max-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border-radius: 12px;
+}
+.shortcut-row > span {
+  min-width: 0;
+  flex-shrink: 0;
+}
+.shortcut-row > span:last-child {
+  flex-shrink: 1;
+}
+.shortcut-row > span > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shortcut-row kbd {
+  flex-shrink: 0;
 }
 .shortcut-row {
   opacity: 0;
@@ -105,14 +128,16 @@ body,
 html[data-overlay-theme="light"] {
   --overlay-foreground: #171717;
 }
-html[data-overlay-theme="light"] .pill {
+html[data-overlay-theme="light"] .pill,
+html[data-overlay-theme="light"] .shortcut-row {
   background: rgba(230, 230, 230, 0.82);
 }
 @media (prefers-color-scheme: light) {
   html[data-overlay-theme="system"] {
     --overlay-foreground: #171717;
   }
-  html[data-overlay-theme="system"] .pill {
+  html[data-overlay-theme="system"] .pill,
+  html[data-overlay-theme="system"] .shortcut-row {
     background: rgba(230, 230, 230, 0.82);
   }
 }
