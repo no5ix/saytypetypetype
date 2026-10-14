@@ -19,7 +19,9 @@
  * └---------------------------┘
  */
 
+import { Info } from "lucide-react";
 import type { ReactNode } from "react";
+import { Tooltip } from "@/settings/components/Tooltip";
 
 export function PageLayout({ children }: { children: ReactNode }) {
   return <div className="space-y-5">{children}</div>;
@@ -59,7 +61,7 @@ export function PageContent({ children }: { children: ReactNode }) {
 export function Section({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={`bg-surface-card py-4 space-y-4 border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.08)] ${className}`}
+      className={`bg-surface-card py-2 space-y-4 border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.08)] ${className}`}
     >
       {children}
     </div>
@@ -78,7 +80,7 @@ export function SectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="px-4 flex justify-between gap-2 w-full items-center">
+    <div className="px-4 pt-2 flex justify-between gap-2 w-full items-center">
       <div className="space-y-1">
         <h2 className="text-sm font-semibold">{title}</h2>
         {subtitle && <p className="min-w-0 flex-1 text-sm text-text-muted mt-0.5 ">{subtitle}</p>}
@@ -122,6 +124,7 @@ export function SectionItemList({
 export function SectionItem({
   title,
   description,
+  tooltip,
   action,
   children,
   last = false,
@@ -129,6 +132,7 @@ export function SectionItem({
 }: {
   title: string;
   description?: ReactNode;
+  tooltip?: ReactNode;
   action?: ReactNode;
   children?: ReactNode;
   last?: boolean;
@@ -136,13 +140,20 @@ export function SectionItem({
 }) {
   return (
     <div
-      className={`group flex flex-col gap-2 min-h-10 ${
+      className={`group flex flex-col gap-2 min-h-10 justify-center ${
         last ? "" : "border-b border-border-subtle pb-2"
       }`}
     >
       <div className="flex justify-between w-full gap-2 items-center">
         <div>
-          <div>{title}</div>
+          <div className="flex items-center gap-1">
+            <span>{title}</span>
+            {tooltip && (
+              <Tooltip content={tooltip} label={`${title}说明`}>
+                <Info size={14} aria-hidden="true" />
+              </Tooltip>
+            )}
+          </div>
           {description && <div className="text-xs text-text-muted text-wrap">{description}</div>}
         </div>
         {action && (

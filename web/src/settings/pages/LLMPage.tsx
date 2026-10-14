@@ -224,30 +224,35 @@ export function LLMPage() {
 
       {/* Prompts */}
       <Section>
-        <div className="flex justify-between items-center gap-2 px-4">
-          <Button
-            variant="accent"
-            onClick={async () => {
-              const updated = [
-                ...prompts,
-                {
-                  id: createPromptId(),
-                  title: "新建润色模板",
-                  hotkey: "",
-                  hotkey_mode: "toggle",
-                  prompt: "",
-                },
-              ];
-              setPrompts(updated);
-              await savePromptsNow(updated);
-            }}
-          >
-            + 添加模板
-          </Button>
-          <Button variant="default" onClick={() => setBuiltinOpen(true)}>
-            常用润色提示词
-          </Button>
-        </div>
+        <SectionHeader
+          title="文本润色模板"
+          action={
+            <div className="flex items-center gap-2">
+              <Button
+                variant="accent"
+                onClick={async () => {
+                  const updated = [
+                    ...prompts,
+                    {
+                      id: createPromptId(),
+                      title: "新建润色模板",
+                      hotkey: "",
+                      hotkey_mode: "toggle",
+                      prompt: "",
+                    },
+                  ];
+                  setPrompts(updated);
+                  await savePromptsNow(updated);
+                }}
+              >
+                + 添加模板
+              </Button>
+              <Button variant="default" onClick={() => setBuiltinOpen(true)}>
+                常用润色提示词
+              </Button>
+            </div>
+          }
+        />
 
         <SectionContent>
           <SectionItemList>

@@ -74,7 +74,7 @@ export function PermissionsPage() {
             {isMac && (
               <SectionItem
                 title="辅助功能"
-                description="用于将文字输入到其他应用"
+                tooltip="用于将文字输入到其他应用"
                 action={
                   <div className="flex items-center gap-2">
                     <span
@@ -90,7 +90,6 @@ export function PermissionsPage() {
             )}
             <SectionItem
               title="麦克风"
-              description="用于录制语音输入"
               last
               action={
                 <div className="flex items-center gap-2">

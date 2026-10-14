@@ -41,7 +41,6 @@ export function AboutPage() {
             <SectionItem title="检查更新" action={<UpdateButton />} />
             <SectionItem
               title="体验 Beta 版本"
-              description="接收测试版本以体验新功能"
               last
               action={
                 <Toggle

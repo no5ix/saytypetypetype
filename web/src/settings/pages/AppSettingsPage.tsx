@@ -39,7 +39,6 @@ export function AppSettingsPage() {
           <SectionItemList>
             <SectionItem
               title="开机自动启动"
-              description="登录时自动在后台运行 VoicePaste"
               action={
                 <Toggle checked={!!app.autoLaunch} onChange={(v) => setAppBool("autoLaunch", v)} />
               }
@@ -48,7 +47,9 @@ export function AppSettingsPage() {
             {isMac && (
               <SectionItem
                 title="悬浮窗外观"
-                description="通透：背景透出更多、液态感更强；磨砂：磨砂感更明显；跟随主题：传统毛玻璃、明暗跟随外观主题"
+                tooltip={
+                  "通透：背景透出更多、液态感更强\n磨砂：磨砂感更明显\n跟随主题：传统毛玻璃、明暗跟随外观主题"
+                }
                 action={
                   <SegmentedControl
                     options={[
@@ -74,7 +75,6 @@ export function AppSettingsPage() {
           <SectionItemList>
             <SectionItem
               title="提示音"
-              description="录音开始和粘贴完成时播放音效提醒"
               action={
                 <Toggle
                   checked={sound.enabled !== false}
@@ -87,7 +87,6 @@ export function AppSettingsPage() {
               <>
                 <SectionItem
                   title="就绪提示音"
-                  description="按下快捷键开始录音时播放"
                   action={
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-text-muted max-w-40 truncate">
@@ -121,7 +120,6 @@ export function AppSettingsPage() {
 
                 <SectionItem
                   title="完成提示音"
-                  description="语音识别完成并粘贴后播放"
                   last
                   action={
                     <div className="flex items-center gap-2">
@@ -164,7 +162,7 @@ export function AppSettingsPage() {
           <SectionItemList>
             <SectionItem
               title="移除末尾句号"
-              description="粘贴前自动移除识别结果末尾的句号"
+              tooltip="粘贴前自动移除识别结果末尾的句号"
               action={
                 <Toggle
                   checked={app.remove_trailing_period !== false}
@@ -174,7 +172,7 @@ export function AppSettingsPage() {
             />
             <SectionItem
               title="保留剪贴板"
-              description="粘贴后保留识别文字在剪贴板；关闭则恢复原剪贴板内容"
+              tooltip="粘贴后保留识别文字在剪贴板；关闭则恢复原剪贴板内容"
               action={
                 <Toggle
                   checked={app.keep_clipboard !== false}
@@ -184,7 +182,7 @@ export function AppSettingsPage() {
             />
             <SectionItem
               title="保留录音"
-              description="开启后保留最近 1 个月录音；关闭时仅保留失败录音用于重试"
+              tooltip="开启后保留最近 1 个月录音；关闭时仅保留失败录音用于重试"
               last
               action={
                 <Toggle
