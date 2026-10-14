@@ -96,7 +96,7 @@ export function HotkeyPage() {
       <Section>
         <SectionHeader
           title="全局语音主键"
-          subtitle="免提模式的唤起键 / 按住说话键；所有免提模式均以此键开始录音"
+          subtitle="免提模式的唤起键 / 按住说话键；所有免提模式均以此键开始录音。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。"
         />
         <SectionContent>
           <SectionItemList>
