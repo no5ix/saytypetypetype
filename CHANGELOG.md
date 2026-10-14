@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.1.4 (2026-10-14)
+
+This update substantially improves voice overlay animations, making appearance, dismissal, and resizing smoother. It also adds polishing failure retry and polishing from history, alongside hotkey improvements.
+
+### New Features & Improvements
+
+- **Voice Overlay Animation Upgrade** — Improved centered fades, scaling, and size transitions on macOS / Windows for smoother appearance, dismissal, and state changes, while keeping the background, text, and indicators aligned throughout.
+- **Polishing Failure Retry** — Failed polishing now shows the reason and holds the raw transcript. Press the global main hotkey to retry, `Enter` to output the original text, or `Esc` to discard it. After 5 seconds without input, the original text is delivered automatically, without re-recording. `Enter` and `Esc` can also interrupt an ongoing retry.
+- **Polish from History** — Choose a template to polish or re-polish a successful transcription and update the existing entry. New entries retain the template and original transcript, so subsequent polishing uses the original text when available.
+- **Contextual Shortcut Hints** — The voice overlay shows relevant cancel, finish, template, and retry shortcuts. Recording hints prioritize the most recently used eligible template, with the template preference retained across restarts.
+
+### Fixed
+
+- **Hotkey Event Filtering** — Added key filtering on macOS / Windows so starting or stopping a recording and handling polishing failures do not also type into the foreground app or trigger its actions. macOS falls back to listening only when Accessibility permission is unavailable.
+- **Exact Hotkey Matching** — Extra Ctrl / Alt / Shift / Command modifiers no longer trigger shorter bindings. Character keys in a main hotkey chord are filtered only when the chord matches, preserving ordinary presses of those keys.
+- **Hotkey Recording Protection** — Keys are filtered while recording a shortcut in settings to reduce accidental typing and input-method interference. Global main hotkey recordings must start with a function key, Tab, or a modifier; invalid recordings show an explanation and restore the previous setting. Template stop keys still allow ordinary character keys.
+- **Polishing Errors and Wait Times** — Distinguishes missing configuration, invalid credentials, unavailable models, incorrect service URLs, rate limits, network failures, and timeouts. Transient errors retry within bounded attempt and time limits. Reasoning is disabled where supported to reduce responses containing reasoning without answer text; truncated output is no longer retried automatically.
+- **History Recording Playback** — Playback can now be stopped, and starting another recording stops the previous one. Fixed overlapping playback and stale button states after rapid clicks.
+- **History Action Feedback** — Copying, deleting, re-transcribing, and polishing history entries now report success or failure.
+- **Overlay Layout Fixes** — Fixed first-frame text truncation and stale animations interfering with a newly shown overlay.
+- **Overlay States and Waveform** — Clearer preparation, transcription, polishing, and completion feedback, with more readable shortcut hints across light and dark backgrounds. Both platforms now use consistent rounded waveform animations that activate with sound and settle smoothly during silence, reducing low-level noise triggers.
+
+### Under the Hood
+
+- Unified hotkey filtering through keytap to reduce duplicate system keyboard listeners.
+- Fixed Rust formatting and cross-platform Clippy checks, and expanded tests for polishing, hotkeys, and overlay animation and layout.
+
 ## v2.1.3 (2026-07-13)
 
 ### New Features
