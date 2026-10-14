@@ -540,8 +540,8 @@ pub struct HotkeyRecordResult {
 const MAIN_HOTKEY_FIRST_KEY_HINT: &str =
     "为不影响键盘输入，主键第一个按键需为功能键、Tab 或修饰键（Ctrl/⌘/Shift/Option/Fn）";
 
-/// Record a hotkey combination from the live keyboard using a temporary keytap
-/// tap. Unlike a DOM keydown listener this captures keys the WebView never
+/// Record a hotkey combination via events from the resident keytap listener.
+/// Unlike a DOM keydown listener this captures keys the WebView never
 /// sees (e.g. the macOS Fn/Globe key). Blocks on a worker thread for up to
 /// ~10s; resolves with an empty result on Escape or timeout. `scope` selects
 /// whether the first-pressed-key rule applies (`"main"` — it does; `"prompt"`
@@ -558,12 +558,29 @@ pub async fn record_hotkey(
             log_hotkey!(error, "record_hotkey: HotkeyConfig not in managed state");
             "hotkey system not initialized".to_string()
         })?;
+    let session = uuid::Uuid::new_v4().to_string();
+    let worker_session = session.clone();
+    log_hotkey!(
+        info,
+        "recorder session={} stage=request scope={}",
+        session,
+        scope.as_deref().unwrap_or("prompt")
+    );
     let result = tokio::task::spawn_blocking(move || {
-        crate::hotkey::record_combination(&config, std::time::Duration::from_secs(10))
+        crate::hotkey::record_combination(
+            &config,
+            std::time::Duration::from_secs(10),
+            &worker_session,
+        )
     })
     .await
     .map_err(|e| {
-        log_hotkey!(error, "record_hotkey: worker panicked: {e}");
+        log_hotkey!(
+            error,
+            "recorder session={} outcome=worker_panicked error={}",
+            session,
+            e
+        );
         format!("record_hotkey worker panicked: {e}")
     })?;
 
@@ -576,6 +593,15 @@ pub async fn record_hotkey(
                 } else {
                     None
                 };
+            log_hotkey!(
+                info,
+                "recorder session={} stage=response combo={} first_key={:?} accepted={} invalid_reason={:?}",
+                session,
+                recorded.combo,
+                recorded.first_key,
+                invalid_reason.is_none(),
+                invalid_reason
+            );
             HotkeyRecordResult {
                 keys: vec![recorded.combo.clone()],
                 display_string: recorded.combo.clone(),
@@ -583,12 +609,19 @@ pub async fn record_hotkey(
                 invalid_reason,
             }
         }
-        None => HotkeyRecordResult {
-            keys: vec![],
-            display_string: String::new(),
-            hotkey: None,
-            invalid_reason: None,
-        },
+        None => {
+            log_hotkey!(
+                info,
+                "recorder session={} stage=response result=empty",
+                session
+            );
+            HotkeyRecordResult {
+                keys: vec![],
+                display_string: String::new(),
+                hotkey: None,
+                invalid_reason: None,
+            }
+        }
     })
 }
 

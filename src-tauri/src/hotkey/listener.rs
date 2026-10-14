@@ -98,14 +98,11 @@ fn install_suppress_handler(config: &HotkeyConfig) {
             // While the UI recorder captures a combination, swallow every key
             // so neither the settings window nor the IME reacts to it — a
             // Shift+F recording would otherwise toggle the IME or open the
-            // candidate list. The recorder itself still sees every key: the
-            // tap reports events on its channel before the suppression
-            // decision, and the Windows recorder polls the physical state
-            // entirely. ESC passes through so cancel-recording never depends
-            // on that ordering. Modifiers are unaffected on macOS (they
-            // arrive as FlagsChanged, which is not a swallowable KeyDown);
-            // on Windows swallowing them is safe — down and up are both
-            // swallowed, so the foreground never sees half a press.
+            // candidate list. keytap still sends captured events to its
+            // channel before blocking foreground delivery. All platforms
+            // record through that event stream. ESC passes through so the
+            // settings window can also handle cancellation. macOS modifier
+            // FlagsChanged events are not swallowed by keytap.
             return key != Key::Escape;
         }
         cfg.matcher.should_swallow(key, &cfg.bindings)
@@ -193,9 +190,25 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                 // matching bindings. This avoids a second WH_KEYBOARD_LL hook
                 // (unreliable on Windows with two taps per process).
                 if is_recording {
+                    // Record every received event before recorder rules or
+                    // main-hotkey validation can reject it. Never log typing
+                    // outside an active shortcut-recording session.
+                    log_hotkey!(
+                        info,
+                        "recorder stage=input event={:?} event_age_ms={}",
+                        event.kind,
+                        event.time.elapsed().as_millis()
+                    );
                     if let Some(tx) = record_tx {
-                        // event is Copy — no clone needed.
-                        let _ = tx.try_send(event);
+                        if let Err(error) = tx.try_send(event) {
+                            log_hotkey!(
+                                warn,
+                                "recorder stage=relay outcome=send_failed error={:?}",
+                                error
+                            );
+                        }
+                    } else {
+                        log_hotkey!(warn, "recorder stage=relay outcome=missing_receiver");
                     }
                     continue;
                 }
