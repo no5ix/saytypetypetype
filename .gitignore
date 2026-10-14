@@ -11,9 +11,9 @@ build
 .env
 config.yaml
 
-# Tauri build output
+# Tauri build output (Cargo.lock is committed — it pins dependency versions
+# across build hosts so Windows/macOS builds stay on the same tauri line)
 src-tauri/target/
-src-tauri/Cargo.lock
 
 # Generated icons are committed to git; ignore only the unused tauri-icon
 # artifacts (mobile / msix-store / unreferenced sizes).
