@@ -25,6 +25,7 @@ pub struct ElevenLabsRealtimeConfig {
     pub min_silence_duration_ms: u32,
     pub secondary_languages: Vec<String>,
     pub enable_keyterms: bool,
+    pub transcript_edit: String,
 }
 
 impl Default for ElevenLabsRealtimeConfig {
@@ -33,7 +34,7 @@ impl Default for ElevenLabsRealtimeConfig {
             api_key: String::new(),
             language: String::new(),
             filter_background_audio: false,
-            enable_ddc: false,
+            enable_ddc: true,
             commit_strategy: "vad".into(),
             vad_silence_threshold_secs: 1.5,
             vad_threshold: 0.4,
@@ -41,14 +42,21 @@ impl Default for ElevenLabsRealtimeConfig {
             min_silence_duration_ms: 100,
             secondary_languages: vec![],
             enable_keyterms: false,
+            transcript_edit: String::new(),
         }
     }
 }
 
 impl ElevenLabsRealtimeConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.commit_strategy.as_str(), "manual" | "vad") {
-            return Err("ElevenLabs 分段方式必须为 manual 或 vad".into());
+        if !matches!(
+            self.commit_strategy.as_str(),
+            "manual" | "vad" | "turn_prediction"
+        ) {
+            return Err("ElevenLabs 分段方式必须为 manual、vad 或 turn_prediction".into());
+        }
+        if self.transcript_edit.chars().count() > 2000 {
+            return Err("ElevenLabs 转写编辑指令最多 2000 个字符".into());
         }
         for (name, value, min, max) in [
             (
@@ -1604,7 +1612,7 @@ mod elevenlabs_tests {
             .unwrap();
         let mut config = manager.get_editable_config().unwrap();
         config["audio"][ELEVENLABS_REALTIME_ID] = serde_norway::from_str(
-            "api_key: test-key\nlanguage: pl\nsecondary_languages: [en, zh]\nvad_threshold: 0.6\n",
+            "api_key: test-key\nlanguage: pl\nsecondary_languages: [en, zh]\nvad_threshold: 0.6\ntranscript_edit: Use digits.\n",
         )
         .unwrap();
         let doubao = config["audio"][DOUBAO_STREAMING_ID].clone();
@@ -1616,9 +1624,11 @@ mod elevenlabs_tests {
             AppConfig::resolve_model_config(&registry, ELEVENLABS_REALTIME_ID, &loaded.audio);
         let params: ElevenLabsRealtimeConfig = serde_json::from_value(resolved).unwrap();
         assert_eq!(params.language, "pl");
+        assert_eq!(params.transcript_edit, "Use digits.");
         assert_eq!(params.secondary_languages, ["en", "zh"]);
         assert_eq!(params.vad_threshold, 0.6);
         assert_eq!(params.min_speech_duration_ms, 100);
+        assert!(params.enable_ddc);
         assert!(!params.enable_keyterms);
         let mut reset = restarted.get_editable_config().unwrap();
         reset["audio"]
@@ -1633,6 +1643,7 @@ mod elevenlabs_tests {
         )
         .unwrap();
         assert_eq!(params.vad_threshold, 0.4);
+        assert!(params.transcript_edit.is_empty());
     }
 
     #[test]

@@ -12,9 +12,9 @@ use super::capture;
 use super::cue;
 use super::finalize;
 use super::history;
-use super::reset_matcher_recording;
 use super::session;
 use super::wav;
+use super::{is_current_epoch, reset_matcher_recording};
 
 /// Start recording from idle state. Used by both toggle and hold modes.
 pub(super) async fn start_recording(app_handle: AppHandle) {
@@ -126,14 +126,30 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
     let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
     let recording_state = app_handle.state::<RecordingState>();
 
-    // Mark as not recording
-    *recording_state.0.lock().unwrap() = false;
+    // Claim this recording exactly once before any await.
+    {
+        let mut recording = recording_state.0.lock().unwrap();
+        if !*recording {
+            return;
+        }
+        *recording = false;
+    }
+    let my_epoch = app_inner
+        .session_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let server_final_only = app_inner
+        .config_manager
+        .load_config()
+        .is_ok_and(|config| config.audio_provider() == crate::config::ELEVENLABS_REALTIME_ID);
 
     // 1. Set state to finishing
     set_app_state(&app_handle, &app_inner, app_state::AppState::Finishing).await;
 
     // 2. Stop renderer audio first so the final buffered chunk is flushed.
     capture::stop_capture(&app_inner).await;
+    if !is_current_epoch(&app_inner, my_epoch) {
+        return;
+    }
     // Snapshot whether real sound was captured before save_recording_wav drains
     // the buffer: a silent stop ends immediately, but speech whose transcript was
     // lost (slow/failed network) must keep the retry path even with no result yet.
@@ -142,11 +158,15 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
         wav::recording_has_audio_signal(&audio)
     };
     history::save_recording_wav(&app_handle, &app_inner).await;
+    if !is_current_epoch(&app_inner, my_epoch) {
+        return;
+    }
 
     // 3. Acquire the ready ASR session. If the background connect hasn't finished
     //    (user stopped before it was ready), wait for it to resolve so the buffered
     //    audio still gets transcribed instead of being thrown away.
-    let session = match app_inner.asr_session.lock().await.take() {
+    let mut connection_error = None;
+    let session = match app_inner.asr_session.lock().await.clone() {
         Some(s) => Some(s),
         None => {
             // If the recording was too short to contain speech and nothing was
@@ -154,7 +174,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             // 12 s for a session that will only time out on the server side.
             // Genuine speech (signal present) still waits so the buffered audio
             // gets transcribed instead of being thrown away.
-            if !captured_audio_signal {
+            if !server_final_only && !captured_audio_signal {
                 let prefix = app_inner.accumulated_text.lock().await.clone();
                 if prefix.trim().is_empty() {
                     log_rec!(
@@ -174,8 +194,19 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             let rx = app_inner.connect_rx.lock().await.take();
             match rx {
                 Some(rx) => match tokio::time::timeout(Duration::from_secs(12), rx).await {
-                    Ok(Ok(Ok(()))) => app_inner.asr_session.lock().await.take(),
-                    _ => None, // connect failed / timed out / task gone
+                    Ok(Ok(Ok(()))) => app_inner.asr_session.lock().await.clone(),
+                    Ok(Ok(Err(message))) => {
+                        connection_error = Some(message);
+                        None
+                    }
+                    Ok(Err(_)) => {
+                        connection_error = Some("语音连接任务已结束，请重试".into());
+                        None
+                    }
+                    Err(_) => {
+                        connection_error = Some("语音服务连接超时，请重试".into());
+                        None
+                    }
                 },
                 None => None,
             }
@@ -198,7 +229,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
                 || !partial_t.trim().is_empty()
                 || !accumulated.trim().is_empty()
         };
-        if !recognized_anything && !captured_audio_signal {
+        if !server_final_only && !recognized_anything && !captured_audio_signal {
             log_rec!(info, "Stop with no recognized speech; ending immediately");
             session.close();
             app_inner.pending_audio.lock().await.clear();
@@ -209,30 +240,43 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             return;
         }
 
+        if !is_current_epoch(&app_inner, my_epoch) {
+            session.close();
+            return;
+        }
         // 5. Commit and get this session's final text.
         let session_text = match session.commit_and_await_final().await {
             Ok(t) => t,
             Err(e) => {
+                if !is_current_epoch(&app_inner, my_epoch) {
+                    session.close();
+                    return;
+                }
                 log_rec!(warn, "ASR commit failed: {}", e);
                 session.close();
-                if let Some(text) = session.recognized_text() {
-                    let has_text = !text.trim().is_empty()
-                        || !app_inner.accumulated_text.lock().await.trim().is_empty();
-                    if has_text {
-                        *app_inner.latest_transcript.lock().await = (text, String::new());
-                        finalize::finalize_on_failure(&app_handle, &app_inner, &e).await;
+                {
+                    let mut slot = app_inner.asr_session.lock().await;
+                    if !is_current_epoch(&app_inner, my_epoch) {
                         return;
                     }
+                    slot.take();
                 }
                 app_inner.pending_audio.lock().await.clear();
                 *app_inner.accumulated_text.lock().await = String::new();
                 history::record_transcription_failure(&app_handle, &app_inner, &e).await;
+                if !is_current_epoch(&app_inner, my_epoch) {
+                    return;
+                }
                 overlay::emit_retryable_error_hint(&app_handle, &app_inner, &e).await;
                 set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
                 overlay::schedule_retry_overlay_hide(app_handle.clone(), Arc::clone(&app_inner));
                 return;
             }
         };
+        if !is_current_epoch(&app_inner, my_epoch) {
+            session.close();
+            return;
+        }
         log_rec!(
             debug,
             "ASR commit final text ({} chars): {:?}",
@@ -244,11 +288,21 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
         let prefix = app_inner.accumulated_text.lock().await.clone();
         let combined = format!("{}{}", prefix, session_text);
 
-        // 5-9. Polish (if applicable), write clipboard, paste, record stats, end cue.
-        let outcome = finalize::finalize_and_paste(&app_handle, &app_inner, combined).await;
-
-        // 10. Close the WebSocket session
         session.close();
+        {
+            let mut slot = app_inner.asr_session.lock().await;
+            if !is_current_epoch(&app_inner, my_epoch) {
+                return;
+            }
+            slot.take();
+        }
+        // 5-9. Polish (if applicable), write clipboard, paste, record stats, end cue.
+        let outcome =
+            finalize::finalize_and_paste(&app_handle, &app_inner, combined, my_epoch).await;
+
+        if !is_current_epoch(&app_inner, my_epoch) {
+            return;
+        }
 
         if outcome == finalize::FinalizeOutcome::Deferred {
             // A failed polish parked the text and already settled the app state:
@@ -258,37 +312,19 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             return;
         }
     } else {
-        // No ready session: the connect never completed (or we stopped during a
-        // reconnect gap). Drop any buffered audio for this round.
-        app_inner.pending_audio.lock().await.clear();
-        let prefix = app_inner.accumulated_text.lock().await.clone();
-        if !prefix.trim().is_empty() {
-            // Salvage text accumulated before the disconnect instead of discarding.
-            log_rec!(
-                warn,
-                "Stop with no ready session; salvaging accumulated text"
-            );
-            let outcome = finalize::finalize_and_paste(&app_handle, &app_inner, prefix).await;
-            if outcome == finalize::FinalizeOutcome::Deferred {
-                // A failed polish parked the text and already settled the app state:
-                // leave the overlay up so the user can retry, ESC out, or let it
-                // auto-paste.
-                *app_inner.accumulated_text.lock().await = String::new();
-                return;
-            }
-        } else {
-            log_rec!(
-                warn,
-                "Stop with no ready ASR session; discarding buffered audio"
-            );
-            let message = "语音服务连接失败，请检查网络连接";
-            history::record_transcription_failure(&app_handle, &app_inner, message).await;
-            overlay::emit_retryable_error_hint(&app_handle, &app_inner, message).await;
-            *app_inner.accumulated_text.lock().await = String::new();
-            set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-            overlay::schedule_retry_overlay_hide(app_handle.clone(), Arc::clone(&app_inner));
+        if !is_current_epoch(&app_inner, my_epoch) {
             return;
         }
+        finalize::finalize_on_failure(
+            &app_handle,
+            &app_inner,
+            connection_error
+                .as_deref()
+                .unwrap_or("语音服务未能完成最终确认，请重试"),
+            my_epoch,
+        )
+        .await;
+        return;
     }
 
     // 11. Clear cross-reconnect accumulated text for the next recording.
@@ -313,6 +349,11 @@ pub(super) async fn abort_retry_or_failure(
     app_inner
         .session_epoch
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if let Some(session) = app_inner.asr_session.lock().await.take() {
+        session.close();
+    }
+    capture::stop_capture(app_inner).await;
+    app_inner.pending_audio.lock().await.clear();
     *app_inner.current_retry_of.lock().await = None;
     *app_inner.current_failure_ts.lock().await = None;
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());

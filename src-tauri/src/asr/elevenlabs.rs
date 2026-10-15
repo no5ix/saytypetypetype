@@ -23,9 +23,6 @@ use crate::config::ElevenLabsRealtimeConfig;
 const ENDPOINT: &str = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FINAL_WINDOW: Duration = Duration::from_secs(10);
-// The protocol has no commit ID. Briefly drain adjacent VAD events instead of
-// treating the first post-stop commit as an end-of-stream acknowledgement.
-const FINAL_SETTLE: Duration = Duration::from_millis(250);
 
 pub struct ElevenLabsEngine {
     config: ElevenLabsRealtimeConfig,
@@ -65,6 +62,9 @@ fn request(
                     "false"
                 },
             );
+        if !config.transcript_edit.trim().is_empty() {
+            query.append_pair("transcript_edit", config.transcript_edit.trim());
+        }
         if !config.language.trim().is_empty() {
             query.append_pair("language_code", &config.language.trim().to_lowercase());
         }
@@ -77,7 +77,7 @@ fn request(
         {
             query.append_pair("secondary_languages", &code);
         }
-        if config.commit_strategy == "vad" {
+        if config.commit_strategy != "manual" {
             for (key, value) in [
                 (
                     "vad_silence_threshold_secs",
@@ -143,24 +143,38 @@ fn audio_message(samples: &[f32], commit: bool) -> Message {
     Message::Text(json!({"message_type":"input_audio_chunk", "audio_base_64":STANDARD.encode(pcm), "sample_rate":16000, "commit":commit}).to_string().into())
 }
 
+struct ConfirmedSegment {
+    original: String,
+    edited: Option<String>,
+}
+
 #[derive(Default)]
 struct Transcript {
-    final_text: String,
+    segments: Vec<ConfirmedSegment>,
     partial: String,
     samples: usize,
-    nonzero_audio: bool,
-    commits: usize,
-    speech_samples: usize,
-    last_speech_sent: Option<Instant>,
-    confirmed_speech_samples: usize,
-    last_change: Option<Instant>,
+    barrier_confirmed: bool,
+    drain_rejected: bool,
+    completed: bool,
 }
 
 impl Transcript {
-    fn confirmed(&self) -> bool {
-        self.commits > 0
-            && self.partial.is_empty()
-            && self.speech_samples <= self.confirmed_speech_samples
+    fn display_text(&self) -> String {
+        let mut text = String::new();
+        for segment in &self.segments {
+            append_segment(
+                &mut text,
+                segment.edited.as_ref().unwrap_or(&segment.original),
+            );
+        }
+        text
+    }
+    fn final_text(&self, editing: bool) -> Option<String> {
+        if !self.barrier_confirmed || (editing && self.segments.iter().any(|s| s.edited.is_none()))
+        {
+            return None;
+        }
+        Some(self.display_text())
     }
 }
 
@@ -272,11 +286,22 @@ pub(crate) fn retryable_start_error(message: &str) -> bool {
             .is_some_and(|code| code == 429 || (500..600).contains(&code))
 }
 
+fn server_reports_no_uncommitted_audio(value: &Value) -> bool {
+    static ZERO_AUDIO: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = ZERO_AUDIO.get_or_init(|| {
+        regex::Regex::new(r"^Commit request ignored: only 0(?:\.0+)?s of uncommitted audio\.")
+            .unwrap()
+    });
+    value["error"]
+        .as_str()
+        .is_some_and(|message| pattern.is_match(message))
+}
+
 struct Runtime {
     ready: AtomicBool,
     finishing: AtomicBool,
-    normal_close: AtomicBool,
     api_key: String,
+    editing: bool,
     updates: watch::Sender<u64>,
     transcript: Mutex<Transcript>,
     ended: watch::Sender<Option<String>>,
@@ -296,62 +321,95 @@ impl Runtime {
             let _ = self.events.send(AsrEvent::Error { message, fatal });
         }
     }
-    fn transcript(&self, value: &Value) {
+
+    /// Returns whether a further no-audio commit is needed to obtain the
+    /// server-confirmed empty segment that drains prior VAD confirmations.
+    fn transcript(&self, value: &Value) -> bool {
         let kind = value["message_type"].as_str().unwrap_or("");
         let Some(text) = value["text"].as_str() else {
-            return;
+            return false;
         };
         let mut state = self.transcript.lock().unwrap();
+        if state.completed {
+            return false;
+        }
+        let mut drain_commit = false;
         match kind {
             "partial_transcript" => {
-                if state.partial != text {
-                    state.last_change = Some(Instant::now());
+                // Late interim revisions never modify any confirmed segment.
+                if !state.barrier_confirmed {
+                    state.partial = text.into();
                 }
-                state.partial = text.into();
             }
             "committed_transcript" => {
-                state.commits += 1;
-                // A VAD result received while newer speech is still being sent
-                // cannot acknowledge that newer audio. Only use a quiet boundary
-                // for the already-confirmed fast path; otherwise explicitly commit.
-                if state
-                    .last_speech_sent
-                    .is_some_and(|sent| sent.elapsed() >= FINAL_SETTLE)
-                {
-                    state.confirmed_speech_samples = state.speech_samples;
+                if text.is_empty() {
+                    if self.finishing.load(Ordering::SeqCst) {
+                        state.barrier_confirmed = true;
+                    }
+                } else {
+                    state.segments.push(ConfirmedSegment {
+                        original: text.into(),
+                        edited: None,
+                    });
+                    drain_commit = self.finishing.load(Ordering::SeqCst) && !self.editing;
                 }
-                state.last_change = Some(Instant::now());
-                append_segment(&mut state.final_text, text);
                 state.partial.clear();
             }
-            _ => return,
+            "edited_transcript" if self.editing => {
+                let Some(edited) = value["edited_text"].as_str() else {
+                    return false;
+                };
+                // The API explicitly uses the original text to correlate edits.
+                // This is not similarity deduplication: identical spoken segments
+                // retain separate entries and receive one edit each.
+                if let Some(segment) = state
+                    .segments
+                    .iter_mut()
+                    .find(|s| s.original == text && s.edited.is_none())
+                {
+                    segment.edited = Some(edited.into());
+                    drain_commit = self.finishing.load(Ordering::SeqCst)
+                        && !state.barrier_confirmed
+                        && state
+                            .segments
+                            .iter()
+                            .all(|segment| segment.edited.is_some());
+                } else {
+                    log_asr!(warn, "ElevenLabs edit has no pending confirmed segment");
+                    return false;
+                }
+            }
+            _ => return false,
         }
+        log_asr!(
+            debug,
+            "ElevenLabs event={} segments={} finalizing={} barrier={}",
+            kind,
+            state.segments.len(),
+            self.finishing.load(Ordering::SeqCst),
+            state.barrier_confirmed
+        );
         self.updates.send_modify(|revision| *revision += 1);
         let _ = self.events.send(AsrEvent::Transcript {
-            final_text: state.final_text.clone(),
+            final_text: state.display_text(),
             partial_text: state.partial.clone(),
         });
+        drain_commit
     }
-}
-
-struct FinishTicket {
-    baseline: usize,
-    already_confirmed: bool,
 }
 
 enum Command {
     Audio(Vec<f32>),
-    Finish(oneshot::Sender<FinishTicket>),
+    Finish(oneshot::Sender<usize>),
 }
 
 enum Control {
     Pong(tokio_tungstenite::tungstenite::Bytes),
-    RetryCommit,
+    Commit,
 }
 
 struct ElevenLabsSession {
     runtime: Arc<Runtime>,
-    // Taking the sender serializes finalization against all append calls.
     sender: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     final_window: Duration,
 }
@@ -372,6 +430,12 @@ async fn connect_session(
     final_window: Duration,
     api_key: String,
 ) -> Result<(Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>), String> {
+    let editing = url::Url::parse(&req.uri().to_string())
+        .ok()
+        .is_some_and(|url| {
+            url.query_pairs()
+                .any(|(key, value)| key == "transcript_edit" && !value.is_empty())
+        });
     let (mut socket, _) = timeout(CONNECT_TIMEOUT, connect_async(req))
         .await
         .map_err(|_| "ElevenLabs 连接超时".to_string())?
@@ -393,9 +457,12 @@ async fn connect_session(
                         return Err(message);
                     }
                     if value["message_type"] == "warning" {
-                        warnings.push(safe_detail(
-                            value["warning"].as_str().unwrap_or("服务端警告"),
-                            &api_key,
+                        warnings.push(format!(
+                            "ElevenLabs：{}",
+                            safe_detail(
+                                value["warning"].as_str().unwrap_or("服务端警告"),
+                                &api_key
+                            )
                         ));
                     }
                     if value["message_type"] == "session_started" {
@@ -416,13 +483,20 @@ async fn connect_session(
     })
     .await
     .map_err(|_| "ElevenLabs 会话启动超时".to_string())??;
-    Ok(start_session(socket, final_window, api_key, warnings))
+    Ok(start_session(
+        socket,
+        final_window,
+        api_key,
+        editing,
+        warnings,
+    ))
 }
 
 fn start_session<S>(
     socket: WebSocketStream<S>,
     final_window: Duration,
     api_key: String,
+    editing: bool,
     warnings: Vec<String>,
 ) -> (Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>)
 where
@@ -433,8 +507,8 @@ where
     let runtime = Arc::new(Runtime {
         ready: AtomicBool::new(true),
         finishing: AtomicBool::new(false),
-        normal_close: AtomicBool::new(false),
         api_key,
+        editing,
         updates: watch::channel(0).0,
         transcript: Mutex::new(Transcript::default()),
         ended,
@@ -446,25 +520,29 @@ where
     }
     let (mut sink, mut stream) = socket.split();
     let (sender, mut commands) = mpsc::unbounded_channel();
-    let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+    let (control_tx, mut controls) = mpsc::unbounded_channel();
     let writer = Arc::clone(&runtime);
     let mut writer_end = runtime.ended.subscribe();
     tokio::spawn(async move {
         let mut next_audio = Instant::now();
+        let mut next_commit = Instant::now();
         let mut finished = false;
         loop {
             tokio::select! {
                 biased;
                 _ = writer_end.changed() => { let _ = timeout(CONNECT_TIMEOUT, sink.close()).await; break; }
-                Some(control) = control_rx.recv() => {
+                Some(control) = controls.recv() => {
                     let message = match control {
                         Control::Pong(data) => Message::Pong(data),
-                        Control::RetryCommit => {
-                            if !finished { continue; }
-                            tokio::select! {
-                                _ = writer_end.changed() => break,
-                                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-                            }
+                        Control::Commit => {
+                            if !finished || {
+                                let state = writer.transcript.lock().unwrap();
+                                state.barrier_confirmed || state.drain_rejected
+                                    || (writer.editing && state.segments.iter().any(|segment| segment.edited.is_none()))
+                            } { continue; }
+                            // Submission pacing is not a completion heuristic.
+                            tokio::select! { _ = writer_end.changed() => break, _ = sleep_until(next_commit.max(Instant::now() + Duration::from_millis(500))) => {} }
+                            next_commit = Instant::now() + Duration::from_millis(500);
                             audio_message(&[], true)
                         }
                     };
@@ -476,44 +554,37 @@ where
                 }
                 command = commands.recv(), if !finished => {
                     let Some(command) = command else { break; };
-                    tokio::select! {
-                        _ = writer_end.changed() => { let _ = timeout(CONNECT_TIMEOUT, sink.close()).await; break; }
-                        _ = sleep_until(next_audio) => {}
-                    }
-                    let (message, duration, ack, audio_info) = match command {
-                        Command::Audio(samples) => {
-                            let signal = samples.iter().any(|v| v.is_finite() && v.abs() >= 0.004);
-                            let nonzero = samples.iter().any(|v| v.is_finite() && *v != 0.0);
-                            (audio_message(&samples, false), Duration::from_secs_f64(samples.len() as f64 / 16000.0), None, Some((samples.len(), signal, nonzero)))
-                        }
+                    tokio::select! { _ = writer_end.changed() => break, _ = sleep_until(next_audio) => {} }
+                    let (message, duration, ack, samples) = match command {
+                        Command::Audio(samples) => (audio_message(&samples, false), Duration::from_secs_f64(samples.len() as f64 / 16000.0), None, samples.len()),
                         Command::Finish(ack) => {
+                            let samples = writer.transcript.lock().unwrap().samples;
+                            if samples == 0 { finished = true; let _ = ack.send(0); continue; }
                             writer.finishing.store(true, Ordering::SeqCst);
-                            let state = writer.transcript.lock().unwrap();
-                            let ticket = FinishTicket { baseline: state.commits, already_confirmed: state.confirmed() };
-                            if state.samples == 0 || ticket.already_confirmed {
+                            if writer.editing && writer.transcript.lock().unwrap().segments.iter().any(|segment| segment.edited.is_none()) {
+                                // An empty commit may close the connection. Preserve the
+                                // transport until all existing edit events have arrived.
                                 finished = true;
-                                let _ = ack.send(ticket);
+                                let _ = ack.send(samples);
                                 continue;
                             }
-                            (audio_message(&[], true), Duration::ZERO, Some((ack, ticket)), None)
-                        },
+                            next_commit = Instant::now() + Duration::from_millis(500);
+                            log_asr!(debug, "ElevenLabs final commit sent after {} samples", samples);
+                            (audio_message(&[], true), Duration::ZERO, Some(ack), 0)
+                        }
                     };
                     let sent = tokio::select! {
                         _ = writer_end.changed() => break,
                         result = timeout(CONNECT_TIMEOUT, sink.send(message)) => result,
                     };
                     if !matches!(sent, Ok(Ok(()))) { writer.fail("ElevenLabs 音频发送失败，请检查网络".into(), false); break; }
-                    if let Some((samples, signal, nonzero)) = audio_info {
+                    let sent_samples = {
                         let mut state = writer.transcript.lock().unwrap();
                         state.samples += samples;
-                        state.nonzero_audio |= nonzero;
-                        if signal {
-                            state.speech_samples = state.samples;
-                            state.last_speech_sent = Some(Instant::now());
-                        }
-                    }
+                        state.samples
+                    };
                     next_audio = Instant::now() + duration;
-                    if let Some((ack, ticket)) = ack { finished = true; let _ = ack.send(ticket); }
+                    if let Some(ack) = ack { finished = true; let _ = ack.send(sent_samples); }
                 }
             }
         }
@@ -521,7 +592,7 @@ where
     let reader = Arc::clone(&runtime);
     let mut reader_end = runtime.ended.subscribe();
     tokio::spawn(async move {
-        let mut commit_retries = 0;
+        let mut retries = 0;
         loop {
             tokio::select! {
                 biased;
@@ -529,44 +600,57 @@ where
                 message = stream.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
-                            match serde_json::from_str::<Value>(&text) {
-                                Ok(value) => {
-                                    if let Some((message, fatal)) = server_error(&value, &reader.api_key) {
-                                        if value["message_type"] == "commit_throttled" && commit_retries < 3 {
-                                            let _ = reader.events.send(AsrEvent::Warning { message });
-                                            if reader.finishing.load(Ordering::SeqCst) {
-                                                commit_retries += 1;
-                                                let _ = control_tx.send(Control::RetryCommit);
-                                            }
-                                            continue;
-                                        }
-                                        reader.fail(message, fatal); break;
-                                    }
-                                    if value["message_type"] == "warning" {
-                                        let message = format!("ElevenLabs：{}", safe_detail(value["warning"].as_str().unwrap_or("服务端警告"), &reader.api_key));
-                                        log_asr!(warn, "{}", message);
-                                        let _ = reader.events.send(AsrEvent::Warning { message });
-                                    }
-                                    reader.transcript(&value);
-                                }
+                            let value: Value = match serde_json::from_str(&text) {
+                                Ok(value) => value,
                                 Err(_) => { reader.fail("ElevenLabs 返回无效消息".into(), true); break; }
+                            };
+                            if value["message_type"] == "commit_throttled"
+                                && reader.finishing.load(Ordering::SeqCst)
+                                && server_reports_no_uncommitted_audio(&value) {
+                                // Live API: probing an already drained manual segment returns
+                                // this explicit server-side duration and closes with code 1000.
+                                // Wait for that close, collecting any preceding final/edit frames.
+                                reader.transcript.lock().unwrap().drain_rejected = true;
+                                log_asr!(debug, "ElevenLabs reports zero uncommitted audio; awaiting server close");
+                                continue;
                             }
+                            if let Some((message, fatal)) = server_error(&value, &reader.api_key) {
+                                if value["message_type"] == "commit_throttled" && reader.finishing.load(Ordering::SeqCst) && retries < 3 {
+                                    retries += 1;
+                                    let _ = reader.events.send(AsrEvent::Warning { message });
+                                    let _ = control_tx.send(Control::Commit);
+                                    continue;
+                                }
+                                reader.fail(message, fatal); break;
+                            }
+                            if value["message_type"] == "warning" {
+                                let message = format!("ElevenLabs：{}", safe_detail(value["warning"].as_str().unwrap_or("服务端警告"), &reader.api_key));
+                                log_asr!(warn, "{}", message);
+                                let _ = reader.events.send(AsrEvent::Warning { message });
+                            }
+                            if reader.transcript(&value) { let _ = control_tx.send(Control::Commit); }
                         }
                         Some(Ok(Message::Ping(data))) => { let _ = control_tx.send(Control::Pong(data)); }
                         Some(Ok(Message::Close(frame))) => {
-                            let code = frame.as_ref().map(|v| u16::from(v.code));
-                            let reason = frame.as_ref().map(|v| safe_detail(&v.reason, &reader.api_key)).unwrap_or_default();
-                            if code == Some(1000) && reader.finishing.load(Ordering::SeqCst) {
-                                reader.normal_close.store(true, Ordering::SeqCst);
-                                reader.ready.store(false, Ordering::SeqCst);
-                                reader.ended.send_replace(Some("ElevenLabs 在尾句确认前关闭连接".into()));
-                            } else {
-                                reader.fail(format!("ElevenLabs 连接已关闭（{}）{}", code.map(|v| v.to_string()).unwrap_or_else(|| "无状态码".into()), reason), false);
+                            let code = frame.as_ref().map(|f| u16::from(f.code));
+                            let reason = frame.as_ref().map(|f| safe_detail(&f.reason, &reader.api_key)).unwrap_or_default();
+                            {
+                                let mut state = reader.transcript.lock().unwrap();
+                                if state.drain_rejected && code == Some(1000) && reason == "commit_throttled" {
+                                    state.barrier_confirmed = true;
+                                    reader.updates.send_modify(|revision| *revision += 1);
+                                }
+                            }
+                            // A bare normal close is insufficient; the server must first
+                            // confirm the empty segment or explicitly report zero pending audio.
+                            if reader.transcript.lock().unwrap().final_text(reader.editing).is_none() {
+                                let code = frame.as_ref().map(|f| u16::from(f.code));
+                                let reason = frame.as_ref().map(|f| safe_detail(&f.reason, &reader.api_key)).unwrap_or_default();
+                                reader.fail(format!("ElevenLabs 在最终确认前关闭连接（{}）{}", code.map(|c| c.to_string()).unwrap_or_else(|| "无状态码".into()), reason), false);
                             }
                             break;
                         }
-                        None => { reader.fail("ElevenLabs 连接意外断开".into(), false); break; }
-                        Some(Err(_)) => { reader.fail("ElevenLabs 连接中断，请检查网络".into(), false); break; }
+                        None | Some(Err(_)) => { reader.fail("ElevenLabs 连接中断，请检查网络后重试".into(), false); break; }
                         _ => {}
                     }
                 }
@@ -593,7 +677,6 @@ impl AsrSession for ElevenLabsSession {
             return;
         }
         if let Some(sender) = self.sender.lock().unwrap().as_ref() {
-            // Keep packets within the documented 0.1–1 second recommendation, including replay.
             for chunk in samples.chunks(1600) {
                 let _ = sender.send(Command::Audio(chunk.to_vec()));
             }
@@ -605,85 +688,46 @@ impl AsrSession for ElevenLabsSession {
         if let Some(error) = ended.borrow().clone() {
             return Err(error);
         }
-        let (ack, received) = oneshot::channel();
-        {
-            let sender = self
-                .sender
-                .lock()
-                .unwrap()
-                .take()
-                .ok_or("ElevenLabs 录音已结束")?;
-            sender
-                .send(Command::Finish(ack))
-                .map_err(|_| "ElevenLabs 发送队列已关闭")?;
-        }
-        let ticket = tokio::select! {
+        let (ack, sent) = oneshot::channel();
+        self.sender
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or("ElevenLabs 录音已结束")?
+            .send(Command::Finish(ack))
+            .map_err(|_| "ElevenLabs 发送队列已关闭")?;
+        let samples = tokio::select! {
             biased;
-            result = received => result.map_err(|_| "ElevenLabs 最终提交失败")?,
-            _ = ended.changed() => {
-                let state = self.runtime.transcript.lock().unwrap();
-                if self.runtime.normal_close.load(Ordering::SeqCst) && state.confirmed() {
-                    return Ok(state.final_text.clone());
-                }
-                return Err(ended.borrow().clone().unwrap_or_else(|| "ElevenLabs 会话已结束".into()));
-            },
+            result = sent => result.map_err(|_| "ElevenLabs 最终提交失败")?,
+            _ = ended.changed() => return Err(ended.borrow().clone().unwrap_or_else(|| "ElevenLabs 会话已结束".into())),
         };
+        if samples == 0 {
+            return Ok(String::new());
+        }
         let deadline = Instant::now() + self.final_window;
         loop {
             if let Some(error) = ended.borrow().clone() {
-                if !self.runtime.normal_close.load(Ordering::SeqCst) {
-                    return Err(error);
-                }
-            }
-            let (complete, quiet_until) = {
-                let state = self.runtime.transcript.lock().unwrap();
-                if state.samples == 0 {
-                    return Ok(String::new());
-                }
-                let confirmed = state.partial.is_empty()
-                    && (ticket.already_confirmed || state.commits > ticket.baseline);
-                let silent = !state.nonzero_audio && state.partial.is_empty();
-                let quiet_until = state.last_change.unwrap_or_else(Instant::now) + FINAL_SETTLE;
-                if confirmed
-                    && (Instant::now() >= quiet_until
-                        || self.runtime.normal_close.load(Ordering::SeqCst))
-                {
-                    return Ok(state.final_text.clone());
-                }
-                (
-                    confirmed || silent,
-                    if silent && state.last_change.is_none() {
-                        deadline.min(Instant::now() + FINAL_SETTLE)
-                    } else {
-                        quiet_until
-                    },
-                )
-            };
-            if let Some(error) = ended.borrow().clone() {
                 return Err(error);
+            }
+            {
+                let mut state = self.runtime.transcript.lock().unwrap();
+                if let Some(text) = state.final_text(self.runtime.editing) {
+                    state.completed = true;
+                    return Ok(text);
+                }
             }
             tokio::select! {
                 biased;
                 _ = ended.changed() => {},
                 _ = updates.changed() => {},
-                _ = sleep_until(deadline) => return Err("ElevenLabs 最终结果超时，请检查网络后重试".into()),
-                _ = sleep_until(quiet_until), if complete => {
-                    let state = self.runtime.transcript.lock().unwrap();
-                    if !state.nonzero_audio && state.partial.is_empty() { return Ok(state.final_text.clone()); }
-                },
+                _ = sleep_until(deadline) => {
+                    let editing = self.runtime.editing && self.runtime.transcript.lock().unwrap().segments.iter().any(|segment| segment.edited.is_none());
+                    return Err(if editing { "ElevenLabs 转写编辑未完成，请重试" } else { "ElevenLabs 最终确认超时，请重试" }.into());
+                }
             }
         }
     }
-
-    fn recognized_text(&self) -> Option<String> {
-        let state = self.runtime.transcript.lock().unwrap();
-        let mut text = state.final_text.clone();
-        append_segment(&mut text, &state.partial);
-        Some(text)
-    }
-
     fn close(&self) {
-        self.runtime.normal_close.store(false, Ordering::SeqCst);
         self.runtime.ready.store(false, Ordering::SeqCst);
         self.sender.lock().unwrap().take();
         self.runtime
@@ -751,13 +795,26 @@ mod tests {
         assert_eq!(config.commit_strategy, "vad");
         assert_eq!(config.vad_threshold, 0.4);
         assert!(!config.enable_keyterms);
+        assert!(config.enable_ddc);
+        let user: ElevenLabsRealtimeConfig =
+            serde_json::from_value(json!({"enable_ddc":false})).unwrap();
+        assert!(!user.enable_ddc);
+        assert!(params(&self::config(), &[]).contains(&("no_verbatim".into(), "true".into())));
+        assert!(params(
+            &ElevenLabsRealtimeConfig {
+                api_key: "test-secret".into(),
+                ..user
+            },
+            &[]
+        )
+        .contains(&("no_verbatim".into(), "false".into())));
         for patch in [
             json!({"vad_threshold":0.0}),
             json!({"vad_silence_threshold_secs":3.1}),
             json!({"min_speech_duration_ms":49}),
             json!({"min_silence_duration_ms":2001}),
             json!({"language":"zh-CN"}),
-            json!({"commit_strategy":"turn_prediction"}),
+            json!({"commit_strategy":"auto"}),
         ] {
             let bad: ElevenLabsRealtimeConfig = serde_json::from_value(patch).unwrap();
             assert!(bad.validate().is_err());
@@ -838,6 +895,28 @@ mod tests {
         assert!(server_error(&json!({"message_type":"warning"}), "test-secret").is_none());
     }
 
+    #[test]
+    fn editing_parameters_and_turn_prediction_follow_the_protocol() {
+        let mut config = config();
+        assert!(!params(&config, &[])
+            .iter()
+            .any(|(key, _)| key == "transcript_edit"));
+        config.transcript_edit = "Use digits.\nKeep names & dates.".into();
+        assert!(params(&config, &[])
+            .contains(&("transcript_edit".into(), config.transcript_edit.clone())));
+        config.transcript_edit = "x".repeat(2001);
+        assert!(config.validate().is_err());
+        config.transcript_edit.clear();
+        config.commit_strategy = "turn_prediction".into();
+        assert!(config.validate().is_ok());
+        assert!(
+            params(&config, &[]).contains(&("commit_strategy".into(), "turn_prediction".into()))
+        );
+        assert!(params(&config, &[])
+            .iter()
+            .any(|(key, _)| key == "vad_threshold"));
+    }
+
     type Server = WebSocketStream<TcpStream>;
     async fn mock() -> (String, tokio::task::JoinHandle<Server>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -856,29 +935,43 @@ mod tests {
             .await
             .unwrap();
     }
-    async fn session() -> (
+    async fn session_with_edit(
+        editing: bool,
+    ) -> (
         Arc<dyn AsrSession>,
         mpsc::UnboundedReceiver<AsrEvent>,
         Server,
     ) {
         let (endpoint, server) = mock().await;
+        let mut config = config();
+        if editing {
+            config.transcript_edit = "Use digits".into();
+        }
         let client = tokio::spawn(connect_session(
-            request(&config(), &[], &endpoint).unwrap(),
-            Duration::from_millis(1000),
-            "test-secret".into(),
+            request(&config, &[], &endpoint).unwrap(),
+            Duration::from_secs(2),
+            config.api_key,
         ));
         let mut server = server.await.unwrap();
         send(&mut server, "session_started", "").await;
         let (session, events) = client.await.unwrap().unwrap();
         (Arc::from(session), events, server)
     }
+    async fn session() -> (
+        Arc<dyn AsrSession>,
+        mpsc::UnboundedReceiver<AsrEvent>,
+        Server,
+    ) {
+        session_with_edit(false).await
+    }
     async fn next_audio(server: &mut Server) -> Value {
-        timeout(Duration::from_secs(2), async {
-            loop {
-                if let Some(Ok(Message::Text(text))) = server.next().await {
+        timeout(Duration::from_secs(3), async {
+            while let Some(message) = server.next().await {
+                if let Ok(Message::Text(text)) = message {
                     return serde_json::from_str(&text).unwrap();
                 }
             }
+            panic!("server stream ended before expected request")
         })
         .await
         .unwrap()
@@ -899,80 +992,119 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fifo_pacing_and_late_tail_do_not_resolve_on_old_vad_commit() {
-        let (session, mut events, mut server) = session().await;
-        assert!(matches!(events.recv().await, Some(AsrEvent::Open)));
-        session.append_audio(&vec![0.1; 3200]);
-        let finalizing = Arc::clone(&session);
-        let result = tokio::spawn(async move { finalizing.commit_and_await_final().await });
-        let first = next_audio(&mut server).await;
-        let sent_at = Instant::now();
-        let second = next_audio(&mut server).await;
-        assert!(sent_at.elapsed() >= Duration::from_millis(85));
-        assert_eq!(first["commit"], false);
-        assert_eq!(second["commit"], false);
+    async fn final_confirmation_ignores_interim_revision_instead_of_pasting_twice() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        assert_eq!(next_audio(&mut server).await["commit"], false);
         assert_eq!(next_audio(&mut server).await["commit"], true);
-        send(&mut server, "committed_transcript", "hello").await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        send(&mut server, "committed_transcript", "返回两遍嘛。").await;
+        send(&mut server, "partial_transcript", "返回两遍吗？").await;
+        assert_eq!(next_audio(&mut server).await["commit"], true);
         assert!(!result.is_finished());
-        send(&mut server, "partial_transcript", "wor").await;
-        send(&mut server, "partial_transcript", "world").await;
-        send(&mut server, "committed_transcript", "world").await;
-        send(&mut server, "partial_transcript", "").await;
+        let confirmed_at = Instant::now();
+        send(&mut server, "committed_transcript", "").await;
         assert_eq!(
-            timeout(Duration::from_millis(700), result)
+            timeout(Duration::from_millis(150), result)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap(),
-            "hello world"
+            "返回两遍嘛。"
         );
+        assert!(confirmed_at.elapsed() < Duration::from_millis(150));
         session.close();
     }
 
     #[tokio::test]
-    async fn silence_and_no_audio_finish_without_a_transcript() {
-        for (audio, empty_commit) in [
-            (vec![], false),
-            (vec![0.0; 1600], false),
-            (vec![0.1; 1600], true),
-        ] {
-            let (session, _events, mut server) = session().await;
-            session.append_audio(&audio);
-            let copy = Arc::clone(&session);
-            let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-            if !audio.is_empty() {
-                assert_eq!(next_audio(&mut server).await["commit"], false);
-            }
-            if !audio.is_empty() {
-                assert_eq!(next_audio(&mut server).await["commit"], true);
-            }
-            if empty_commit {
-                send(&mut server, "committed_transcript", "").await;
-            }
-            assert_eq!(result.await.unwrap().unwrap(), "");
-            session.close();
-        }
+    async fn old_vad_commit_does_not_finish_before_the_actual_tail() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.1; 3200]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        let first_at = Instant::now();
+        next_audio(&mut server).await;
+        assert!(first_at.elapsed() >= Duration::from_millis(85));
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "first").await;
+        send(&mut server, "partial_transcript", "second").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!result.is_finished());
+        send(&mut server, "committed_transcript", "second").await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "").await;
+        assert_eq!(result.await.unwrap().unwrap(), "first second");
+        session.close();
     }
 
     #[tokio::test]
-    async fn unfinished_partial_is_a_timeout_and_close_interrupts_wait() {
+    async fn identical_spoken_segments_are_preserved_without_text_deduplication() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "再说一遍。").await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "再说一遍。").await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "").await;
+        assert_eq!(result.await.unwrap().unwrap(), "再说一遍。再说一遍。");
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn silence_requires_server_confirmation_and_no_audio_returns_empty() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.0; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!result.is_finished());
+        send(&mut server, "committed_transcript", "").await;
+        assert_eq!(result.await.unwrap().unwrap(), "");
+        session.close();
+        let (empty, _events, _server) = self::session().await;
+        assert_eq!(
+            timeout(Duration::from_millis(100), empty.commit_and_await_final())
+                .await
+                .unwrap()
+                .unwrap(),
+            ""
+        );
+        empty.close();
+    }
+
+    #[tokio::test]
+    async fn timeout_or_error_never_returns_a_partial_as_final() {
         let (session, _events, mut server) = session().await;
         session.append_audio(&[0.1; 1600]);
         let copy = Arc::clone(&session);
         let result = tokio::spawn(async move { copy.commit_and_await_final().await });
         next_audio(&mut server).await;
         next_audio(&mut server).await;
-        send(&mut server, "partial_transcript", "tail").await;
-        assert!(result.await.unwrap().unwrap_err().contains("超时"));
+        send(&mut server, "partial_transcript", "unconfirmed").await;
+        assert!(result.await.unwrap().is_err());
         session.close();
+    }
 
-        let (session, _events, mut server) = self::session().await;
+    #[tokio::test]
+    async fn cancellation_interrupts_wait_and_repeated_stop_cannot_output_again() {
+        let (session, _events, mut server) = session().await;
         session.append_audio(&[0.1; 1600]);
         let copy = Arc::clone(&session);
         let result = tokio::spawn(async move { copy.commit_and_await_final().await });
         next_audio(&mut server).await;
         next_audio(&mut server).await;
+        assert!(session.commit_and_await_final().await.is_err());
         session.close();
         assert!(timeout(Duration::from_millis(100), result)
             .await
@@ -983,12 +1115,106 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn warnings_and_keepalives_are_not_errors_and_disconnect_is_reported() {
+    async fn normal_socket_close_does_not_replace_a_final_confirmation() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "some text").await;
+        server
+            .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "Finished".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(result.await.unwrap().is_err());
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn edits_are_matched_out_of_order_and_never_append_the_original_twice() {
+        let (session, _events, mut server) = session_with_edit(true).await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "one").await;
+        send(&mut server, "committed_transcript", "two").await;
+        server
+            .send(Message::Text(
+                json!({"message_type":"edited_transcript","text":"two","edited_text":"2"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        send(&mut server, "committed_transcript", "").await;
+        assert!(!result.is_finished());
+        server
+            .send(Message::Text(
+                json!({"message_type":"edited_transcript","text":"one","edited_text":"1"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.await.unwrap().unwrap(), "1 2");
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn missing_edit_fails_instead_of_silently_using_the_original() {
+        let (session, _events, mut server) = session_with_edit(true).await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "one").await;
+        send(&mut server, "committed_transcript", "").await;
+        assert!(result.await.unwrap().unwrap_err().contains("转写编辑"));
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn throttled_commit_retries_on_the_same_connection() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        server
+            .send(Message::Text(
+                json!({"message_type":"commit_throttled","error":"Please commit less often"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(AsrEvent::Warning { .. })
+        ));
+        assert!(session.is_ready());
+        assert_eq!(next_audio(&mut server).await["commit"], true);
+        send(&mut server, "committed_transcript", "").await;
+        assert_eq!(result.await.unwrap().unwrap(), "");
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn warning_is_visible_and_does_not_end_the_session() {
         let (session, mut events, mut server) = session().await;
         events.recv().await;
         server
             .send(Message::Text(
-                json!({"message_type":"warning","warning":"test-secret is not retained"})
+                json!({"message_type":"warning","warning":"test-secret not retained"})
                     .to_string()
                     .into(),
             ))
@@ -997,27 +1223,10 @@ mod tests {
         let Some(AsrEvent::Warning { message }) = events.recv().await else {
             panic!("expected warning")
         };
-        assert!(message.contains("not retained"));
         assert!(!message.contains("test-secret"));
+        assert!(message.contains("not retained"));
         assert!(session.is_ready());
-        for text in ["hello", "hello", ""] {
-            send(&mut server, "partial_transcript", text).await;
-            let Some(AsrEvent::Transcript {
-                final_text,
-                partial_text,
-            }) = events.recv().await
-            else {
-                panic!("expected transcript")
-            };
-            assert_eq!(final_text, "");
-            assert_eq!(partial_text, text);
-        }
-        server.close(None).await.unwrap();
-        assert!(matches!(
-            events.recv().await,
-            Some(AsrEvent::Error { fatal: false, .. })
-        ));
-        assert!(!session.is_ready());
+        session.close();
     }
 
     #[test]
@@ -1061,189 +1270,303 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn already_confirmed_vad_text_finishes_without_a_duplicate_commit() {
-        let (session, mut events, mut server) = session().await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        next_audio(&mut server).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        send(&mut server, "committed_transcript", "已经确认").await;
-        events.recv().await;
-        session.append_audio(&[0.0; 1600]);
-        let copy = Arc::clone(&session);
-        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-        assert_eq!(next_audio(&mut server).await["commit"], false);
-        assert_eq!(
-            timeout(Duration::from_millis(600), result)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap(),
-            "已经确认"
-        );
-        assert!(timeout(Duration::from_millis(30), server.next())
-            .await
-            .is_err());
-        session.close();
+    #[test]
+    fn only_an_explicit_zero_pending_audio_report_can_drain_the_session() {
+        for duration in ["0", "0.00", "0.000"] {
+            assert!(server_reports_no_uncommitted_audio(
+                &json!({"error":format!("Commit request ignored: only {duration}s of uncommitted audio. You need at least 0.3s.")})
+            ));
+        }
+        for duration in ["0.01", "0.20", "1.00"] {
+            assert!(!server_reports_no_uncommitted_audio(
+                &json!({"error":format!("Commit request ignored: only {duration}s of uncommitted audio. You need at least 0.3s.")})
+            ));
+        }
+        assert!(!server_reports_no_uncommitted_audio(
+            &json!({"error":"Please commit less often"})
+        ));
     }
 
     #[tokio::test]
-    async fn new_speech_after_a_vad_commit_still_waits_for_its_tail() {
-        let (session, mut events, mut server) = session().await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        next_audio(&mut server).await;
-        send(&mut server, "committed_transcript", "first").await;
-        events.recv().await;
+    async fn zero_pending_report_waits_for_the_server_close_and_does_not_paste_interim_text() {
+        let (session, _events, mut server) = session().await;
         session.append_audio(&[0.1; 1600]);
         let copy = Arc::clone(&session);
         let result = tokio::spawn(async move { copy.commit_and_await_final().await });
         next_audio(&mut server).await;
-        assert_eq!(next_audio(&mut server).await["commit"], true);
-        send(&mut server, "partial_transcript", "second").await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "confirmed").await;
+        send(&mut server, "partial_transcript", "confirmed but revised").await;
+        assert_eq!(next_audio(&mut server).await["audio_base_64"], "");
+        server.send(Message::Text(json!({"message_type":"commit_throttled","error":"Commit request ignored: only 0.00s of uncommitted audio. You need at least 0.3s of uncommitted audio before committing."}).to_string().into())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(!result.is_finished());
-        send(&mut server, "committed_transcript", "second").await;
-        assert_eq!(
-            timeout(Duration::from_millis(600), result)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap(),
-            "first second"
-        );
-        session.close();
-    }
-
-    #[tokio::test]
-    async fn final_commit_throttling_retries_on_the_same_connection() {
-        let (session, mut events, mut server) = session().await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        let copy = Arc::clone(&session);
-        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-        next_audio(&mut server).await;
-        assert_eq!(next_audio(&mut server).await["commit"], true);
         server
-            .send(Message::Text(
-                json!({"message_type":"commit_throttled","error":"Please commit less often"})
-                    .to_string()
-                    .into(),
-            ))
+            .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "commit_throttled".into(),
+            }))
             .await
             .unwrap();
-        assert!(matches!(
-            events.recv().await,
-            Some(AsrEvent::Warning { .. })
-        ));
-        assert!(session.is_ready());
-        assert_eq!(next_audio(&mut server).await["commit"], true);
-        send(&mut server, "committed_transcript", "done").await;
-        assert_eq!(result.await.unwrap().unwrap(), "done");
+        assert_eq!(result.await.unwrap().unwrap(), "confirmed");
         session.close();
     }
 
     #[tokio::test]
-    async fn normal_close_after_final_text_succeeds_but_incomplete_close_fails() {
-        for confirmed in [true, false] {
-            let (session, _events, mut server) = session().await;
-            session.append_audio(&[0.1; 1600]);
-            let copy = Arc::clone(&session);
-            let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-            next_audio(&mut server).await;
-            next_audio(&mut server).await;
-            send(
-                &mut server,
-                if confirmed {
-                    "committed_transcript"
-                } else {
-                    "partial_transcript"
-                },
-                "recognized",
-            )
-            .await;
-            server
-                .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                    code:
-                        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
-                    reason: "Finished".into(),
-                }))
-                .await
-                .unwrap();
-            let text = result.await.unwrap();
-            if confirmed {
-                assert_eq!(text.unwrap(), "recognized");
-            } else {
-                assert!(text.is_err());
-                assert_eq!(session.recognized_text().as_deref(), Some("recognized"));
+    async fn nonzero_pending_audio_is_a_failure_not_a_successful_drain() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        server.send(Message::Text(json!({"message_type":"commit_throttled","error":"Commit request ignored: only 0.20s of uncommitted audio. You need at least 0.3s."}).to_string().into())).await.unwrap();
+        server
+            .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "commit_throttled".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(result.await.unwrap().is_err());
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn finish_rejects_further_audio_and_waits_for_server_confirmation() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        session.append_audio(&[0.9; 1600]);
+        send(&mut server, "committed_transcript", "only original audio").await;
+        let request = next_audio(&mut server).await;
+        assert_eq!(request["commit"], true);
+        assert_eq!(request["audio_base_64"], "");
+        send(&mut server, "committed_transcript", "").await;
+        assert_eq!(result.await.unwrap().unwrap(), "only original audio");
+        session.close();
+    }
+
+    /// Explicit opt-in: repository fixture only, paid keyterms/editing disabled.
+    #[tokio::test]
+    #[ignore = "requires ELEVENLABS_TEST_CONFIG and a paid API connection"]
+    async fn live_vad_stop_protocol_trace() {
+        let path = std::env::var("ELEVENLABS_TEST_CONFIG").expect("set config path");
+        let root: serde_norway::Value =
+            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let raw = root
+            .get("audio")
+            .and_then(|v| v.get("elevenlabs-realtime"))
+            .expect("ElevenLabs config missing");
+        let mut config: ElevenLabsRealtimeConfig =
+            serde_norway::from_value(raw.clone()).unwrap_or_else(|_| panic!("invalid config"));
+        assert!(!config.api_key.trim().is_empty(), "ElevenLabs key missing");
+        config.commit_strategy = "vad".into();
+        config.enable_keyterms = false;
+        config.transcript_edit.clear();
+        let wav = include_bytes!("../tests/fixtures/test-audio-short.wav");
+        let mut offset = 12;
+        let pcm = loop {
+            let size = u32::from_le_bytes(wav[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if &wav[offset..offset + 4] == b"data" {
+                break &wav[offset + 8..offset + 8 + size];
             }
-            session.close();
+            offset += 8 + size + (size % 2);
+        };
+        let samples: Vec<f32> = pcm
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+            .collect();
+        for silence_ms in [0_u64, 2500] {
+            let (socket, _) = connect_async(request(&config, &[], ENDPOINT).unwrap())
+                .await
+                .expect("connect failed");
+            let (mut sink, mut stream) = socket.split();
+            let start = Instant::now();
+            let reader = tokio::spawn(async move {
+                let mut results = Vec::new();
+                while let Some(Ok(message)) = stream.next().await {
+                    if let Message::Text(text) = message {
+                        let value: Value = serde_json::from_str(&text).unwrap();
+                        eprintln!(
+                            "TRACE +{}ms kind={} chars={} keys={:?}",
+                            start.elapsed().as_millis(),
+                            value["message_type"],
+                            value["text"].as_str().unwrap_or("").chars().count(),
+                            value.as_object().unwrap().keys().collect::<Vec<_>>()
+                        );
+                        results.push(value);
+                    }
+                }
+                results
+            });
+            for chunk in samples.chunks(1600) {
+                sink.send(audio_message(chunk, false)).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            for _ in 0..silence_ms / 100 {
+                sink.send(audio_message(&[0.0; 1600], false)).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            eprintln!(
+                "FINAL COMMIT +{}ms (silence {}ms)",
+                start.elapsed().as_millis(),
+                silence_ms
+            );
+            sink.send(audio_message(&[], true)).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            sink.close().await.unwrap();
+            let values = timeout(Duration::from_secs(2), reader)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                values
+                    .iter()
+                    .any(|v| v["message_type"] == "committed_transcript"),
+                "no committed results"
+            );
         }
     }
-
     #[tokio::test]
-    async fn confirmed_text_is_available_when_an_error_interrupts_finalization() {
-        let (session, mut events, mut server) = session().await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        next_audio(&mut server).await;
-        send(&mut server, "committed_transcript", "saved").await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        let copy = Arc::clone(&session);
-        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-        next_audio(&mut server).await;
-        next_audio(&mut server).await;
-        server
-            .send(Message::Text(
-                json!({"message_type":"quota_exceeded","error":"No credits left"})
-                    .to_string()
-                    .into(),
-            ))
+    #[ignore = "requires explicit paid API access via ELEVENLABS_TEST_CONFIG"]
+    async fn live_vad_final_output() {
+        let path = std::env::var("ELEVENLABS_TEST_CONFIG").expect("set config path");
+        let root: serde_norway::Value =
+            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let raw = root
+            .get("audio")
+            .and_then(|v| v.get("elevenlabs-realtime"))
+            .expect("ElevenLabs config missing");
+        let base: ElevenLabsRealtimeConfig =
+            serde_norway::from_value(raw.clone()).unwrap_or_else(|_| panic!("invalid config"));
+        assert!(!base.api_key.trim().is_empty(), "ElevenLabs key missing");
+        let wav = include_bytes!("../tests/fixtures/test-audio-short.wav");
+        let mut offset = 12;
+        let pcm = loop {
+            let size = u32::from_le_bytes(wav[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if &wav[offset..offset + 4] == b"data" {
+                break &wav[offset + 8..offset + 8 + size];
+            }
+            offset += 8 + size + (size % 2);
+        };
+        let samples: Vec<f32> = pcm
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.0)
+            .collect();
+        let mut cases = vec![(0_u64, false), (2500, false)];
+        if std::env::var("ELEVENLABS_TEST_EDITING").as_deref() == Ok("1") {
+            cases.push((0, true));
+        }
+        if std::env::var("ELEVENLABS_TEST_SINGLE").as_deref() == Ok("1") {
+            cases.truncate(1);
+        }
+        for (silence, editing) in cases {
+            let mut config = base.clone();
+            config.commit_strategy = "vad".into();
+            config.enable_keyterms = false;
+            config.transcript_edit = if editing {
+                "保留原始语言和专有名词，将最后的问号改为句号。".into()
+            } else {
+                String::new()
+            };
+            let (session, mut events) = connect_session(
+                request(&config, &[], ENDPOINT).unwrap(),
+                FINAL_WINDOW,
+                config.api_key.clone(),
+            )
             .await
-            .unwrap();
-        assert!(result
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("No credits left"));
-        assert_eq!(session.recognized_text().as_deref(), Some("saved"));
-        session.close();
+            .unwrap_or_else(|error| panic!("{}", safe_detail(&error, &config.api_key)));
+            for chunk in samples.chunks(1600) {
+                session.append_audio(chunk);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            for _ in 0..silence / 100 {
+                session.append_audio(&[0.0; 1600]);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let stopped = Instant::now();
+            let result = timeout(Duration::from_secs(12), session.commit_and_await_final())
+                .await
+                .unwrap();
+            if result.is_err() {
+                while let Ok(event) = events.try_recv() {
+                    if let AsrEvent::Warning { message } | AsrEvent::Error { message, .. } = event {
+                        eprintln!("LIVE detail: {}", safe_detail(&message, &config.api_key));
+                    }
+                }
+            }
+            let text = result.unwrap();
+            eprintln!(
+                "LIVE final: silence={}ms editing={} stop_to_final={}ms chars={}",
+                silence,
+                editing,
+                stopped.elapsed().as_millis(),
+                text.chars().count()
+            );
+            assert!(!text.trim().is_empty());
+            assert!(text.chars().count() < 100, "fixture appears duplicated");
+            if editing {
+                assert!(text.ends_with('。'));
+            }
+            session.close();
+            while let Ok(event) = events.try_recv() {
+                assert!(
+                    !matches!(event, AsrEvent::Error { .. }),
+                    "unexpected error event"
+                );
+            }
+        }
     }
     #[tokio::test]
-    async fn quiet_audio_is_not_mistaken_for_digital_silence() {
-        let (session, _events, mut server) = session().await;
-        session.append_audio(&[0.001; 1600]);
-        let copy = Arc::clone(&session);
-        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-        next_audio(&mut server).await;
-        next_audio(&mut server).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!result.is_finished());
-        send(&mut server, "committed_transcript", "quiet voice").await;
-        assert_eq!(result.await.unwrap().unwrap(), "quiet voice");
-        session.close();
-    }
-    #[tokio::test]
-    async fn delayed_old_vad_commit_does_not_acknowledge_newly_sent_speech() {
-        let (session, mut events, mut server) = session().await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        next_audio(&mut server).await;
-        send(&mut server, "partial_transcript", "first").await;
-        events.recv().await;
-        session.append_audio(&[0.1; 1600]);
-        next_audio(&mut server).await;
-        send(&mut server, "committed_transcript", "first").await;
-        events.recv().await;
-        let copy = Arc::clone(&session);
-        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
-        assert_eq!(next_audio(&mut server).await["commit"], true);
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!result.is_finished());
-        send(&mut server, "committed_transcript", "second").await;
-        assert_eq!(result.await.unwrap().unwrap(), "first second");
-        session.close();
+    #[ignore = "requires explicit live API access via ELEVENLABS_TEST_CONFIG"]
+    async fn live_turn_prediction_handshake() {
+        let path = std::env::var("ELEVENLABS_TEST_CONFIG").expect("set config path");
+        let root: serde_norway::Value =
+            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let raw = root
+            .get("audio")
+            .and_then(|v| v.get("elevenlabs-realtime"))
+            .expect("ElevenLabs config missing");
+        let mut config: ElevenLabsRealtimeConfig =
+            serde_norway::from_value(raw.clone()).unwrap_or_else(|_| panic!("invalid config"));
+        config.commit_strategy = "turn_prediction".into();
+        config.enable_keyterms = false;
+        config.transcript_edit.clear();
+        let (mut socket, _) = timeout(
+            CONNECT_TIMEOUT,
+            connect_async(request(&config, &[], ENDPOINT).unwrap()),
+        )
+        .await
+        .unwrap()
+        .expect("handshake failed");
+        let value: Value = timeout(CONNECT_TIMEOUT, async {
+            loop {
+                if let Some(Ok(Message::Text(text))) = socket.next().await {
+                    break serde_json::from_str(&text).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        if value["message_type"] == "session_started" {
+            eprintln!(
+                "LIVE turn prediction accepted; effective_strategy={}",
+                value["config"]["commit_strategy"]
+            );
+        } else {
+            eprintln!(
+                "LIVE turn prediction rejected: {}",
+                safe_detail(
+                    value["error"].as_str().unwrap_or("unknown error"),
+                    &config.api_key
+                )
+            );
+            assert_eq!(value["message_type"], "invalid_request");
+        }
+        let _ = socket.close(None).await;
     }
 }

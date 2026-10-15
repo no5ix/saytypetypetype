@@ -43,8 +43,10 @@ pub(crate) async fn on_recording_start(
         // A polish retry is in flight: ignore the press entirely. ESC/Enter are
         // the ways out of a retry; starting a recording mid-request would race
         // the retry's delivery.
-        if polish::is_retry_active(&app_inner) {
-            log_rec!(info, "Polish retry in flight; ignoring hotkey start");
+        if polish::is_retry_active(&app_inner)
+            || !matches!(*app_inner.state.lock().await, app_state::AppState::Idle)
+        {
+            log_rec!(info, "Finalization in flight; ignoring hotkey start");
             reset_matcher_recording(&app_handle);
             return;
         }
@@ -148,8 +150,8 @@ pub(crate) async fn on_escape(app_handle: AppHandle) {
     }
     let state = app_inner.state.lock().await.clone();
     match state {
-        // Retry in progress (a normal commit has no retry marker): abort it.
-        app_state::AppState::Finishing if app_inner.current_retry_of.lock().await.is_some() => {
+        // Both normal finalization and history replay must be cancellable.
+        app_state::AppState::Finishing => {
             lifecycle::abort_retry_or_failure(&app_handle, &app_inner).await;
         }
         // Retryable failure currently shown: dismiss it.
@@ -222,12 +224,8 @@ pub(super) fn is_current_epoch(app_inner: &app_state::AppInner, my_epoch: u64) -
 
 /// Snapshot the best text recognized in the current session from shared state.
 /// `manage_asr_session` stores every transcript here, so it serves as the
-/// carry-over source across a reconnect and the salvage source on failure.
+/// confirmed-only carry-over source across a reconnect. Temporary text is
+/// never promoted to final text, including on errors.
 pub(super) async fn current_session_text(app_inner: &app_state::AppInner) -> String {
-    let (final_t, partial_t) = app_inner.latest_transcript.lock().await.clone();
-    if !final_t.is_empty() {
-        final_t
-    } else {
-        partial_t
-    }
+    app_inner.latest_transcript.lock().await.0.clone()
 }

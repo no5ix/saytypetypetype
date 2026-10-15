@@ -2,7 +2,12 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelCard, renderControl } from "@/settings/components/ModelCard";
-import { ELEVENLABS_MODEL_ID, getFieldMeta, parseLanguageList } from "@/settings/lib/model";
+import {
+  ELEVENLABS_MODEL_ID,
+  getFieldMeta,
+  getMergedAsrConfig,
+  parseLanguageList,
+} from "@/settings/lib/model";
 import type { RegistryModel } from "@/settings/types/models";
 import registry from "../../../registry.json";
 
@@ -32,6 +37,7 @@ describe("ElevenLabs model settings", () => {
   it("shows a backend validation failure instead of silently losing the edit", async () => {
     const change = card();
     change.mockRejectedValueOnce("ElevenLabs 语言代码格式无效");
+    fireEvent.click(screen.getByText("更多参数"));
     const input = screen.getByPlaceholderText("留空则自动检测");
     fireEvent.change(input, { target: { value: "invalid" } });
     fireEvent.blur(input);
@@ -39,14 +45,17 @@ describe("ElevenLabs model settings", () => {
   });
   it("reuses shared metadata while keeping existing model groups", () => {
     expect(getFieldMeta("language", "").group).toBe("advanced");
-    expect(getFieldMeta("language", "", model.id).group).toBe("basic");
+    expect(getFieldMeta("language", "", model.id).group).toBe("advanced");
     expect(getFieldMeta("enable_ddc", false, model.id).label).toBe(
       getFieldMeta("enable_ddc", false).label,
     );
     card();
-    expect(screen.getByText("语言")).toBeVisible();
-    expect(screen.getByText("过滤背景语音")).toBeVisible();
-    expect(screen.queryByText("语义顺滑")).not.toBeInTheDocument();
+    expect(screen.queryByText("语言")).not.toBeInTheDocument();
+    expect(screen.queryByText("过滤背景语音")).not.toBeInTheDocument();
+    expect(screen.getByText("语义顺滑")).toBeVisible();
+    expect(screen.getByText("分段方式")).toBeVisible();
+    expect(screen.getByRole("button", { name: "轮次预测" })).toBeDisabled();
+    expect(screen.getByText(/基础转写费用增加 20%/)).toBeVisible();
     expect(screen.getByText("如何获取 API 凭据？")).toHaveAttribute(
       "href",
       "https://elevenlabs.io/app/settings/api-keys",
@@ -62,8 +71,8 @@ describe("ElevenLabs model settings", () => {
     fireEvent.click(screen.getByText("更多参数"));
     expect(screen.queryByText("VAD 阈值")).not.toBeInTheDocument();
     expect(screen.queryByText("分段静音时长（秒）")).not.toBeInTheDocument();
-    expect(screen.getByText("附加语言")).toBeVisible();
-    expect(screen.getByText("服务端热词")).toBeVisible();
+    expect(screen.getByText("第二语言")).toBeVisible();
+    expect(screen.getByRole("button", { name: "热词库说明" })).toBeVisible();
   });
 
   it("normalizes language lists on blur and preserves array storage", () => {
@@ -101,6 +110,54 @@ describe("ElevenLabs model settings", () => {
     );
     fireEvent.click(screen.getByText("更多参数"));
     expect(screen.getByText("语言")).toBeVisible();
-    expect(screen.queryByText("服务端热词")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "热词库说明" })).not.toBeInTheDocument();
+  });
+  it("orders basic and advanced fields exactly as requested", () => {
+    const fields = getMergedAsrConfig(model, {});
+    const names = (group: string) =>
+      fields
+        .filter((f) => getFieldMeta(f.key, f.value, model.id).group === group)
+        .map((f) => f.key);
+    expect([...names("credentials"), ...names("basic")]).toEqual([
+      "api_key",
+      "enable_ddc",
+      "enable_keyterms",
+      "commit_strategy",
+    ]);
+    expect(names("advanced")).toEqual([
+      "language",
+      "secondary_languages",
+      "filter_background_audio",
+      "transcript_edit",
+      "vad_silence_threshold_secs",
+      "vad_threshold",
+      "min_speech_duration_ms",
+      "min_silence_duration_ms",
+    ]);
+  });
+
+  it("puts help in tooltips while keeping paid feature descriptions visible", () => {
+    card();
+    expect(screen.queryByText(/去除口头填充/)).not.toBeInTheDocument();
+    fireEvent.focus(screen.getByRole("button", { name: "语义顺滑说明" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("去除口头填充");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByText(/基础转写费用增加 20%/)).toBeVisible();
+    fireEvent.click(screen.getByText("更多参数"));
+    expect(screen.getByText(/基础转写费用增加 30%/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "转写编辑说明" })).toBeVisible();
+  });
+
+  it("saves multiline transcript editing instructions and limits input length", () => {
+    const change = card();
+    fireEvent.click(screen.getByText("更多参数"));
+    const input = screen.getByPlaceholderText("例如：将日期统一写成 YYYY-MM-DD 格式");
+    expect(input.tagName).toBe("TEXTAREA");
+    expect(input).toHaveAttribute("maxlength", "2000");
+    fireEvent.change(input, { target: { value: "Use digits.\nKeep names unchanged." } });
+    fireEvent.blur(input);
+    expect(change).toHaveBeenCalledWith(model.id, {
+      transcript_edit: "Use digits.\nKeep names unchanged.",
+    });
   });
 });

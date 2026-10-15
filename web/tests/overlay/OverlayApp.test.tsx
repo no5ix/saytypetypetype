@@ -53,7 +53,7 @@ function emit(type: string, payload: Record<string, unknown> = {}) {
 }
 
 describe("overlay presentation", () => {
-  it("shows provider warnings and preserves a salvaged-text error after returning idle", () => {
+  it("shows provider warnings and preserves a final-confirmation error after returning idle", () => {
     render(<OverlayApp />);
     emit("state", { state: "recording" });
     emit("transcript", { finalText: "已经识别的文字" });
@@ -61,7 +61,7 @@ describe("overlay presentation", () => {
     emit("hint", { level: "warn", text: warning, variant: "text" });
     expect(screen.getByText(warning)).toBeTruthy();
     emit("state", { state: "finishing" });
-    const failure = "已输出已识别文字，后续语音可能缺失：ElevenLabs 额度不足";
+    const failure = "ElevenLabs 最终确认失败：额度不足，请重试";
     emit("hint", { level: "error", text: failure, variant: "text" });
     emit("state", { state: "idle" });
     expect(screen.getByText(failure)).toBeTruthy();

@@ -21,8 +21,8 @@ pub enum AsrEvent {
     Error {
         message: String,
         /// Whether the error is unrecoverable (reconnecting cannot help). Fatal
-        /// errors finalize the recording with whatever text was already
-        /// recognized; non-fatal errors trigger an auto-reconnect attempt.
+        /// errors fail the recording; recoverable errors may reconnect when
+        /// the provider can preserve final-result integrity.
         fatal: bool,
     },
     Close {
@@ -54,11 +54,6 @@ pub trait AsrSession: Send + Sync {
 
     /// Signal end-of-audio and wait for the final recognition result.
     async fn commit_and_await_final(&self) -> Result<String, String>;
-
-    /// Engines that can salvage text after a failed final commit return a snapshot.
-    fn recognized_text(&self) -> Option<String> {
-        None
-    }
 
     /// Close the session and release resources.
     fn close(&self);

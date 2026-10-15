@@ -1,5 +1,5 @@
 {
-  "version": 15,
+  "version": 17,
   "updated_at": "2026-10-15",
   "defaults": {
     "asr": {
@@ -90,13 +90,14 @@
         "api_key": "",
         "language": "",
         "filter_background_audio": false,
-        "enable_ddc": false,
+        "enable_ddc": true,
         "commit_strategy": "vad",
         "vad_silence_threshold_secs": 1.5,
         "vad_threshold": 0.4,
         "min_speech_duration_ms": 100,
         "min_silence_duration_ms": 100,
         "secondary_languages": [],
+        "transcript_edit": "",
         "enable_keyterms": false
       }
     },

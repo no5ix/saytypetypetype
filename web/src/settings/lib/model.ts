@@ -32,6 +32,7 @@ export type FieldGroup = "credentials" | "basic" | "shared" | "advanced";
 export interface SegmentOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 export interface FieldMeta {
@@ -46,6 +47,8 @@ export interface FieldMeta {
   step?: number;
   group?: FieldGroup;
   description?: string;
+  tooltip?: string;
+  maxLength?: number;
   min?: number;
   max?: number;
 }
@@ -261,23 +264,53 @@ export const FIELD_META: Record<string, FieldMeta> = {
 };
 
 const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
-  language: { group: "basic", description: "留空自动识别；例如 zh、en、pol" },
-  enable_ddc: { description: "去除口头填充、重复起句和不流畅表达" },
-  filter_background_audio: {
-    label: "过滤背景语音",
+  api_key: {},
+  enable_ddc: {
+    group: "basic",
+    tooltip: "去除口头填充、重复起句和不流畅表达；不影响临时文字的实时显示",
+  },
+  enable_keyterms: {
+    label: "热词库",
     type: "toggle",
     group: "basic",
-    description: "减少附近谈话与环境噪声造成的误识别",
+    tooltip: "使用现有启用的热词；最多 50 条，每条最多 20 个字符",
+    description: "开启后基础转写费用增加 20%",
   },
   commit_strategy: {
     label: "分段方式",
     type: "segment",
-    group: "advanced",
+    group: "basic",
     options: [
-      { value: "vad", label: "自动分段" },
-      { value: "manual", label: "手动分段" },
+      { value: "manual", label: "手动提交" },
+      { value: "vad", label: "静音分段" },
+      { value: "turn_prediction", label: "轮次预测", disabled: true },
     ],
-    description: "分段只确认当前文字，不结束录音；手动模式在停止时提交",
+    tooltip:
+      "manual 和 vad 均实时显示临时文字。manual 在停止时提交；vad 由服务端根据静音分段。当前 Scribe v2 Realtime 实测不支持 turn_prediction，暂不可选。不使用本地 VAD。",
+  },
+  language: { group: "advanced", tooltip: "留空自动识别；例如 zh、en、pol" },
+  secondary_languages: {
+    label: "第二语言",
+    type: "list",
+    group: "advanced",
+    placeholder: "例如 zh, en",
+    tooltip: "可能混用的语言代码，以逗号分隔；留空不限制",
+  },
+  filter_background_audio: {
+    label: "过滤背景语音",
+    type: "toggle",
+    group: "advanced",
+    tooltip: "减少附近谈话与环境噪声造成的误识别",
+  },
+  transcript_edit: {
+    label: "转写编辑",
+    type: "textarea",
+    group: "advanced",
+    maxLength: 2000,
+    placeholder: "例如：将日期统一写成 YYYY-MM-DD 格式",
+    tooltip:
+      "留空关闭；最多 2000 个字符。服务端编辑每个确认片段，最终输出等待编辑结果；编辑缺失时提示失败并允许重试。",
+    description: "填写后基础转写费用增加 30%，每个确认片段至少按 10 秒计费",
   },
   vad_silence_threshold_secs: {
     label: "分段静音时长（秒）",
@@ -286,7 +319,7 @@ const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
     min: 0.3,
     max: 3,
     step: 0.1,
-    description: "停顿多久后确认当前片段；0.3–3 秒",
+    tooltip: "停顿多久后确认当前片段；0.3–3 秒",
   },
   vad_threshold: {
     label: FIELD_META.threshold.label,
@@ -295,7 +328,7 @@ const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
     min: 0.1,
     max: 0.9,
     step: 0.1,
-    description: "0.1–0.9，越低越容易检测到讲话；仅影响服务端 VAD",
+    tooltip: "0.1–0.9，越低越容易检测到讲话；仅影响服务端 VAD",
   },
   min_speech_duration_ms: {
     label: `${FIELD_META.min_speech_duration.label}（ms）`,
@@ -304,7 +337,7 @@ const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
     min: 50,
     max: 2000,
     step: 1,
-    description: "过滤过短声音；50–2000 ms",
+    tooltip: "过滤过短声音；50–2000 ms",
   },
   min_silence_duration_ms: {
     label: `${FIELD_META.min_silence_duration.label}（ms）`,
@@ -313,20 +346,7 @@ const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
     min: 50,
     max: 2000,
     step: 1,
-    description: "判定语音间断的最小静音；50–2000 ms，与分段静音时长不同",
-  },
-  secondary_languages: {
-    label: "附加语言",
-    type: "list",
-    group: "advanced",
-    placeholder: "例如 zh, en",
-    description: "可能混用的语言代码，以逗号分隔；留空不限制",
-  },
-  enable_keyterms: {
-    label: "服务端热词",
-    type: "toggle",
-    group: "advanced",
-    description: "使用现有热词库；最多 50 条，每条最多 20 个字符，基础转写费用增加 20%",
+    tooltip: "判定语音间断的最小静音；50–2000 ms，与分段静音时长不同",
   },
 };
 
@@ -493,7 +513,7 @@ export function getMergedAsrConfig(
   // Order by FIELD_META definition order (frontend-controlled, stable) so display
   // order doesn't depend on backend serialization of config.yaml / registry.
   // Keys absent from FIELD_META sort last, preserving their relative order.
-  const fieldOrder = Object.keys(FIELD_META);
+  const fieldOrder = Object.keys(model.id === ELEVENLABS_MODEL_ID ? ELEVENLABS_FIELDS : FIELD_META);
   fields.sort((a, b) => {
     const ia = fieldOrder.indexOf(a.key);
     const ib = fieldOrder.indexOf(b.key);

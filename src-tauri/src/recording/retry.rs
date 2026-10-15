@@ -43,12 +43,28 @@ async fn fail_retry(
     app_inner: &Arc<app_state::AppInner>,
     ts: &str,
     message: &str,
+    retry_epoch: u64,
 ) {
+    if !is_current_epoch(app_inner, retry_epoch) {
+        return;
+    }
+    {
+        let mut slot = app_inner.asr_session.lock().await;
+        if !is_current_epoch(app_inner, retry_epoch) {
+            return;
+        }
+        if let Some(session) = slot.take() {
+            session.close();
+        }
+    }
     let failure_ts = app_inner.stats.lock().await.record_failure(
         message,
         history::current_recording_wav_string(app_inner).await,
         Some(ts.to_string()),
     );
+    if !is_current_epoch(app_inner, retry_epoch) {
+        return;
+    }
     *app_inner.current_failure_ts.lock().await = Some(failure_ts);
     overlay::emit_retryable_error_hint(app_handle, app_inner, message).await;
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
@@ -99,7 +115,7 @@ async fn retry_history_transcription_inner(
                     return Err("重试已取消".to_string());
                 }
                 let message = error;
-                fail_retry(&app_handle, &app_inner, &ts, &message).await;
+                fail_retry(&app_handle, &app_inner, &ts, &message, retry_epoch).await;
                 return Err(message);
             }
         };
@@ -107,6 +123,14 @@ async fn retry_history_transcription_inner(
     if !is_current_epoch(&app_inner, retry_epoch) {
         session.close();
         return Err("重试已取消".to_string());
+    }
+    {
+        let mut slot = app_inner.asr_session.lock().await;
+        if !is_current_epoch(&app_inner, retry_epoch) {
+            session.close();
+            return Err("重试已取消".into());
+        }
+        *slot = Some(Arc::clone(&session));
     }
     let events_app = app_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -126,7 +150,7 @@ async fn retry_history_transcription_inner(
             }
             session.close();
             let message = "重试转写没有得到文本，请检查网络连接";
-            fail_retry(&app_handle, &app_inner, &ts, message).await;
+            fail_retry(&app_handle, &app_inner, &ts, message, retry_epoch).await;
             return Err(message.to_string());
         }
         Err(error) => {
@@ -135,7 +159,7 @@ async fn retry_history_transcription_inner(
                 return Err("重试已取消".to_string());
             }
             session.close();
-            fail_retry(&app_handle, &app_inner, &ts, &error).await;
+            fail_retry(&app_handle, &app_inner, &ts, &error, retry_epoch).await;
             return Err(error);
         }
     };
@@ -144,8 +168,19 @@ async fn retry_history_transcription_inner(
         session.close();
         return Err("重试已取消".to_string());
     }
-    let outcome = finalize::finalize_and_paste(&app_handle, &app_inner, text.clone()).await;
     session.close();
+    {
+        let mut slot = app_inner.asr_session.lock().await;
+        if !is_current_epoch(&app_inner, retry_epoch) {
+            return Err("重试已取消".into());
+        }
+        slot.take();
+    }
+    let outcome =
+        finalize::finalize_and_paste(&app_handle, &app_inner, text.clone(), retry_epoch).await;
+    if !is_current_epoch(&app_inner, retry_epoch) {
+        return Err("重试已取消".into());
+    }
     *app_inner.current_failure_ts.lock().await = None;
     if outcome != finalize::FinalizeOutcome::Deferred
         && !app_inner

@@ -179,8 +179,8 @@ pub(super) async fn connect_and_attach(
 /// Manage an ASR session for the duration of a recording: forward transcripts to
 /// the overlay, and on a recoverable error/close, auto-reconnect a fresh session
 /// (carrying already-recognized text). On a fatal error or after reconnects are
-/// exhausted, finalize the recording with the accumulated text instead of
-/// discarding it.
+/// exhausted, retain the recording for an explicit retry without pasting
+/// an incomplete result.
 pub(super) async fn manage_asr_session(
     app: AppHandle,
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<crate::asr::AsrEvent>,
@@ -190,6 +190,12 @@ pub(super) async fn manage_asr_session(
 
     let app_inner = app.state::<Arc<app_state::AppInner>>().inner().clone();
     let mut reconnect_attempts: u32 = 0;
+    // Reconnecting ElevenLabs would discard unconfirmed audio/edit state. Fail
+    // visibly and retain the full WAV for retry rather than paste a partial prefix.
+    let can_reconnect = app_inner
+        .config_manager
+        .load_config()
+        .is_ok_and(|config| config.audio_provider() != crate::config::ELEVENLABS_REALTIME_ID);
 
     log_events!(debug, "ASR session manager started (epoch {})", my_epoch);
     'outer: loop {
@@ -246,7 +252,7 @@ pub(super) async fn manage_asr_session(
                     if !session_is_active(&app, &app_inner, my_epoch) {
                         break 'outer;
                     }
-                    if !fatal && reconnect_attempts < MAX_ASR_RECONNECT {
+                    if can_reconnect && !fatal && reconnect_attempts < MAX_ASR_RECONNECT {
                         if let Some(rx) = try_reconnect_asr(
                             &app,
                             &app_inner,
@@ -260,7 +266,7 @@ pub(super) async fn manage_asr_session(
                             continue 'outer;
                         }
                     }
-                    finalize::finalize_on_failure(&app, &app_inner, &message).await;
+                    finalize::finalize_on_failure(&app, &app_inner, &message, my_epoch).await;
                     break 'outer;
                 }
                 AsrEvent::Close { code, reason } => {
@@ -274,7 +280,7 @@ pub(super) async fn manage_asr_session(
                         break 'outer;
                     }
                     // Unexpected close mid-recording: treat as recoverable.
-                    if reconnect_attempts < MAX_ASR_RECONNECT {
+                    if can_reconnect && reconnect_attempts < MAX_ASR_RECONNECT {
                         if let Some(rx) = try_reconnect_asr(
                             &app,
                             &app_inner,
@@ -292,7 +298,8 @@ pub(super) async fn manage_asr_session(
                             continue 'outer;
                         }
                     }
-                    finalize::finalize_on_failure(&app, &app_inner, "ASR 连接已断开").await;
+                    finalize::finalize_on_failure(&app, &app_inner, "ASR 连接已断开", my_epoch)
+                        .await;
                     break 'outer;
                 }
             }

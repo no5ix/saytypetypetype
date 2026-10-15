@@ -13,7 +13,7 @@ use super::capture;
 use super::cue;
 use super::history;
 use super::polish;
-use super::{current_session_text, emit_hint, reset_matcher_recording};
+use super::{emit_hint, reset_matcher_recording};
 
 /// Whether the finishing pipeline actually delivered text, or parked it awaiting
 /// the user's decision after a failed polish. `Deferred` keeps the overlay up:
@@ -23,88 +23,65 @@ pub(crate) enum FinalizeOutcome {
     Delivered,
     Deferred,
     OutputFailed,
+    Cancelled,
 }
 
-/// Finalize a recording that failed mid-stream (fatal error or exhausted
-/// reconnects): salvage the accumulated text plus the current session's text and
-/// run it through the normal paste pipeline, then tear down and hide the overlay.
+/// A failed recognition never enters the paste pipeline. Retain the WAV for an
+/// explicit retry; temporary and incomplete text must not masquerade as final.
 pub(super) async fn finalize_on_failure(
     app: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
     message: &str,
+    expected_epoch: u64,
 ) {
-    // Stop recording so audio routing and hotkey toggling settle.
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return;
+    }
     if let Some(state) = app.try_state::<RecordingState>() {
         *state.0.lock().unwrap() = false;
     }
     reset_matcher_recording(app);
-
-    // Gather salvageable text: accumulated prefix + the dying session's text.
-    let session_text = current_session_text(app_inner).await;
-    if let Some(s) = app_inner.asr_session.lock().await.take() {
-        s.close();
+    if let Some(session) = app_inner.asr_session.lock().await.take() {
+        session.close();
     }
-
-    let prefix = app_inner.accumulated_text.lock().await.clone();
-    let combined = format!("{}{}", prefix, session_text);
-
-    // Reset cross-reconnect / buffering state.
+    capture::stop_capture(app_inner).await;
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return;
+    }
+    history::save_recording_wav(app, app_inner).await;
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return;
+    }
     *app_inner.accumulated_text.lock().await = String::new();
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.asr_events.lock().await = None;
     app_inner.pending_audio.lock().await.clear();
-
-    capture::stop_capture(app_inner).await;
-    history::save_recording_wav(app, app_inner).await;
-
-    if combined.trim().is_empty() {
-        history::record_transcription_failure(app, app_inner, message).await;
-        // Nothing to salvage: surface the error so the user understands the abort.
-        log_events!(warn, "ASR failed with no recognized text: {}", message);
-        overlay::emit_retryable_error_hint(app, app_inner, message).await;
-        if let Some(active) = app.try_state::<ActivePromptId>() {
-            *active.0.lock().unwrap() = None;
-        }
-        set_app_state(app, app_inner, app_state::AppState::Idle).await;
-        overlay::schedule_retry_overlay_hide(app.clone(), Arc::clone(app_inner));
+    history::record_transcription_failure(app, app_inner, message).await;
+    if !super::is_current_epoch(app_inner, expected_epoch) {
         return;
     }
-
-    // Salvaged text exists: paste it as if the recording had ended normally.
-    log_events!(
-        warn,
-        "ASR failed; salvaging recognized text ({} chars): {}",
-        combined.chars().count(),
-        message
-    );
-    let outcome = finalize_and_paste(app, app_inner, combined).await;
-
-    // A failed polish parked the salvaged text and settled the app state: keep
-    // the overlay up for the retry / ESC / auto-paste decision.
-    if outcome != FinalizeOutcome::Delivered {
-        return;
+    if let Some(active) = app.try_state::<ActivePromptId>() {
+        *active.0.lock().unwrap() = None;
     }
-
-    // Successful salvage must not make a failed recognition look successful.
-    // Keep the delivered text, but show why the remaining audio may be missing.
-    overlay::show_output_error(
-        app,
-        app_inner,
-        &format!("已输出已识别文字，后续语音可能缺失：{message}"),
-    )
-    .await;
+    overlay::emit_retryable_error_hint(app, app_inner, message).await;
+    set_app_state(app, app_inner, app_state::AppState::Idle).await;
+    overlay::schedule_retry_overlay_hide(app.clone(), Arc::clone(app_inner));
 }
 
 /// Run recognized text through the finishing pipeline: optional LLM polishing
 /// (prompt-specific hotkeys only, with sherpa-onnx hotword hinting), trailing-
 /// period trimming, clipboard write (honoring keep_clipboard), simulated paste,
-/// usage stats, and the end cue. Shared by the normal stop path and the
-/// failure-salvage path.
+/// usage stats, and the end cue. Only confirmed results from normal stops and
+/// explicit retries may reach this pipeline.
 pub(super) async fn finalize_and_paste(
     app_handle: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
     raw_text: String,
+    expected_epoch: u64,
 ) -> FinalizeOutcome {
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return FinalizeOutcome::Cancelled;
+    }
     let trimmed = raw_text.trim().to_string();
 
     // Always clear the active prompt ID once a recording concludes.
@@ -199,7 +176,7 @@ pub(super) async fn finalize_and_paste(
             let hotwords = app_inner.hotword_manager.active_words();
             // Show a "润色中…" hint (with shimmer) while the LLM is working.
             emit_hint(app_handle, "润色中…", "info", "progress");
-            match crate::llm::polish_transcript(
+            let outcome = crate::llm::polish_transcript(
                 config,
                 &prompts,
                 Some(prompt_id.as_str()),
@@ -207,8 +184,11 @@ pub(super) async fn finalize_and_paste(
                 &registry,
                 &trimmed,
             )
-            .await
-            {
+            .await;
+            if !super::is_current_epoch(app_inner, expected_epoch) {
+                return FinalizeOutcome::Cancelled;
+            }
+            match outcome {
                 crate::llm::PolishOutcome::Polished(t) => {
                     log_rec!(
                         info,
@@ -241,6 +221,9 @@ pub(super) async fn finalize_and_paste(
         prompt_id: active_prompt_id.clone(),
         raw_text: (active_prompt_id.is_some() && final_text != trimmed).then(|| trimmed.clone()),
     };
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return FinalizeOutcome::Cancelled;
+    }
     if deliver_text(app_handle, app_inner, &final_text, config.as_ref(), polish).await {
         FinalizeOutcome::Delivered
     } else {

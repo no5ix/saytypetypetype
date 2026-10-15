@@ -133,6 +133,8 @@ export function renderControl(
           onChange={onChange}
           className="w-full"
           textareaClassName="min-h-20"
+          maxLength={meta.maxLength}
+          placeholder={meta.placeholder}
           commitOnBlur
         />
       );
@@ -281,18 +283,23 @@ export function ModelCard({
 
   const renderField = (field: MergedField) => {
     const meta = fieldMeta(field);
+    const control = renderControl(meta, field.value, (value) => {
+      setConfigError(null);
+      Promise.resolve(onConfigChange(model.id, patchFromFlatKey(field.key, value))).catch((error) =>
+        setConfigError(error instanceof Error ? error.message : String(error)),
+      );
+    });
+    const fullWidth = field.key === "transcript_edit";
     return (
       <SectionItem
         key={field.key}
         title={meta.label}
         description={meta.description}
-        action={renderControl(meta, field.value, (value) => {
-          setConfigError(null);
-          Promise.resolve(onConfigChange(model.id, patchFromFlatKey(field.key, value))).catch(
-            (error) => setConfigError(error instanceof Error ? error.message : String(error)),
-          );
-        })}
-      />
+        tooltip={meta.tooltip}
+        action={fullWidth ? undefined : control}
+      >
+        {fullWidth ? control : undefined}
+      </SectionItem>
     );
   };
 
