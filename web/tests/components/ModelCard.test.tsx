@@ -53,8 +53,9 @@ describe("ElevenLabs model settings", () => {
     expect(screen.queryByText("语言")).not.toBeInTheDocument();
     expect(screen.queryByText("过滤背景语音")).not.toBeInTheDocument();
     expect(screen.getByText("语义顺滑")).toBeVisible();
-    expect(screen.getByText("分段方式")).toBeVisible();
-    expect(screen.getByRole("button", { name: "轮次预测" })).toBeDisabled();
+    expect(screen.getByText("文本确认方式")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "轮次预测" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "VAD分段" })).toBeVisible();
     expect(screen.getByText(/基础转写费用增加 20%/)).toBeVisible();
     expect(screen.getByText("如何获取 API 凭据？")).toHaveAttribute(
       "href",
@@ -141,6 +142,10 @@ describe("ElevenLabs model settings", () => {
     expect(screen.queryByText(/去除口头填充/)).not.toBeInTheDocument();
     fireEvent.focus(screen.getByRole("button", { name: "语义顺滑说明" }));
     expect(screen.getByRole("tooltip")).toHaveTextContent("去除口头填充");
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.focus(screen.getByRole("button", { name: "文本确认方式说明" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("不影响实时显示");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("都会等待最终结果再输出");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.getByText(/基础转写费用增加 20%/)).toBeVisible();
     fireEvent.click(screen.getByText("更多参数"));

@@ -1,7 +1,6 @@
 interface SegmentedOption {
   value: string;
   label: string;
-  disabled?: boolean;
 }
 
 interface SegmentedControlProps {
@@ -17,8 +16,7 @@ export function SegmentedControl({ options, value, onChange }: SegmentedControlP
         <button
           key={opt.value}
           type="button"
-          disabled={opt.disabled}
-          className={`px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+          className={`px-4 py-1.5 text-sm font-medium transition-colors ${
             value === opt.value ? "bg-accent-soft text-accent" : "text-text-dim hover:bg-fill-hover"
           }`}
           onClick={() => onChange(opt.value)}

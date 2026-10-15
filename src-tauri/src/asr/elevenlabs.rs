@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_parameters_and_turn_prediction_follow_the_protocol() {
+    fn editing_parameters_and_supported_strategies_follow_the_protocol() {
         let mut config = config();
         assert!(!params(&config, &[])
             .iter()
@@ -908,11 +908,15 @@ mod tests {
         assert!(config.validate().is_err());
         config.transcript_edit.clear();
         config.commit_strategy = "turn_prediction".into();
+        assert!(config.validate().is_err());
+        config.commit_strategy = "vad".into();
         assert!(config.validate().is_ok());
-        assert!(
-            params(&config, &[]).contains(&("commit_strategy".into(), "turn_prediction".into()))
-        );
         assert!(params(&config, &[])
+            .iter()
+            .any(|(key, _)| key == "vad_threshold"));
+        config.commit_strategy = "manual".into();
+        assert!(config.validate().is_ok());
+        assert!(!params(&config, &[])
             .iter()
             .any(|(key, _)| key == "vad_threshold"));
     }
@@ -1520,53 +1524,5 @@ mod tests {
                 );
             }
         }
-    }
-    #[tokio::test]
-    #[ignore = "requires explicit live API access via ELEVENLABS_TEST_CONFIG"]
-    async fn live_turn_prediction_handshake() {
-        let path = std::env::var("ELEVENLABS_TEST_CONFIG").expect("set config path");
-        let root: serde_norway::Value =
-            serde_norway::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let raw = root
-            .get("audio")
-            .and_then(|v| v.get("elevenlabs-realtime"))
-            .expect("ElevenLabs config missing");
-        let mut config: ElevenLabsRealtimeConfig =
-            serde_norway::from_value(raw.clone()).unwrap_or_else(|_| panic!("invalid config"));
-        config.commit_strategy = "turn_prediction".into();
-        config.enable_keyterms = false;
-        config.transcript_edit.clear();
-        let (mut socket, _) = timeout(
-            CONNECT_TIMEOUT,
-            connect_async(request(&config, &[], ENDPOINT).unwrap()),
-        )
-        .await
-        .unwrap()
-        .expect("handshake failed");
-        let value: Value = timeout(CONNECT_TIMEOUT, async {
-            loop {
-                if let Some(Ok(Message::Text(text))) = socket.next().await {
-                    break serde_json::from_str(&text).unwrap();
-                }
-            }
-        })
-        .await
-        .unwrap();
-        if value["message_type"] == "session_started" {
-            eprintln!(
-                "LIVE turn prediction accepted; effective_strategy={}",
-                value["config"]["commit_strategy"]
-            );
-        } else {
-            eprintln!(
-                "LIVE turn prediction rejected: {}",
-                safe_detail(
-                    value["error"].as_str().unwrap_or("unknown error"),
-                    &config.api_key
-                )
-            );
-            assert_eq!(value["message_type"], "invalid_request");
-        }
-        let _ = socket.close(None).await;
     }
 }

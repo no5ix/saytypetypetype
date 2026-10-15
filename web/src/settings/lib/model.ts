@@ -32,7 +32,6 @@ export type FieldGroup = "credentials" | "basic" | "shared" | "advanced";
 export interface SegmentOption {
   value: string;
   label: string;
-  disabled?: boolean;
 }
 
 export interface FieldMeta {
@@ -277,16 +276,15 @@ const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
     description: "开启后基础转写费用增加 20%",
   },
   commit_strategy: {
-    label: "分段方式",
+    label: "文本确认方式",
     type: "segment",
     group: "basic",
     options: [
       { value: "manual", label: "手动提交" },
-      { value: "vad", label: "静音分段" },
-      { value: "turn_prediction", label: "轮次预测", disabled: true },
+      { value: "vad", label: "VAD分段" },
     ],
     tooltip:
-      "manual 和 vad 均实时显示临时文字。manual 在停止时提交；vad 由服务端根据静音分段。当前 Scribe v2 Realtime 实测不支持 turn_prediction，暂不可选。不使用本地 VAD。",
+      "控制每段识别文字何时被确认，不影响实时显示。手动提交：结束录音时提交当前片段；VAD分段：服务端根据停顿自动确认片段。两种方式在结束录音后，都会等待最终结果再输出。",
   },
   language: { group: "advanced", tooltip: "留空自动识别；例如 zh、en、pol" },
   secondary_languages: {

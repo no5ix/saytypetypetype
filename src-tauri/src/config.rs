@@ -49,11 +49,8 @@ impl Default for ElevenLabsRealtimeConfig {
 
 impl ElevenLabsRealtimeConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(
-            self.commit_strategy.as_str(),
-            "manual" | "vad" | "turn_prediction"
-        ) {
-            return Err("ElevenLabs 分段方式必须为 manual、vad 或 turn_prediction".into());
+        if !matches!(self.commit_strategy.as_str(), "manual" | "vad") {
+            return Err("ElevenLabs 文本确认方式必须为 manual 或 vad".into());
         }
         if self.transcript_edit.chars().count() > 2000 {
             return Err("ElevenLabs 转写编辑指令最多 2000 个字符".into());
