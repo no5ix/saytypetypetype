@@ -1,4 +1,5 @@
 pub mod doubao;
+pub mod elevenlabs;
 pub mod sherpa_onnx;
 
 use std::path::PathBuf;
@@ -71,6 +72,17 @@ pub async fn create_engine_session(
     let entry = registry.models.iter().find(|m| m.id == engine_model_id);
 
     let (result, show_recording_hint) = match entry {
+        Some(entry) if entry.engine == "elevenlabs" => {
+            let merged = crate::config::AppConfig::resolve_model_config(
+                registry,
+                engine_model_id,
+                &config.audio,
+            );
+            let config = serde_json::from_value(merged)
+                .map_err(|_| "ElevenLabs 参数格式错误，请检查模型配置".to_string())?;
+            let engine = elevenlabs::ElevenLabsEngine::new(config);
+            (engine.create_session(hotwords).await, false)
+        }
         Some(entry) if entry.engine == "sherpa-onnx" => {
             let punctuation_config = registry
                 .models

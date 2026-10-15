@@ -13,10 +13,18 @@
 import type { RegistryModel } from "@/settings/types/models";
 
 export const DOUBAO_MODEL_ID = "doubao-streaming";
+export const ELEVENLABS_MODEL_ID = "elevenlabs-realtime";
 
 /* ---------- Control types & field metadata ---------- */
 
-export type ControlType = "text" | "password" | "number" | "toggle" | "segment" | "textarea";
+export type ControlType =
+  | "text"
+  | "password"
+  | "number"
+  | "toggle"
+  | "segment"
+  | "textarea"
+  | "list";
 
 /** Visual grouping for rendered config fields. */
 export type FieldGroup = "credentials" | "basic" | "shared" | "advanced";
@@ -37,6 +45,9 @@ export interface FieldMeta {
   /** Step for `number` controls. Defaults to integer/float heuristic. */
   step?: number;
   group?: FieldGroup;
+  description?: string;
+  min?: number;
+  max?: number;
 }
 
 /** Enum option lists shared across models. */
@@ -141,7 +152,7 @@ export const FIELD_META: Record<string, FieldMeta> = {
     label: "API Key",
     type: "password",
     group: "credentials",
-    placeholder: "新版控制台 X-Api-Key",
+    placeholder: "输入 API Key",
   },
 
   /* Doubao basic settings & feature toggles & advanced / internal params */
@@ -249,6 +260,110 @@ export const FIELD_META: Record<string, FieldMeta> = {
   },
 };
 
+const ELEVENLABS_FIELDS: Record<string, Partial<FieldMeta>> = {
+  language: { group: "basic", description: "留空自动识别；例如 zh、en、pol" },
+  enable_ddc: { description: "去除口头填充、重复起句和不流畅表达" },
+  filter_background_audio: {
+    label: "过滤背景语音",
+    type: "toggle",
+    group: "basic",
+    description: "减少附近谈话与环境噪声造成的误识别",
+  },
+  commit_strategy: {
+    label: "分段方式",
+    type: "segment",
+    group: "advanced",
+    options: [
+      { value: "vad", label: "自动分段" },
+      { value: "manual", label: "手动分段" },
+    ],
+    description: "分段只确认当前文字，不结束录音；手动模式在停止时提交",
+  },
+  vad_silence_threshold_secs: {
+    label: "分段静音时长（秒）",
+    type: "number",
+    group: "advanced",
+    min: 0.3,
+    max: 3,
+    step: 0.1,
+    description: "停顿多久后确认当前片段；0.3–3 秒",
+  },
+  vad_threshold: {
+    label: FIELD_META.threshold.label,
+    type: "number",
+    group: "advanced",
+    min: 0.1,
+    max: 0.9,
+    step: 0.1,
+    description: "0.1–0.9，越低越容易检测到讲话；仅影响服务端 VAD",
+  },
+  min_speech_duration_ms: {
+    label: `${FIELD_META.min_speech_duration.label}（ms）`,
+    type: "number",
+    group: "advanced",
+    min: 50,
+    max: 2000,
+    step: 1,
+    description: "过滤过短声音；50–2000 ms",
+  },
+  min_silence_duration_ms: {
+    label: `${FIELD_META.min_silence_duration.label}（ms）`,
+    type: "number",
+    group: "advanced",
+    min: 50,
+    max: 2000,
+    step: 1,
+    description: "判定语音间断的最小静音；50–2000 ms，与分段静音时长不同",
+  },
+  secondary_languages: {
+    label: "附加语言",
+    type: "list",
+    group: "advanced",
+    placeholder: "例如 zh, en",
+    description: "可能混用的语言代码，以逗号分隔；留空不限制",
+  },
+  enable_keyterms: {
+    label: "服务端热词",
+    type: "toggle",
+    group: "advanced",
+    description: "使用现有热词库；最多 50 条，每条最多 20 个字符，基础转写费用增加 20%",
+  },
+};
+
+export function parseLanguageList(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[,，]/)
+        .map((code) => code.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+export function isModelFieldVisible(
+  modelId: string,
+  key: string,
+  config: Record<string, unknown>,
+): boolean {
+  return (
+    modelId !== ELEVENLABS_MODEL_ID ||
+    config.commit_strategy !== "manual" ||
+    ![
+      "vad_silence_threshold_secs",
+      "vad_threshold",
+      "min_speech_duration_ms",
+      "min_silence_duration_ms",
+    ].includes(key)
+  );
+}
+
+export function credentialHelpUrl(modelId: string): string {
+  return modelId === ELEVENLABS_MODEL_ID
+    ? "https://elevenlabs.io/app/settings/api-keys"
+    : "https://console.volcengine.com/speech/app";
+}
+
 /** Infer a control type from the value when FIELD_META omits `type`. */
 export function inferControlType(key: string, value: unknown): ControlType {
   if (typeof value === "boolean") return "toggle";
@@ -259,11 +374,12 @@ export function inferControlType(key: string, value: unknown): ControlType {
 }
 
 /** Resolve rendering metadata for a key, falling back for unknown keys. */
-export function getFieldMeta(key: string, value: unknown): FieldMeta {
+export function getFieldMeta(key: string, value: unknown, modelId?: string): FieldMeta {
   // Try the full key first, then the last segment after a dot
   // (e.g. "vad.threshold" → "threshold") so nested asr_defaults keys resolve.
   const meta = FIELD_META[key] ?? FIELD_META[key.split(".").pop() ?? ""];
-  if (meta) return meta;
+  const override = modelId === ELEVENLABS_MODEL_ID ? ELEVENLABS_FIELDS[key] : undefined;
+  if (meta || override) return { ...(meta ?? { label: key }), ...override };
   return {
     label: key.replace(/_/g, " "),
     type: inferControlType(key, value),

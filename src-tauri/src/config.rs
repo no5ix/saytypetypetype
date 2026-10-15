@@ -7,8 +7,86 @@ use std::sync::RwLock;
 use crate::model::ModelRegistry;
 
 pub const DOUBAO_STREAMING_ID: &str = "doubao-streaming";
+pub const ELEVENLABS_REALTIME_ID: &str = "elevenlabs-realtime";
 pub const SILERO_VAD_ID: &str = "silero-vad";
 pub const ASR_DEFAULTS_ID: &str = "asr_defaults";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ElevenLabsRealtimeConfig {
+    pub api_key: String,
+    pub language: String,
+    pub filter_background_audio: bool,
+    pub enable_ddc: bool,
+    pub commit_strategy: String,
+    pub vad_silence_threshold_secs: f64,
+    pub vad_threshold: f64,
+    pub min_speech_duration_ms: u32,
+    pub min_silence_duration_ms: u32,
+    pub secondary_languages: Vec<String>,
+    pub enable_keyterms: bool,
+}
+
+impl Default for ElevenLabsRealtimeConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            language: String::new(),
+            filter_background_audio: false,
+            enable_ddc: false,
+            commit_strategy: "vad".into(),
+            vad_silence_threshold_secs: 1.5,
+            vad_threshold: 0.4,
+            min_speech_duration_ms: 100,
+            min_silence_duration_ms: 100,
+            secondary_languages: vec![],
+            enable_keyterms: false,
+        }
+    }
+}
+
+impl ElevenLabsRealtimeConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.commit_strategy.as_str(), "manual" | "vad") {
+            return Err("ElevenLabs 分段方式必须为 manual 或 vad".into());
+        }
+        for (name, value, min, max) in [
+            (
+                "分段静音时长（秒）",
+                self.vad_silence_threshold_secs,
+                0.3,
+                3.0,
+            ),
+            ("VAD 阈值", self.vad_threshold, 0.1, 0.9),
+            (
+                "最小说话时长（ms）",
+                self.min_speech_duration_ms as f64,
+                50.0,
+                2000.0,
+            ),
+            (
+                "最小静音时长（ms）",
+                self.min_silence_duration_ms as f64,
+                50.0,
+                2000.0,
+            ),
+        ] {
+            if !value.is_finite() || !(min..=max).contains(&value) {
+                return Err(format!("ElevenLabs {name}必须在 {min}–{max} 之间"));
+            }
+        }
+        for code in std::iter::once(&self.language).chain(&self.secondary_languages) {
+            let code = code.trim();
+            if !code.is_empty()
+                && (!(2..=3).contains(&code.len())
+                    || !code.bytes().all(|c| c.is_ascii_alphabetic()))
+            {
+                return Err("ElevenLabs 语言须为 2 或 3 位语言代码，例如 zh、en、pol".into());
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -1058,6 +1136,14 @@ impl ConfigManager {
 
     /// Save config as a parsed YAML value, update memory cache and disk.
     pub fn save_config(&self, config: &serde_norway::Value) -> Result<(), String> {
+        if let Some(raw) = config
+            .get("audio")
+            .and_then(|a| a.get(ELEVENLABS_REALTIME_ID))
+        {
+            let params: ElevenLabsRealtimeConfig = serde_norway::from_value(raw.clone())
+                .map_err(|_| "ElevenLabs 参数格式错误，请检查模型配置".to_string())?;
+            params.validate()?;
+        }
         let yaml = serde_norway::to_string(config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
         fs::write(&self.config_path, yaml).map_err(|e| format!("Failed to write config: {}", e))?;
@@ -1501,5 +1587,92 @@ min_silence_duration: 0.3
         let on_disk2 = std::fs::read_to_string(data_dir.path().join("prompts.json")).unwrap();
         assert!(on_disk2.contains("ControlLeft+ShiftLeft"));
         assert!(!on_disk2.contains(r#""hotkey": ["#));
+    }
+}
+
+#[cfg(test)]
+mod elevenlabs_tests {
+    use super::*;
+
+    #[test]
+    fn elevenlabs_settings_survive_restart_and_reset_without_affecting_doubao() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        manager
+            .save_config(&serde_norway::to_value(manager.load_config().unwrap()).unwrap())
+            .unwrap();
+        let mut config = manager.get_editable_config().unwrap();
+        config["audio"][ELEVENLABS_REALTIME_ID] = serde_norway::from_str(
+            "api_key: test-key\nlanguage: pl\nsecondary_languages: [en, zh]\nvad_threshold: 0.6\n",
+        )
+        .unwrap();
+        let doubao = config["audio"][DOUBAO_STREAMING_ID].clone();
+        manager.save_config(&config).unwrap();
+        let restarted = ConfigManager::new(data.path(), resources.path());
+        let loaded = restarted.load_config().unwrap();
+        let registry = crate::model::load_registry(data.path(), resources.path());
+        let resolved =
+            AppConfig::resolve_model_config(&registry, ELEVENLABS_REALTIME_ID, &loaded.audio);
+        let params: ElevenLabsRealtimeConfig = serde_json::from_value(resolved).unwrap();
+        assert_eq!(params.language, "pl");
+        assert_eq!(params.secondary_languages, ["en", "zh"]);
+        assert_eq!(params.vad_threshold, 0.6);
+        assert_eq!(params.min_speech_duration_ms, 100);
+        assert!(!params.enable_keyterms);
+        let mut reset = restarted.get_editable_config().unwrap();
+        reset["audio"]
+            .as_mapping_mut()
+            .unwrap()
+            .remove(serde_norway::Value::String(ELEVENLABS_REALTIME_ID.into()));
+        restarted.save_config(&reset).unwrap();
+        assert_eq!(reset["audio"][DOUBAO_STREAMING_ID], doubao);
+        let loaded = restarted.load_config().unwrap();
+        let params: ElevenLabsRealtimeConfig = serde_json::from_value(
+            AppConfig::resolve_model_config(&registry, ELEVENLABS_REALTIME_ID, &loaded.audio),
+        )
+        .unwrap();
+        assert_eq!(params.vad_threshold, 0.4);
+    }
+
+    #[test]
+    fn invalid_elevenlabs_save_does_not_overwrite_existing_file() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        manager
+            .save_config(&serde_norway::to_value(manager.load_config().unwrap()).unwrap())
+            .unwrap();
+        let mut config = manager.get_editable_config().unwrap();
+        manager.save_config(&config).unwrap();
+        let before = fs::read(manager.config_path()).unwrap();
+        config["audio"][ELEVENLABS_REALTIME_ID] =
+            serde_norway::from_str("vad_threshold: 2.0").unwrap();
+        assert!(manager.save_config(&config).is_err());
+        assert_eq!(fs::read(manager.config_path()).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn elevenlabs_dispatch_never_falls_back_to_doubao() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        let mut config = manager.load_config().unwrap();
+        config.audio.insert(
+            "provider".into(),
+            serde_norway::Value::String(ELEVENLABS_REALTIME_ID.into()),
+        );
+        let registry = crate::model::load_registry(data.path(), resources.path());
+        let error = crate::asr::create_engine_session(
+            &config,
+            &registry,
+            data.path().into(),
+            resources.path().into(),
+            &[],
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.contains("ElevenLabs API Key"));
     }
 }

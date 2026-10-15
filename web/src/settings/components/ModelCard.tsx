@@ -36,13 +36,16 @@ import {
 import {
   type AsrDefaults,
   type ControlType,
+  credentialHelpUrl,
   DOUBAO_MODEL_ID,
   effectiveDoubaoAuthMode,
   type FieldMeta,
   getFieldMeta,
   getMergedAsrConfig,
   hasLegacyDoubaoCreds,
+  isModelFieldVisible,
   type MergedField,
+  parseLanguageList,
 } from "@/settings/lib/model";
 import type { RegistryModel } from "@/settings/types/models";
 
@@ -83,11 +86,23 @@ export function renderControl(
         <Input
           type="number"
           step={step}
+          min={meta.min}
+          max={meta.max}
           className="w-36"
           value={typeof value === "number" ? formatNumber(value) : ""}
           onChange={(v) => {
             const n = Number(v);
-            if (Number.isFinite(n)) onChange(n);
+            if (
+              v.trim() &&
+              Number.isFinite(n) &&
+              (meta.min === undefined || n >= meta.min) &&
+              (meta.max === undefined || n <= meta.max) &&
+              (step !== 1 || Number.isInteger(n))
+            )
+              onChange(n);
+          }}
+          onBlur={(e) => {
+            if (!e.currentTarget.validity.valid) e.currentTarget.reportValidity();
           }}
           commitOnBlur
         />
@@ -99,6 +114,16 @@ export function renderControl(
           options={meta.options ?? []}
           value={String(value ?? "")}
           onChange={onChange}
+        />
+      );
+    case "list":
+      return (
+        <Input
+          value={Array.isArray(value) ? value.join(", ") : ""}
+          placeholder={meta.placeholder}
+          onChange={(v) => onChange(parseLanguageList(v))}
+          commitOnBlur
+          className="w-full"
         />
       );
     case "textarea":
@@ -154,6 +179,7 @@ export function ModelCard({
 }: ModelCardProps) {
   const [configExpanded, setConfigExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
 
   const isOnline = model.type === "online";
   const isBase = model.category === "vad" || model.category === "punctuation";
@@ -163,7 +189,8 @@ export function ModelCard({
     () => getMergedAsrConfig(model, userConfig, asrDefaults),
     [model, userConfig, asrDefaults],
   );
-  const fieldMeta = (f: MergedField) => getFieldMeta(f.key, f.value);
+  const fieldMeta = (f: MergedField) => getFieldMeta(f.key, f.value, model.id);
+  const effectiveConfig = Object.fromEntries(fields.map((f) => [f.key, f.value]));
 
   // Doubao auth-mode aware visibility: which credentials show depends on the
   // active mode (legacy App ID/Token vs v2 API Key), and the mode toggle is only
@@ -175,6 +202,7 @@ export function ModelCard({
 
   const visibleFields = fields.filter((f) => {
     const meta = fieldMeta(f);
+    if (!isModelFieldVisible(model.id, f.key, effectiveConfig)) return false;
     if (meta.group === "advanced") return false;
     if (isDoubao && doubaoMode) {
       if (f.key === "auth_mode") return doubaoHasLegacy;
@@ -183,7 +211,10 @@ export function ModelCard({
     }
     return true;
   });
-  const advancedFields = fields.filter((f) => fieldMeta(f).group === "advanced");
+  const advancedFields = fields.filter(
+    (f) =>
+      fieldMeta(f).group === "advanced" && isModelFieldVisible(model.id, f.key, effectiveConfig),
+  );
   const hasConfig = visibleFields.length > 0 || advancedFields.length > 0;
 
   const isDownloading = downloadProgress?.status === "downloading";
@@ -203,7 +234,7 @@ export function ModelCard({
         <div className="flex items-center gap-3">
           <a
             className="text-xs text-accent hover:underline"
-            href="https://console.volcengine.com/speech/app"
+            href={credentialHelpUrl(model.id)}
             target="_blank"
             rel="noreferrer"
           >
@@ -249,14 +280,18 @@ export function ModelCard({
   };
 
   const renderField = (field: MergedField) => {
-    const meta = getFieldMeta(field.key, field.value);
+    const meta = fieldMeta(field);
     return (
       <SectionItem
         key={field.key}
         title={meta.label}
-        action={renderControl(meta, field.value, (value) =>
-          onConfigChange(model.id, patchFromFlatKey(field.key, value)),
-        )}
+        description={meta.description}
+        action={renderControl(meta, field.value, (value) => {
+          setConfigError(null);
+          Promise.resolve(onConfigChange(model.id, patchFromFlatKey(field.key, value))).catch(
+            (error) => setConfigError(error instanceof Error ? error.message : String(error)),
+          );
+        })}
       />
     );
   };
@@ -310,6 +345,11 @@ export function ModelCard({
         {/* Expandable config panel */}
         {showConfig && configExpanded && hasConfig && (
           <div className="border-t border-border-subtle pt-4 space-y-4">
+            {configError && (
+              <p role="alert" className="text-error text-sm">
+                {configError}
+              </p>
+            )}
             <SectionItemList>{visibleFields.map(renderField)}</SectionItemList>
 
             {advancedFields.length > 0 && (

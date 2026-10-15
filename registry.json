@@ -1,6 +1,6 @@
 {
-  "version": 14,
-  "updated_at": "2026-06-16",
+  "version": 15,
+  "updated_at": "2026-10-15",
   "defaults": {
     "asr": {
       "rate": 16000,
@@ -69,6 +69,35 @@
           "boosting_table_id": "",
           "correct_table_id": ""
         }
+      }
+    },
+    {
+      "id": "elevenlabs-realtime",
+      "type": "online",
+      "category": "asr",
+      "engine": "elevenlabs",
+      "name": "ElevenLabs · Scribe v2 Realtime",
+      "description": "多语言实时语音识别，支持自动分段与背景语音过滤",
+      "tags": ["流式输出", "多语言", "按量计费"],
+      "capabilities": {
+        "streaming": true,
+        "hotwords": true,
+        "punctuation": true,
+        "itn": false
+      },
+      "requires_config": ["api_key"],
+      "default_config": {
+        "api_key": "",
+        "language": "",
+        "filter_background_audio": false,
+        "enable_ddc": false,
+        "commit_strategy": "vad",
+        "vad_silence_threshold_secs": 1.5,
+        "vad_threshold": 0.4,
+        "min_speech_duration_ms": 100,
+        "min_silence_duration_ms": 100,
+        "secondary_languages": [],
+        "enable_keyterms": false
       }
     },
     {
