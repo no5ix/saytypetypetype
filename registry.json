@@ -27,9 +27,9 @@
       "type": "online",
       "category": "asr",
       "engine": "volcengine",
-      "name": "火山引擎 - 豆包流式输出大模型",
-      "description": "基于豆包大模型的流式语音识别服务",
-      "tags": ["流式输出", "免费可用", "热词库", "中英文,方言"],
+      "name": "火山引擎 - 豆包流式语音识别模型2.0",
+      "description": "¥1 / 小时，中文用户首选",
+      "tags": ["流式输出", "免费试用额度", "热词库", "中英文,方言"],
       "capabilities": {
         "streaming": true,
         "hotwords": true,
@@ -76,14 +76,14 @@
       "type": "online",
       "category": "asr",
       "engine": "elevenlabs",
-      "name": "ElevenLabs · Scribe v2 Realtime",
-      "description": "多语言实时语音识别，支持自动分段与背景语音过滤",
-      "tags": ["流式输出", "多语言", "按量计费"],
+      "name": "ElevenLabs - Scribe v2 Realtime",
+      "description": "$0.39 / 小时",
+      "tags": ["流式输出", "90+多语言", "按量计费"],
       "capabilities": {
         "streaming": true,
         "hotwords": true,
         "punctuation": true,
-        "itn": false
+        "itn": true
       },
       "requires_config": ["api_key"],
       "default_config": {
