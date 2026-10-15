@@ -50,9 +50,8 @@ pub(crate) async fn regenerate_history_transcription(
     // Keep the event receiver alive for the session's lifetime but never drain it
     // into the overlay: regeneration is silent. `commit_and_await_final` resolves
     // through the session's own commit channel, independent of this receiver.
-    let (session, _event_rx, _) = session::create_active_session(&app_handle, &config, &hotwords)
-        .await
-        .map_err(|error| format!("{error}，请检查网络连接"))?;
+    let (session, _event_rx, _) =
+        session::create_active_session(&app_handle, &config, &hotwords).await?;
     let session: Arc<dyn crate::asr::AsrSession> = Arc::from(session);
 
     for chunk in samples.chunks(REGEN_CHUNK_SIZE) {
@@ -61,7 +60,7 @@ pub(crate) async fn regenerate_history_transcription(
 
     let text = session.commit_and_await_final().await;
     session.close();
-    let text = text.map_err(|error| format!("{error}，请检查网络连接"))?;
+    let text = text?;
     let text = text.trim();
     if text.is_empty() {
         return Err("重新生成没有得到文本，请检查网络连接".to_string());

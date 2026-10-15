@@ -53,6 +53,20 @@ function emit(type: string, payload: Record<string, unknown> = {}) {
 }
 
 describe("overlay presentation", () => {
+  it("shows provider warnings and preserves a salvaged-text error after returning idle", () => {
+    render(<OverlayApp />);
+    emit("state", { state: "recording" });
+    emit("transcript", { finalText: "已经识别的文字" });
+    const warning = "ElevenLabs：服务端警告，当前会话仍在记录";
+    emit("hint", { level: "warn", text: warning, variant: "text" });
+    expect(screen.getByText(warning)).toBeTruthy();
+    emit("state", { state: "finishing" });
+    const failure = "已输出已识别文字，后续语音可能缺失：ElevenLabs 额度不足";
+    emit("hint", { level: "error", text: failure, variant: "text" });
+    emit("state", { state: "idle" });
+    expect(screen.getByText(failure)).toBeTruthy();
+    expect(screen.queryByText("识别中")).toBeNull();
+  });
   it("renders preparation and polishing as text without indicator slots", () => {
     const { container } = render(<OverlayApp />);
     emit("state", { state: "connecting" });

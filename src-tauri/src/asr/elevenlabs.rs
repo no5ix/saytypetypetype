@@ -23,6 +23,9 @@ use crate::config::ElevenLabsRealtimeConfig;
 const ENDPOINT: &str = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FINAL_WINDOW: Duration = Duration::from_secs(10);
+// The protocol has no commit ID. Briefly drain adjacent VAD events instead of
+// treating the first post-stop commit as an end-of-stream acknowledgement.
+const FINAL_SETTLE: Duration = Duration::from_millis(250);
 
 pub struct ElevenLabsEngine {
     config: ElevenLabsRealtimeConfig,
@@ -145,8 +148,20 @@ struct Transcript {
     final_text: String,
     partial: String,
     samples: usize,
-    signal: bool,
+    nonzero_audio: bool,
     commits: usize,
+    speech_samples: usize,
+    last_speech_sent: Option<Instant>,
+    confirmed_speech_samples: usize,
+    last_change: Option<Instant>,
+}
+
+impl Transcript {
+    fn confirmed(&self) -> bool {
+        self.commits > 0
+            && self.partial.is_empty()
+            && self.speech_samples <= self.confirmed_speech_samples
+    }
 }
 
 fn append_segment(text: &mut String, segment: &str) {
@@ -164,7 +179,7 @@ fn append_segment(text: &mut String, segment: &str) {
     text.push_str(segment);
 }
 
-fn server_error(value: &Value) -> Option<(String, bool)> {
+fn server_error(value: &Value, api_key: &str) -> Option<(String, bool)> {
     let kind = value.get("message_type")?.as_str()?;
     let (description, fatal) = match kind {
         "auth_error" => ("API Key 无效或没有语音识别权限", true),
@@ -175,7 +190,8 @@ fn server_error(value: &Value) -> Option<(String, bool)> {
         "invalid_request" | "input_error" | "chunk_size_exceeded" => {
             ("请求参数或音频格式无效", true)
         }
-        "rate_limited" | "throttled" | "commit_throttled" => ("请求过于频繁，请稍后重试", false),
+        "commit_throttled" => ("片段提交过于频繁，请稍后重试", false),
+        "rate_limited" | "throttled" => ("请求过于频繁，请稍后重试", false),
         "queue_overflow" => ("音频处理队列已满，请重试", false),
         "resource_exhausted" | "transcriber_error" | "error" => {
             ("语音服务暂时不可用，请重试", false)
@@ -184,12 +200,84 @@ fn server_error(value: &Value) -> Option<(String, bool)> {
         "insufficient_audio_activity" => ("长时间没有收到有效音频", false),
         _ => return None,
     };
-    // Do not echo arbitrary server payloads: they can contain request credentials.
-    Some((format!("ElevenLabs：{description}（{kind}）"), fatal))
+    let detail = safe_detail(value["error"].as_str().unwrap_or(""), api_key);
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!("：{detail}")
+    };
+    Some((
+        format!("ElevenLabs：{description}（{kind}）{suffix}"),
+        fatal,
+    ))
+}
+
+fn safe_detail(text: &str, api_key: &str) -> String {
+    static CREDENTIAL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let text = if api_key.trim().is_empty() {
+        text.to_string()
+    } else {
+        text.replace(api_key.trim(), "[REDACTED]")
+    };
+    let pattern = CREDENTIAL.get_or_init(|| regex::Regex::new(
+        r#"(?i)(xi-api-key|api[_-]?key|authorization|(?:access_)?token)[\s"']*[:=][\s"']*(?:bearer\s+)?[^\s,;"'}]+"#
+    ).unwrap());
+    pattern
+        .replace_all(&text, "$1=[REDACTED]")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(240)
+        .collect()
+}
+
+/// Setup still crosses the engine boundary as a String; keep the retry decision
+/// limited to known transient ElevenLabs failures, not arbitrary server details.
+pub(crate) fn retryable_start_error(message: &str) -> bool {
+    [
+        "连接超时",
+        "会话启动超时",
+        "连接失败，请检查网络",
+        "启动连接失败",
+        "启动前断开连接",
+        "启动前关闭连接",
+        "心跳失败",
+    ]
+    .iter()
+    .any(|kind| message.starts_with(&format!("ElevenLabs {kind}")))
+        || [
+            "rate_limited",
+            "throttled",
+            "commit_throttled",
+            "queue_overflow",
+            "resource_exhausted",
+            "transcriber_error",
+            "session_time_limit_exceeded",
+            "insufficient_audio_activity",
+            "error",
+        ]
+        .iter()
+        .any(|kind| {
+            message.starts_with("ElevenLabs：")
+                && message
+                    .split('）')
+                    .next()
+                    .is_some_and(|v| v.ends_with(&format!("（{kind}")))
+        })
+        || message
+            .strip_prefix("ElevenLabs 连接失败：HTTP ")
+            .and_then(|v| v.split('，').next())
+            .and_then(|v| v.parse::<u16>().ok())
+            .is_some_and(|code| code == 429 || (500..600).contains(&code))
 }
 
 struct Runtime {
     ready: AtomicBool,
+    finishing: AtomicBool,
+    normal_close: AtomicBool,
+    api_key: String,
+    updates: watch::Sender<u64>,
     transcript: Mutex<Transcript>,
     ended: watch::Sender<Option<String>>,
     events: mpsc::UnboundedSender<AsrEvent>,
@@ -215,14 +303,30 @@ impl Runtime {
         };
         let mut state = self.transcript.lock().unwrap();
         match kind {
-            "partial_transcript" => state.partial = text.into(),
+            "partial_transcript" => {
+                if state.partial != text {
+                    state.last_change = Some(Instant::now());
+                }
+                state.partial = text.into();
+            }
             "committed_transcript" => {
                 state.commits += 1;
+                // A VAD result received while newer speech is still being sent
+                // cannot acknowledge that newer audio. Only use a quiet boundary
+                // for the already-confirmed fast path; otherwise explicitly commit.
+                if state
+                    .last_speech_sent
+                    .is_some_and(|sent| sent.elapsed() >= FINAL_SETTLE)
+                {
+                    state.confirmed_speech_samples = state.speech_samples;
+                }
+                state.last_change = Some(Instant::now());
                 append_segment(&mut state.final_text, text);
                 state.partial.clear();
             }
             _ => return,
         }
+        self.updates.send_modify(|revision| *revision += 1);
         let _ = self.events.send(AsrEvent::Transcript {
             final_text: state.final_text.clone(),
             partial_text: state.partial.clone(),
@@ -230,9 +334,19 @@ impl Runtime {
     }
 }
 
+struct FinishTicket {
+    baseline: usize,
+    already_confirmed: bool,
+}
+
 enum Command {
     Audio(Vec<f32>),
-    Finish(oneshot::Sender<()>),
+    Finish(oneshot::Sender<FinishTicket>),
+}
+
+enum Control {
+    Pong(tokio_tungstenite::tungstenite::Bytes),
+    RetryCommit,
 }
 
 struct ElevenLabsSession {
@@ -249,13 +363,14 @@ impl AsrEngine for ElevenLabsEngine {
         hotwords: &[String],
     ) -> Result<(Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>), String> {
         let req = request(&self.config, hotwords, ENDPOINT)?;
-        connect_session(req, FINAL_WINDOW).await
+        connect_session(req, FINAL_WINDOW, self.config.api_key.clone()).await
     }
 }
 
 async fn connect_session(
     req: Request<()>,
     final_window: Duration,
+    api_key: String,
 ) -> Result<(Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>), String> {
     let (mut socket, _) = timeout(CONNECT_TIMEOUT, connect_async(req))
         .await
@@ -267,14 +382,21 @@ async fn connect_session(
             ),
             _ => "ElevenLabs 连接失败，请检查网络".into(),
         })?;
+    let mut warnings = Vec::new();
     timeout(CONNECT_TIMEOUT, async {
         while let Some(message) = socket.next().await {
             match message.map_err(|_| "ElevenLabs 启动连接失败".to_string())? {
                 Message::Text(text) => {
                     let value: Value = serde_json::from_str(&text)
                         .map_err(|_| "ElevenLabs 返回无效消息".to_string())?;
-                    if let Some((message, _)) = server_error(&value) {
+                    if let Some((message, _)) = server_error(&value, &api_key) {
                         return Err(message);
+                    }
+                    if value["message_type"] == "warning" {
+                        warnings.push(safe_detail(
+                            value["warning"].as_str().unwrap_or("服务端警告"),
+                            &api_key,
+                        ));
                     }
                     if value["message_type"] == "session_started" {
                         return Ok(());
@@ -294,12 +416,14 @@ async fn connect_session(
     })
     .await
     .map_err(|_| "ElevenLabs 会话启动超时".to_string())??;
-    Ok(start_session(socket, final_window))
+    Ok(start_session(socket, final_window, api_key, warnings))
 }
 
 fn start_session<S>(
     socket: WebSocketStream<S>,
     final_window: Duration,
+    api_key: String,
+    warnings: Vec<String>,
 ) -> (Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -308,14 +432,21 @@ where
     let (ended, _) = watch::channel(None);
     let runtime = Arc::new(Runtime {
         ready: AtomicBool::new(true),
+        finishing: AtomicBool::new(false),
+        normal_close: AtomicBool::new(false),
+        api_key,
+        updates: watch::channel(0).0,
         transcript: Mutex::new(Transcript::default()),
         ended,
         events,
     });
     let _ = runtime.events.send(AsrEvent::Open);
+    for message in warnings {
+        let _ = runtime.events.send(AsrEvent::Warning { message });
+    }
     let (mut sink, mut stream) = socket.split();
     let (sender, mut commands) = mpsc::unbounded_channel();
-    let (pong_tx, mut pong_rx) = mpsc::unbounded_channel();
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel();
     let writer = Arc::clone(&runtime);
     let mut writer_end = runtime.ended.subscribe();
     tokio::spawn(async move {
@@ -325,8 +456,23 @@ where
             tokio::select! {
                 biased;
                 _ = writer_end.changed() => { let _ = timeout(CONNECT_TIMEOUT, sink.close()).await; break; }
-                Some(data) = pong_rx.recv() => {
-                    if !matches!(timeout(CONNECT_TIMEOUT, sink.send(Message::Pong(data))).await, Ok(Ok(()))) { writer.fail("ElevenLabs 心跳发送失败".into(), false); break; }
+                Some(control) = control_rx.recv() => {
+                    let message = match control {
+                        Control::Pong(data) => Message::Pong(data),
+                        Control::RetryCommit => {
+                            if !finished { continue; }
+                            tokio::select! {
+                                _ = writer_end.changed() => break,
+                                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                            }
+                            audio_message(&[], true)
+                        }
+                    };
+                    let sent = tokio::select! {
+                        _ = writer_end.changed() => break,
+                        result = timeout(CONNECT_TIMEOUT, sink.send(message)) => result,
+                    };
+                    if !matches!(sent, Ok(Ok(()))) { writer.fail("ElevenLabs 控制消息发送失败，请检查网络".into(), false); break; }
                 }
                 command = commands.recv(), if !finished => {
                     let Some(command) = command else { break; };
@@ -334,22 +480,40 @@ where
                         _ = writer_end.changed() => { let _ = timeout(CONNECT_TIMEOUT, sink.close()).await; break; }
                         _ = sleep_until(next_audio) => {}
                     }
-                    let (message, duration, ack) = match command {
+                    let (message, duration, ack, audio_info) = match command {
                         Command::Audio(samples) => {
-                            let mut state = writer.transcript.lock().unwrap();
-                            state.samples += samples.len();
-                            state.signal |= samples.iter().any(|v| v.is_finite() && v.abs() >= 0.004);
-                            (audio_message(&samples, false), Duration::from_secs_f64(samples.len() as f64 / 16000.0), None)
+                            let signal = samples.iter().any(|v| v.is_finite() && v.abs() >= 0.004);
+                            let nonzero = samples.iter().any(|v| v.is_finite() && *v != 0.0);
+                            (audio_message(&samples, false), Duration::from_secs_f64(samples.len() as f64 / 16000.0), None, Some((samples.len(), signal, nonzero)))
                         }
-                        Command::Finish(ack) => (audio_message(&[], true), Duration::ZERO, Some(ack)),
+                        Command::Finish(ack) => {
+                            writer.finishing.store(true, Ordering::SeqCst);
+                            let state = writer.transcript.lock().unwrap();
+                            let ticket = FinishTicket { baseline: state.commits, already_confirmed: state.confirmed() };
+                            if state.samples == 0 || ticket.already_confirmed {
+                                finished = true;
+                                let _ = ack.send(ticket);
+                                continue;
+                            }
+                            (audio_message(&[], true), Duration::ZERO, Some((ack, ticket)), None)
+                        },
                     };
                     let sent = tokio::select! {
                         _ = writer_end.changed() => break,
                         result = timeout(CONNECT_TIMEOUT, sink.send(message)) => result,
                     };
                     if !matches!(sent, Ok(Ok(()))) { writer.fail("ElevenLabs 音频发送失败，请检查网络".into(), false); break; }
+                    if let Some((samples, signal, nonzero)) = audio_info {
+                        let mut state = writer.transcript.lock().unwrap();
+                        state.samples += samples;
+                        state.nonzero_audio |= nonzero;
+                        if signal {
+                            state.speech_samples = state.samples;
+                            state.last_speech_sent = Some(Instant::now());
+                        }
+                    }
                     next_audio = Instant::now() + duration;
-                    if let Some(ack) = ack { finished = true; let _ = ack.send(()); }
+                    if let Some((ack, ticket)) = ack { finished = true; let _ = ack.send(ticket); }
                 }
             }
         }
@@ -357,6 +521,7 @@ where
     let reader = Arc::clone(&runtime);
     let mut reader_end = runtime.ended.subscribe();
     tokio::spawn(async move {
+        let mut commit_retries = 0;
         loop {
             tokio::select! {
                 biased;
@@ -366,15 +531,41 @@ where
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(value) => {
-                                    if let Some((message, fatal)) = server_error(&value) { reader.fail(message, fatal); break; }
-                                    if value["message_type"] == "warning" { log_asr!(warn, "ElevenLabs returned a non-fatal warning"); }
+                                    if let Some((message, fatal)) = server_error(&value, &reader.api_key) {
+                                        if value["message_type"] == "commit_throttled" && commit_retries < 3 {
+                                            let _ = reader.events.send(AsrEvent::Warning { message });
+                                            if reader.finishing.load(Ordering::SeqCst) {
+                                                commit_retries += 1;
+                                                let _ = control_tx.send(Control::RetryCommit);
+                                            }
+                                            continue;
+                                        }
+                                        reader.fail(message, fatal); break;
+                                    }
+                                    if value["message_type"] == "warning" {
+                                        let message = format!("ElevenLabs：{}", safe_detail(value["warning"].as_str().unwrap_or("服务端警告"), &reader.api_key));
+                                        log_asr!(warn, "{}", message);
+                                        let _ = reader.events.send(AsrEvent::Warning { message });
+                                    }
                                     reader.transcript(&value);
                                 }
                                 Err(_) => { reader.fail("ElevenLabs 返回无效消息".into(), true); break; }
                             }
                         }
-                        Some(Ok(Message::Ping(data))) => { let _ = pong_tx.send(data); }
-                        Some(Ok(Message::Close(_))) | None => { reader.fail("ElevenLabs 连接已关闭".into(), false); break; }
+                        Some(Ok(Message::Ping(data))) => { let _ = control_tx.send(Control::Pong(data)); }
+                        Some(Ok(Message::Close(frame))) => {
+                            let code = frame.as_ref().map(|v| u16::from(v.code));
+                            let reason = frame.as_ref().map(|v| safe_detail(&v.reason, &reader.api_key)).unwrap_or_default();
+                            if code == Some(1000) && reader.finishing.load(Ordering::SeqCst) {
+                                reader.normal_close.store(true, Ordering::SeqCst);
+                                reader.ready.store(false, Ordering::SeqCst);
+                                reader.ended.send_replace(Some("ElevenLabs 在尾句确认前关闭连接".into()));
+                            } else {
+                                reader.fail(format!("ElevenLabs 连接已关闭（{}）{}", code.map(|v| v.to_string()).unwrap_or_else(|| "无状态码".into()), reason), false);
+                            }
+                            break;
+                        }
+                        None => { reader.fail("ElevenLabs 连接意外断开".into(), false); break; }
                         Some(Err(_)) => { reader.fail("ElevenLabs 连接中断，请检查网络".into(), false); break; }
                         _ => {}
                     }
@@ -410,6 +601,7 @@ impl AsrSession for ElevenLabsSession {
     }
     async fn commit_and_await_final(&self) -> Result<String, String> {
         let mut ended = self.runtime.ended.subscribe();
+        let mut updates = self.runtime.updates.subscribe();
         if let Some(error) = ended.borrow().clone() {
             return Err(error);
         }
@@ -425,29 +617,73 @@ impl AsrSession for ElevenLabsSession {
                 .send(Command::Finish(ack))
                 .map_err(|_| "ElevenLabs 发送队列已关闭")?;
         }
-        tokio::select! {
-            _ = ended.changed() => return Err(ended.borrow().clone().unwrap_or_else(|| "ElevenLabs 会话已结束".into())),
-            result = received => { result.map_err(|_| "ElevenLabs 最终提交失败")?; }
+        let ticket = tokio::select! {
+            biased;
+            result = received => result.map_err(|_| "ElevenLabs 最终提交失败")?,
+            _ = ended.changed() => {
+                let state = self.runtime.transcript.lock().unwrap();
+                if self.runtime.normal_close.load(Ordering::SeqCst) && state.confirmed() {
+                    return Ok(state.final_text.clone());
+                }
+                return Err(ended.borrow().clone().unwrap_or_else(|| "ElevenLabs 会话已结束".into()));
+            },
+        };
+        let deadline = Instant::now() + self.final_window;
+        loop {
+            if let Some(error) = ended.borrow().clone() {
+                if !self.runtime.normal_close.load(Ordering::SeqCst) {
+                    return Err(error);
+                }
+            }
+            let (complete, quiet_until) = {
+                let state = self.runtime.transcript.lock().unwrap();
+                if state.samples == 0 {
+                    return Ok(String::new());
+                }
+                let confirmed = state.partial.is_empty()
+                    && (ticket.already_confirmed || state.commits > ticket.baseline);
+                let silent = !state.nonzero_audio && state.partial.is_empty();
+                let quiet_until = state.last_change.unwrap_or_else(Instant::now) + FINAL_SETTLE;
+                if confirmed
+                    && (Instant::now() >= quiet_until
+                        || self.runtime.normal_close.load(Ordering::SeqCst))
+                {
+                    return Ok(state.final_text.clone());
+                }
+                (
+                    confirmed || silent,
+                    if silent && state.last_change.is_none() {
+                        deadline.min(Instant::now() + FINAL_SETTLE)
+                    } else {
+                        quiet_until
+                    },
+                )
+            };
+            if let Some(error) = ended.borrow().clone() {
+                return Err(error);
+            }
+            tokio::select! {
+                biased;
+                _ = ended.changed() => {},
+                _ = updates.changed() => {},
+                _ = sleep_until(deadline) => return Err("ElevenLabs 最终结果超时，请检查网络后重试".into()),
+                _ = sleep_until(quiet_until), if complete => {
+                    let state = self.runtime.transcript.lock().unwrap();
+                    if !state.nonzero_audio && state.partial.is_empty() { return Ok(state.final_text.clone()); }
+                },
+            }
         }
-        if self.runtime.transcript.lock().unwrap().samples == 0 {
-            return Ok(String::new());
-        }
-        // The API has no commit ID or end-of-stream acknowledgement. An older VAD
-        // result can arrive after our commit. Collect the entire bounded window
-        // rather than incorrectly resolving on the first committed event.
-        tokio::select! {
-            _ = ended.changed() => return Err(ended.borrow().clone().unwrap_or_else(|| "ElevenLabs 会话已结束".into())),
-            _ = tokio::time::sleep(self.final_window) => {}
-        }
-        let state = self.runtime.transcript.lock().unwrap();
-        if !state.partial.is_empty()
-            || (state.final_text.is_empty() && state.signal && state.commits == 0)
-        {
-            return Err("ElevenLabs 最终结果超时，请检查网络后重试".into());
-        }
-        Ok(state.final_text.clone())
     }
+
+    fn recognized_text(&self) -> Option<String> {
+        let state = self.runtime.transcript.lock().unwrap();
+        let mut text = state.final_text.clone();
+        append_segment(&mut text, &state.partial);
+        Some(text)
+    }
+
     fn close(&self) {
+        self.runtime.normal_close.store(false, Ordering::SeqCst);
         self.runtime.ready.store(false, Ordering::SeqCst);
         self.sender.lock().unwrap().take();
         self.runtime
@@ -591,12 +827,15 @@ mod tests {
             ("queue_overflow", false),
             ("session_time_limit_exceeded", false),
         ] {
-            let (message, actual) =
-                server_error(&json!({"message_type":kind,"error":"test-secret"})).unwrap();
+            let (message, actual) = server_error(
+                &json!({"message_type":kind,"error":"test-secret"}),
+                "test-secret",
+            )
+            .unwrap();
             assert_eq!(actual, fatal);
             assert!(!message.contains("test-secret"));
         }
-        assert!(server_error(&json!({"message_type":"warning"})).is_none());
+        assert!(server_error(&json!({"message_type":"warning"}), "test-secret").is_none());
     }
 
     type Server = WebSocketStream<TcpStream>;
@@ -625,7 +864,8 @@ mod tests {
         let (endpoint, server) = mock().await;
         let client = tokio::spawn(connect_session(
             request(&config(), &[], &endpoint).unwrap(),
-            Duration::from_millis(180),
+            Duration::from_millis(1000),
+            "test-secret".into(),
         ));
         let mut server = server.await.unwrap();
         send(&mut server, "session_started", "").await;
@@ -650,6 +890,7 @@ mod tests {
         let client = tokio::spawn(connect_session(
             request(&config(), &[], &endpoint).unwrap(),
             Duration::ZERO,
+            "test-secret".into(),
         ));
         let mut server = server.await.unwrap();
         assert!(!client.is_finished());
@@ -678,7 +919,14 @@ mod tests {
         send(&mut server, "partial_transcript", "world").await;
         send(&mut server, "committed_transcript", "world").await;
         send(&mut server, "partial_transcript", "").await;
-        assert_eq!(result.await.unwrap().unwrap(), "hello world");
+        assert_eq!(
+            timeout(Duration::from_millis(700), result)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            "hello world"
+        );
         session.close();
     }
 
@@ -696,7 +944,9 @@ mod tests {
             if !audio.is_empty() {
                 assert_eq!(next_audio(&mut server).await["commit"], false);
             }
-            assert_eq!(next_audio(&mut server).await["commit"], true);
+            if !audio.is_empty() {
+                assert_eq!(next_audio(&mut server).await["commit"], true);
+            }
             if empty_commit {
                 send(&mut server, "committed_transcript", "").await;
             }
@@ -736,7 +986,20 @@ mod tests {
     async fn warnings_and_keepalives_are_not_errors_and_disconnect_is_reported() {
         let (session, mut events, mut server) = session().await;
         events.recv().await;
-        send(&mut server, "warning", "").await;
+        server
+            .send(Message::Text(
+                json!({"message_type":"warning","warning":"test-secret is not retained"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let Some(AsrEvent::Warning { message }) = events.recv().await else {
+            panic!("expected warning")
+        };
+        assert!(message.contains("not retained"));
+        assert!(!message.contains("test-secret"));
+        assert!(session.is_ready());
         for text in ["hello", "hello", ""] {
             send(&mut server, "partial_transcript", text).await;
             let Some(AsrEvent::Transcript {
@@ -755,5 +1018,232 @@ mod tests {
             Some(AsrEvent::Error { fatal: false, .. })
         ));
         assert!(!session.is_ready());
+    }
+
+    #[test]
+    fn all_protocol_errors_keep_safe_reasons_and_setup_retry_policy() {
+        for (kind, fatal) in [
+            ("error", false),
+            ("auth_error", true),
+            ("quota_exceeded", true),
+            ("commit_throttled", false),
+            ("unaccepted_terms", true),
+            ("rate_limited", false),
+            ("queue_overflow", false),
+            ("resource_exhausted", false),
+            ("session_time_limit_exceeded", false),
+            ("input_error", true),
+            ("invalid_request", true),
+            ("chunk_size_exceeded", true),
+            ("insufficient_audio_activity", false),
+            ("transcriber_error", false),
+        ] {
+            let (message, actual) = server_error(&json!({"message_type":kind,"error":"specific reason; xi-api-key=test-secret; token=other-secret"}), "test-secret").unwrap();
+            assert_eq!(actual, fatal);
+            assert!(message.contains("specific reason"));
+            assert!(!message.contains("test-secret"));
+            assert!(!message.contains("other-secret"));
+            assert_eq!(retryable_start_error(&message), !fatal);
+        }
+        for message in [
+            "请先填写 ElevenLabs API Key",
+            "ElevenLabs 参数格式错误，请检查模型配置",
+            "ElevenLabs 连接失败：HTTP 401，请检查 API Key、权限和余额",
+        ] {
+            assert!(!retryable_start_error(message));
+        }
+        for message in [
+            "ElevenLabs 连接超时",
+            "ElevenLabs 会话启动超时",
+            "ElevenLabs 连接失败：HTTP 503，请检查 API Key、权限和余额",
+        ] {
+            assert!(retryable_start_error(message));
+        }
+    }
+
+    #[tokio::test]
+    async fn already_confirmed_vad_text_finishes_without_a_duplicate_commit() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        send(&mut server, "committed_transcript", "已经确认").await;
+        events.recv().await;
+        session.append_audio(&[0.0; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        assert_eq!(next_audio(&mut server).await["commit"], false);
+        assert_eq!(
+            timeout(Duration::from_millis(600), result)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            "已经确认"
+        );
+        assert!(timeout(Duration::from_millis(30), server.next())
+            .await
+            .is_err());
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn new_speech_after_a_vad_commit_still_waits_for_its_tail() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "first").await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        assert_eq!(next_audio(&mut server).await["commit"], true);
+        send(&mut server, "partial_transcript", "second").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!result.is_finished());
+        send(&mut server, "committed_transcript", "second").await;
+        assert_eq!(
+            timeout(Duration::from_millis(600), result)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            "first second"
+        );
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn final_commit_throttling_retries_on_the_same_connection() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        assert_eq!(next_audio(&mut server).await["commit"], true);
+        server
+            .send(Message::Text(
+                json!({"message_type":"commit_throttled","error":"Please commit less often"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(AsrEvent::Warning { .. })
+        ));
+        assert!(session.is_ready());
+        assert_eq!(next_audio(&mut server).await["commit"], true);
+        send(&mut server, "committed_transcript", "done").await;
+        assert_eq!(result.await.unwrap().unwrap(), "done");
+        session.close();
+    }
+
+    #[tokio::test]
+    async fn normal_close_after_final_text_succeeds_but_incomplete_close_fails() {
+        for confirmed in [true, false] {
+            let (session, _events, mut server) = session().await;
+            session.append_audio(&[0.1; 1600]);
+            let copy = Arc::clone(&session);
+            let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+            next_audio(&mut server).await;
+            next_audio(&mut server).await;
+            send(
+                &mut server,
+                if confirmed {
+                    "committed_transcript"
+                } else {
+                    "partial_transcript"
+                },
+                "recognized",
+            )
+            .await;
+            server
+                .close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code:
+                        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: "Finished".into(),
+                }))
+                .await
+                .unwrap();
+            let text = result.await.unwrap();
+            if confirmed {
+                assert_eq!(text.unwrap(), "recognized");
+            } else {
+                assert!(text.is_err());
+                assert_eq!(session.recognized_text().as_deref(), Some("recognized"));
+            }
+            session.close();
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_text_is_available_when_an_error_interrupts_finalization() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "saved").await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        server
+            .send(Message::Text(
+                json!({"message_type":"quota_exceeded","error":"No credits left"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(result
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("No credits left"));
+        assert_eq!(session.recognized_text().as_deref(), Some("saved"));
+        session.close();
+    }
+    #[tokio::test]
+    async fn quiet_audio_is_not_mistaken_for_digital_silence() {
+        let (session, _events, mut server) = session().await;
+        session.append_audio(&[0.001; 1600]);
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        next_audio(&mut server).await;
+        next_audio(&mut server).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!result.is_finished());
+        send(&mut server, "committed_transcript", "quiet voice").await;
+        assert_eq!(result.await.unwrap().unwrap(), "quiet voice");
+        session.close();
+    }
+    #[tokio::test]
+    async fn delayed_old_vad_commit_does_not_acknowledge_newly_sent_speech() {
+        let (session, mut events, mut server) = session().await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        send(&mut server, "partial_transcript", "first").await;
+        events.recv().await;
+        session.append_audio(&[0.1; 1600]);
+        next_audio(&mut server).await;
+        send(&mut server, "committed_transcript", "first").await;
+        events.recv().await;
+        let copy = Arc::clone(&session);
+        let result = tokio::spawn(async move { copy.commit_and_await_final().await });
+        assert_eq!(next_audio(&mut server).await["commit"], true);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!result.is_finished());
+        send(&mut server, "committed_transcript", "second").await;
+        assert_eq!(result.await.unwrap().unwrap(), "first second");
+        session.close();
     }
 }

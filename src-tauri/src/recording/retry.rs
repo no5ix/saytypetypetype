@@ -98,7 +98,7 @@ async fn retry_history_transcription_inner(
                 if !is_current_epoch(&app_inner, retry_epoch) {
                     return Err("重试已取消".to_string());
                 }
-                let message = format!("{error}，请检查网络连接");
+                let message = error;
                 fail_retry(&app_handle, &app_inner, &ts, &message).await;
                 return Err(message);
             }
@@ -135,7 +135,6 @@ async fn retry_history_transcription_inner(
                 return Err("重试已取消".to_string());
             }
             session.close();
-            let error = format!("{error}，请检查网络连接");
             fail_retry(&app_handle, &app_inner, &ts, &error).await;
             return Err(error);
         }

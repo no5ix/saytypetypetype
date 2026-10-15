@@ -215,6 +215,15 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             Err(e) => {
                 log_rec!(warn, "ASR commit failed: {}", e);
                 session.close();
+                if let Some(text) = session.recognized_text() {
+                    let has_text = !text.trim().is_empty()
+                        || !app_inner.accumulated_text.lock().await.trim().is_empty();
+                    if has_text {
+                        *app_inner.latest_transcript.lock().await = (text, String::new());
+                        finalize::finalize_on_failure(&app_handle, &app_inner, &e).await;
+                        return;
+                    }
+                }
                 app_inner.pending_audio.lock().await.clear();
                 *app_inner.accumulated_text.lock().await = String::new();
                 history::record_transcription_failure(&app_handle, &app_inner, &e).await;

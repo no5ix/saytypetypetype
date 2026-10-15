@@ -75,10 +75,14 @@ pub(super) async fn connect_and_attach(
         return;
     }
 
-    // Each Doubao attempt is bounded to 5s inside the engine; retry once.
+    // Retry transient setup failures once; permanent ElevenLabs errors need user action.
     let mut result = create_active_session(&app_handle, &config, &hotwords).await;
-    if result.is_err() && is_current_epoch(&app_inner, my_epoch) {
-        // Check again before spending another 5 s on the retry.
+    if result.as_ref().err().is_some_and(|message| {
+        config.audio_provider() != crate::config::ELEVENLABS_REALTIME_ID
+            || crate::asr::elevenlabs::retryable_start_error(message)
+    }) && is_current_epoch(&app_inner, my_epoch)
+    {
+        // Check again before opening another connection.
         if !is_recording(&app_handle) {
             let _ = connect_tx.send(Err("已取消".to_string()));
             return;
@@ -160,7 +164,7 @@ pub(super) async fn connect_and_attach(
             app_inner.pending_audio.lock().await.clear();
             capture::stop_capture(&app_inner).await;
             history::save_recording_wav(&app_handle, &app_inner).await;
-            let message = format!("ASR 连接失败: {}，请检查网络连接", e);
+            let message = format!("ASR 连接失败: {}", e);
             history::record_transcription_failure(&app_handle, &app_inner, &message).await;
             // Emit error hint BEFORE setting idle so the overlay shows it: the
             // frontend's idle handler only clears "info"-level hints.
@@ -225,6 +229,13 @@ pub(super) async fn manage_asr_session(
                         }),
                     );
                 }
+                AsrEvent::Warning { message } => {
+                    if !is_current_epoch(&app_inner, my_epoch) {
+                        break 'outer;
+                    }
+                    log_events!(warn, "ASR warning: {}", message);
+                    emit_hint(&app, &message, "warn", "text");
+                }
                 AsrEvent::Open => {
                     log_events!(info, "ASR connection opened");
                 }
@@ -236,9 +247,14 @@ pub(super) async fn manage_asr_session(
                         break 'outer;
                     }
                     if !fatal && reconnect_attempts < MAX_ASR_RECONNECT {
-                        if let Some(rx) =
-                            try_reconnect_asr(&app, &app_inner, my_epoch, &mut reconnect_attempts)
-                                .await
+                        if let Some(rx) = try_reconnect_asr(
+                            &app,
+                            &app_inner,
+                            my_epoch,
+                            &mut reconnect_attempts,
+                            &message,
+                        )
+                        .await
                         {
                             event_rx = rx;
                             continue 'outer;
@@ -259,9 +275,18 @@ pub(super) async fn manage_asr_session(
                     }
                     // Unexpected close mid-recording: treat as recoverable.
                     if reconnect_attempts < MAX_ASR_RECONNECT {
-                        if let Some(rx) =
-                            try_reconnect_asr(&app, &app_inner, my_epoch, &mut reconnect_attempts)
-                                .await
+                        if let Some(rx) = try_reconnect_asr(
+                            &app,
+                            &app_inner,
+                            my_epoch,
+                            &mut reconnect_attempts,
+                            if reason.is_empty() {
+                                "ASR 连接已断开"
+                            } else {
+                                &reason
+                            },
+                        )
+                        .await
                         {
                             event_rx = rx;
                             continue 'outer;
@@ -289,6 +314,7 @@ async fn try_reconnect_asr(
     app_inner: &Arc<app_state::AppInner>,
     my_epoch: u64,
     attempts: &mut u32,
+    reason: &str,
 ) -> Option<tokio::sync::mpsc::UnboundedReceiver<crate::asr::AsrEvent>> {
     *attempts += 1;
     log_events!(
@@ -297,7 +323,7 @@ async fn try_reconnect_asr(
         attempts,
         MAX_ASR_RECONNECT
     );
-    emit_hint(app, "网络中断，正在重连…", "warn", "text");
+    emit_hint(app, &format!("{reason}，正在重连…"), "warn", "text");
 
     // Play the end cue on the first reconnect attempt so the user audibly knows
     // recording was interrupted and can stop talking until they hear it resume.

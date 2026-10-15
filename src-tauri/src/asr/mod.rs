@@ -11,6 +11,9 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum AsrEvent {
     Open,
+    Warning {
+        message: String,
+    },
     Transcript {
         final_text: String,
         partial_text: String,
@@ -51,6 +54,11 @@ pub trait AsrSession: Send + Sync {
 
     /// Signal end-of-audio and wait for the final recognition result.
     async fn commit_and_await_final(&self) -> Result<String, String>;
+
+    /// Engines that can salvage text after a failed final commit return a snapshot.
+    fn recognized_text(&self) -> Option<String> {
+        None
+    }
 
     /// Close the session and release resources.
     fn close(&self);

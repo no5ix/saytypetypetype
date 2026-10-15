@@ -22,6 +22,7 @@ use super::{current_session_text, emit_hint, reset_matcher_recording};
 pub(crate) enum FinalizeOutcome {
     Delivered,
     Deferred,
+    OutputFailed,
 }
 
 /// Finalize a recording that failed mid-stream (fatal error or exhausted
@@ -80,17 +81,18 @@ pub(super) async fn finalize_on_failure(
 
     // A failed polish parked the salvaged text and settled the app state: keep
     // the overlay up for the retry / ESC / auto-paste decision.
-    if outcome == FinalizeOutcome::Deferred {
+    if outcome != FinalizeOutcome::Delivered {
         return;
     }
 
-    if !app_inner
-        .feedback_visible
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        overlay::hide(app);
-        set_app_state(app, app_inner, app_state::AppState::Idle).await;
-    }
+    // Successful salvage must not make a failed recognition look successful.
+    // Keep the delivered text, but show why the remaining audio may be missing.
+    overlay::show_output_error(
+        app,
+        app_inner,
+        &format!("已输出已识别文字，后续语音可能缺失：{message}"),
+    )
+    .await;
 }
 
 /// Run recognized text through the finishing pipeline: optional LLM polishing
@@ -239,8 +241,11 @@ pub(super) async fn finalize_and_paste(
         prompt_id: active_prompt_id.clone(),
         raw_text: (active_prompt_id.is_some() && final_text != trimmed).then(|| trimmed.clone()),
     };
-    deliver_text(app_handle, app_inner, &final_text, config.as_ref(), polish).await;
-    FinalizeOutcome::Delivered
+    if deliver_text(app_handle, app_inner, &final_text, config.as_ref(), polish).await {
+        FinalizeOutcome::Delivered
+    } else {
+        FinalizeOutcome::OutputFailed
+    }
 }
 
 /// Write text to the clipboard, simulate the paste keystroke, restore the
@@ -252,7 +257,7 @@ pub(super) async fn deliver_text(
     final_text: &str,
     config: Option<&crate::config::AppConfig>,
     polish: crate::stats::PolishRecord,
-) {
+) -> bool {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
     overlay::set_decision_keys_enabled(app_handle, false);
@@ -272,7 +277,7 @@ pub(super) async fn deliver_text(
 
     if let Err(e) = app_handle.clipboard().write_text(final_text) {
         overlay::show_output_error(app_handle, app_inner, &format!("剪贴板写入失败: {}", e)).await;
-        return;
+        return false;
     }
 
     let result = crate::paste::simulate_paste();
@@ -292,7 +297,7 @@ pub(super) async fn deliver_text(
             result.message.as_deref().unwrap_or("模拟粘贴失败"),
         )
         .await;
-        return;
+        return false;
     }
 
     // Record usage stats and retain/delete the WAV according to user settings.
@@ -307,4 +312,5 @@ pub(super) async fn deliver_text(
     .await;
     overlay::show_success(app_handle, app_inner, keep_clipboard).await;
     cue::emit_cue(app_handle, app_inner, "end");
+    true
 }
