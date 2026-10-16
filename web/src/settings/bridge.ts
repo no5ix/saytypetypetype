@@ -69,6 +69,12 @@ export interface ModelDownloadProgress {
 
 // ---- Data methods ----
 
+export async function openHelpGuide(): Promise<void> {
+  return invoke("plugin:shell|open", {
+    path: "https://github.com/that-yolanda/voicepaste/blob/master/GUIDANCE.zh.md",
+  });
+}
+
 export async function getData(): Promise<SettingsData> {
   return invoke("get_settings_data");
 }

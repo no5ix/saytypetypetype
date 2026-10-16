@@ -3,7 +3,6 @@ import { type SectionId, Sidebar } from "@/settings/layout/Sidebar";
 import { AboutPage } from "@/settings/pages/AboutPage";
 import { AppSettingsPage } from "@/settings/pages/AppSettingsPage";
 import { AudioModelPage } from "@/settings/pages/AudioModelPage";
-import { FeedbackPage } from "@/settings/pages/FeedbackPage";
 import { HomePage } from "@/settings/pages/HomePage";
 import { HotkeyPage } from "@/settings/pages/HotkeyPage";
 import { HotwordsPage } from "@/settings/pages/HotwordsPage";
@@ -40,7 +39,6 @@ export function SettingsApp() {
             {section === "service" && <AudioModelPage />}
             {section === "llm" && <LLMPage />}
             {section === "hotwords" && <HotwordsPage />}
-            {section === "feedback" && <FeedbackPage />}
             {section === "about" && <AboutPage />}
           </div>
         </main>

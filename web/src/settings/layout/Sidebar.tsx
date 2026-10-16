@@ -9,7 +9,9 @@ import {
   Settings2,
   ShieldCheck,
 } from "lucide-react";
+import { openHelpGuide } from "@/settings/bridge";
 import { ThemeSelector } from "@/settings/components/ThemeSelector";
+import { Toast, useToast } from "@/settings/components/Toast";
 import { UpdateButton } from "@/settings/components/UpdateButton";
 
 export type SectionId =
@@ -20,7 +22,6 @@ export type SectionId =
   | "service"
   | "llm"
   | "hotwords"
-  | "feedback"
   | "about";
 
 const NAV_ITEMS: { id: SectionId; icon: typeof Home; label: string }[] = [
@@ -33,17 +34,14 @@ const NAV_ITEMS: { id: SectionId; icon: typeof Home; label: string }[] = [
   { id: "hotwords", icon: NotebookText, label: "热词库" },
 ];
 
-const BOTTOM_ITEMS: { id: SectionId; icon: typeof Home; label: string }[] = [
-  { id: "feedback", icon: BookOpen, label: "帮助说明" },
-  { id: "about", icon: Info, label: "关于" },
-];
-
 interface SidebarProps {
   active: SectionId;
   onNavigate: (id: SectionId) => void;
 }
 
 export function Sidebar({ active, onNavigate }: SidebarProps) {
+  const { toast, showToast } = useToast();
+
   const navBtn = (id: SectionId, Icon: typeof Home, label: string) => (
     <button
       key={id}
@@ -75,12 +73,23 @@ export function Sidebar({ active, onNavigate }: SidebarProps) {
       <nav className="flex-1 py-3 px-2 space-y-1">
         {NAV_ITEMS.map((item) => navBtn(item.id, item.icon, item.label))}
         <div className="my-2 border-t border-border-subtle" />
-        {BOTTOM_ITEMS.map((item) => navBtn(item.id, item.icon, item.label))}
+        <button
+          type="button"
+          onClick={() => {
+            openHelpGuide().catch(() => showToast("无法打开帮助文档，请稍后重试", "error"));
+          }}
+          className="w-full flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-sm transition-colors text-text-dim hover:bg-fill-hover hover:text-text"
+        >
+          <BookOpen size={18} />
+          帮助说明
+        </button>
+        {navBtn("about", Info, "关于")}
       </nav>
 
       <div className="p-3 border-t border-border-subtle">
         <ThemeSelector />
       </div>
+      <Toast toast={toast} />
     </aside>
   );
 }
