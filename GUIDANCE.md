@@ -91,6 +91,13 @@ See the [Volcengine Correction Table Documentation](https://www.volcengine.com/d
 
 Refer to the [Volcengine Streaming ASR API Documentation](https://www.volcengine.com/docs/6561/1354869).
 
+### ElevenLabs
+
+- Log in to [ElevenLabs > ElevenAPI > API Keys](https://elevenlabs.io/app/api/api-keys)
+- Create an API Key and enable `Speech to Text` access
+![ElevenLabs API Key Permissions](docs/screenshots/elevenlabs.png)
+- Enter your API Key in the VoicePaste settings page
+
 ### Local Models
 
 VoicePaste local models are powered by sherpa-onnx, with VAD enabled by default and an optional Punctuation model for post-processing (adding punctuation marks).

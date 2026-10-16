@@ -89,6 +89,13 @@
 #### 其他自定义参数微调
 可参考[火山引擎大模型流式语音识别API文档](https://www.volcengine.com/docs/6561/1354869)
 
+### ElevenLabs
+- 登录 [ElevenLabs > ElevenAPI > API Keys](https://elevenlabs.io/app/api/api-keys)
+- 创建一个API Key，启用`Speech to Text`权限
+![ElevenLabs API Key for ](docs/screenshots/elevenlabs.png)
+- 在VoicePaste配置页面填入凭证即可
+
+
 ### 本地模型
 
 VoicePaste 本地模型基于 sherpa-onnx 接入，默认搭配 VAD 模型使用，可选配 Punctuation 模型做识别后处理（追加标点符号）。
