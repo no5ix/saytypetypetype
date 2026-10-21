@@ -6,7 +6,7 @@ describe("cloneBuiltinPrompt", () => {
   const source: PromptItem = {
     id: "prompt-general",
     title: "通用整理",
-    hotkey: "ControlLeft+ShiftLeft",
+    hotkey: "ShiftLeft",
     hotkey_mode: "toggle",
     prompt: "整理语音转写内容",
     default_add: true,

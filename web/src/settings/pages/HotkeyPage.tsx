@@ -26,13 +26,12 @@ export function HotkeyPage() {
   const { settings, scheduleSave, refresh } = useSettings();
   const cfg = settings?.parsedConfig || ({} as Record<string, unknown>);
   const app = (cfg.app || {}) as Record<string, string | undefined>;
+  const isMac = settings?.runtime?.platform === "macos";
   // Keep an explicit empty string (user cleared the key) distinct from missing.
-  const hotkeyStr = app.hotkey ?? "F13";
+  const hotkeyStr = app.hotkey ?? (isMac ? "MetaLeft" : "ControlLeft");
   const voiceHotkey = app.voice_hotkey ?? (app.hotkey_mode === "hold" ? "" : hotkeyStr);
   const issues = (settings?.runtime?.hotkeyIssues ?? []) as { id: string; message: string }[];
   const hotkeyMode = (app.hotkey_mode as string) || "toggle";
-  // Show Apple symbols on macOS, native labels (Ctrl/Alt/Win/Shift) on Windows.
-  const isMac = settings?.runtime?.platform === "macos";
   const { toast, showToast } = useToast();
 
   const [prompts, setPrompts] = useState<PromptItem[]>([]);

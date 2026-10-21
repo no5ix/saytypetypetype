@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   settings: {
-    parsedConfig: { app: { hotkey: "F13", hotkey_mode: "toggle", voice_hotkey: "F2" } },
+    parsedConfig: {
+      app: { hotkey: "F13" as string | undefined, hotkey_mode: "toggle", voice_hotkey: "F2" },
+    },
     runtime: { platform: "windows", hotkeyIssues: [] as { id: string; message: string }[] },
   },
   save: vi.fn(),
@@ -31,10 +33,15 @@ vi.mock("@/settings/bridge", () => ({
 import { HotkeyPage } from "@/settings/pages/HotkeyPage";
 
 beforeEach(() => {
-  mocks.settings.parsedConfig.app = { hotkey: "F13", hotkey_mode: "toggle", voice_hotkey: "F2" };
+  mocks.settings.parsedConfig.app = {
+    hotkey: "F13" as string | undefined,
+    hotkey_mode: "toggle",
+    voice_hotkey: "F2",
+  };
+  mocks.settings.runtime.platform = "windows";
   mocks.settings.runtime.hotkeyIssues = [];
   mocks.loadPrompts.mockResolvedValue([
-    { id: "p", title: "润色", hotkey: "ControlLeft+ShiftLeft", hotkey_mode: "toggle" },
+    { id: "p", title: "润色", hotkey: "ShiftLeft", hotkey_mode: "toggle" },
   ]);
   mocks.validate.mockResolvedValue(undefined);
   mocks.save.mockResolvedValue(undefined);
@@ -48,6 +55,22 @@ afterEach(() => {
 });
 
 describe("HotkeyPage", () => {
+  it.each([
+    ["macos", "⌘"],
+    ["windows", "Ctrl"],
+  ])("shows the platform default when the global key is missing on %s", async (platform, label) => {
+    mocks.settings.runtime.platform = platform;
+    mocks.settings.parsedConfig.app.hotkey = undefined;
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    expect(screen.getAllByLabelText("快捷键")[0]).toHaveTextContent(label);
+  });
+  it("keeps an explicitly cleared global key unbound", async () => {
+    mocks.settings.parsedConfig.app.hotkey = "";
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    expect(screen.getAllByLabelText("快捷键")[0]).not.toHaveTextContent("Ctrl");
+  });
   it("lets raw toggle stop change independently from its locked global start", async () => {
     render(<HotkeyPage />);
     await screen.findByText("润色");

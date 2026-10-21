@@ -194,7 +194,8 @@ mod tests {
     fn raw_stop_may_share_global_but_prompt_may_not() {
         let c = AppConfig::default();
         assert!(compile_bindings(&c.app, &[]).1.is_empty());
-        let (bindings, issues) = compile_bindings(&c.app, &[prompt("F13", "toggle")]);
+        let (bindings, issues) =
+            compile_bindings(&c.app, &[prompt(crate::config::DEFAULT_HOTKEY, "toggle")]);
         assert!(!issues.is_empty());
         assert!(bindings.iter().any(|b| b.wake_only));
         assert!(!bindings.iter().any(|b| b.prompt_id.is_some()));
@@ -238,7 +239,7 @@ mod tests {
     #[test]
     fn existing_conflicts_do_not_block_unrelated_saves_but_new_ones_do() {
         let c = AppConfig::default();
-        let p = vec![prompt("F13", "toggle")];
+        let p = vec![prompt(crate::config::DEFAULT_HOTKEY, "toggle")];
         assert!(validate_change(&c.app, &p, &c.app, &p).is_ok());
         assert!(validate_change(&c.app, &p, &c.app, &[]).is_err());
     }
@@ -255,11 +256,11 @@ mod tests {
     #[test]
     fn renaming_an_existing_conflicting_prompt_is_not_a_new_conflict() {
         let c = AppConfig::default();
-        let old = vec![prompt("F13", "toggle")];
+        let old = vec![prompt(crate::config::DEFAULT_HOTKEY, "toggle")];
         let mut new = old.clone();
         new[0].title = "新标题".into();
         assert!(validate_change(&c.app, &new, &c.app, &old).is_ok());
-        new[0].hotkey = "F13+ShiftLeft".into();
+        new[0].hotkey = format!("{}+ShiftLeft", crate::config::DEFAULT_HOTKEY);
         new[0].hotkey_mode = "hold".into();
         assert!(validate_change(&c.app, &new, &c.app, &old).is_err());
     }
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn mode_switch_checks_the_target_even_if_legacy_conflict_is_unchanged() {
         let c = AppConfig::default();
-        let mut prompts = vec![prompt("F13", "toggle")];
+        let mut prompts = vec![prompt(crate::config::DEFAULT_HOTKEY, "toggle")];
         assert!(validate_change(&c.app, &prompts, &c.app, &prompts).is_ok());
         assert!(validate_target(&c.app, &prompts, "prompt:p").is_err());
         prompts[0].hotkey.clear();

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**VoicePaste** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default global wake key is `F13` (configurable); all toggle recordings start with it, while hold-to-talk uses independent shortcuts held for 500ms, and auto-pastes recognized text into the currently focused input field. Supports macOS and Windows.
+**VoicePaste** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default global wake key is left Command (`MetaLeft`) on macOS and left Ctrl (`ControlLeft`) on Windows (configurable); all toggle recordings start with it; pressing it again outputs raw text, while left Shift (`ShiftLeft`) finishes with the default general-cleanup template, while hold-to-talk uses independent shortcuts held for 500ms, and auto-pastes recognized text into the currently focused input field. Supports macOS and Windows.
 
 Uses ByteDance Doubao streaming ASR via WebSocket with a custom binary framing protocol (gzip-compressed JSON payloads).
 

@@ -315,6 +315,71 @@ mod tests {
     }
 
     #[test]
+    fn left_modifier_starts_and_shift_finishes_with_general_polish() {
+        for main in [Key::MetaLeft, Key::ControlLeft] {
+            let b = vec![
+                binding(&[main], HotkeyMode::Toggle, None, true),
+                binding(&[main], HotkeyMode::Toggle, None, false),
+                binding(
+                    &[Key::ShiftLeft],
+                    HotkeyMode::Toggle,
+                    Some("prompt-general"),
+                    false,
+                ),
+            ];
+            let mut m = MatcherState::new();
+            let t = Instant::now();
+            // Shift is a stop key only; ordinary modifier chords remain usable.
+            for (ms, e) in [
+                down(Key::ShiftLeft),
+                up(Key::ShiftLeft),
+                down(main),
+                down(Key::C),
+                up(Key::C),
+                up(main),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert!(event(&mut m, &b, t, ms as u64, e).is_empty());
+            }
+            assert!(event(&mut m, &b, t, 10, down(main)).is_empty());
+            assert_eq!(
+                event(&mut m, &b, t, 11, up(main)),
+                vec![start(HotkeyMode::Toggle)]
+            );
+            for (ms, e) in [
+                down(Key::ShiftLeft),
+                down(Key::A),
+                up(Key::A),
+                up(Key::ShiftLeft),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert!(event(&mut m, &b, t, 20 + ms as u64, e).is_empty());
+            }
+            assert!(event(&mut m, &b, t, 30, down(Key::ShiftLeft)).is_empty());
+            assert_eq!(
+                event(&mut m, &b, t, 31, up(Key::ShiftLeft)),
+                vec![HotkeyAction::StopRecording {
+                    prompt_id: Some("prompt-general".into())
+                }]
+            );
+            event(&mut m, &b, t, 40, down(main));
+            assert_eq!(
+                event(&mut m, &b, t, 41, up(main)),
+                vec![start(HotkeyMode::Toggle)]
+            );
+            event(&mut m, &b, t, 50, down(main));
+            assert_eq!(
+                event(&mut m, &b, t, 51, up(main)),
+                vec![HotkeyAction::StopRecording { prompt_id: None }]
+            );
+        }
+    }
+
+    #[test]
     fn hold_waits_for_full_500ms() {
         let b = hold(&[Key::ControlLeft]);
         let mut m = MatcherState::new();

@@ -17,6 +17,7 @@
 //! - Versioned marker (`from_version`/`to_version`) so future 2.x → 3.x
 //!   schema changes can add new steps under the same one-shot mechanism.
 
+use crate::config::DEFAULT_HOTKEY;
 use crate::hotword::HotwordManager;
 use serde::Serialize;
 use serde_norway::{Mapping, Value};
@@ -25,8 +26,6 @@ use std::path::{Path, PathBuf};
 
 /// Target version recorded in the migration marker.
 const TARGET_VERSION: &str = "2.0.0";
-/// Fallback main hotkey when the legacy evdev keycode cannot be mapped.
-const DEFAULT_HOTKEY: &str = "F13";
 
 /// Persisted after migration (or after deciding none is needed) so the probe
 /// never repeats. Also the hook point for future versioned migrations.

@@ -401,8 +401,14 @@ fn default_audio_settings() -> BTreeMap<String, serde_norway::Value> {
     map
 }
 
+pub(crate) const DEFAULT_HOTKEY: &str = if cfg!(target_os = "macos") {
+    "MetaLeft"
+} else {
+    "ControlLeft"
+};
+
 fn default_hotkey() -> serde_norway::Value {
-    serde_norway::Value::String("F13".to_string())
+    serde_norway::Value::String(DEFAULT_HOTKEY.to_string())
 }
 fn default_hotkey_mode() -> String {
     "toggle".to_string()
@@ -1324,10 +1330,17 @@ mod tests {
     // ── AppConfig defaults ───────────────────────────────────────────────
 
     #[test]
-    fn app_config_default_hotkey_is_f13() {
+    fn app_config_default_hotkey_is_platform_modifier() {
         let cfg = AppConfig::default();
         match &cfg.app.hotkey {
-            serde_norway::Value::String(s) => assert_eq!(s, "F13"),
+            serde_norway::Value::String(s) => assert_eq!(
+                s,
+                if cfg!(target_os = "macos") {
+                    "MetaLeft"
+                } else {
+                    "ControlLeft"
+                }
+            ),
             _ => panic!("hotkey should be a string"),
         }
     }
@@ -1538,6 +1551,48 @@ min_silence_duration: 0.3
     }
 
     // ── ConfigManager: first-run seeding & no-merge ─────────────────────
+
+    #[test]
+    fn bundled_defaults_seed_platform_hotkeys_and_preserve_existing_settings() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        std::fs::write(
+            resources.path().join("config.yaml.example"),
+            include_str!("../../config.yaml.example"),
+        )
+        .unwrap();
+        std::fs::write(
+            resources.path().join("prompts.json"),
+            include_str!("../../prompts.json"),
+        )
+        .unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        let config = manager.load_config().unwrap();
+        assert_eq!(config.app.hotkey.as_str(), Some(DEFAULT_HOTKEY));
+        assert_eq!(config.app.voice_hotkey.as_deref(), Some(DEFAULT_HOTKEY));
+        let prompts = manager.load_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].id, "prompt-general");
+        assert_eq!(prompts[0].hotkey, "ShiftLeft");
+        assert_eq!(prompts[0].hotkey_mode, "toggle");
+
+        std::fs::write(
+            data.path().join("config.yaml"),
+            "app:\n  hotkey: F13\n  voice_hotkey: F13\n",
+        )
+        .unwrap();
+        std::fs::write(
+            data.path().join("prompts.json"),
+            r#"[{"id":"prompt-general","title":"通用整理","hotkey":"ControlLeft+ShiftLeft","hotkey_mode":"toggle","prompt":"custom"}]"#,
+        )
+        .unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        let config = manager.load_config().unwrap();
+        assert_eq!(config.app.hotkey.as_str(), Some("F13"));
+        assert_eq!(config.app.voice_hotkey.as_deref(), Some("F13"));
+        assert_eq!(manager.load_prompts()[0].hotkey, "ControlLeft+ShiftLeft");
+        assert_eq!(manager.load_prompts()[0].prompt, "custom");
+    }
 
     fn write_builtin_prompts(resource_dir: &std::path::Path, items: &[PromptItem]) {
         let json = serde_json::to_string_pretty(items).unwrap();
