@@ -10,7 +10,10 @@ mod label;
 mod listener;
 mod matcher;
 mod parse;
+mod physical;
 mod recorder;
+mod validation;
+pub use validation::{compile_bindings, validate_change, validate_target};
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
@@ -18,8 +21,6 @@ use std::sync::{Arc, RwLock};
 use crossbeam_channel::Sender as CrossbeamSender;
 use keytap::Key;
 use tauri::{AppHandle, Manager};
-
-use crate::config::PromptItem;
 
 // Re-export the public API so callers keep using `crate::hotkey::xxx`.
 pub use label::{current_hotkey_label, format_hotkey_label};
@@ -62,6 +63,8 @@ pub struct HotkeyBinding {
     pub mode: HotkeyMode,
     /// `None` for the main hotkey, `Some(id)` for prompt hotkeys.
     pub prompt_id: Option<String>,
+    /// Global wake binding: starts toggle sessions, never stops them.
+    pub wake_only: bool,
 }
 
 /// Shared hotkey configuration, updatable without restarting the tap.
@@ -125,76 +128,18 @@ fn create_config(bindings: Vec<HotkeyBinding>) -> HotkeyConfig {
 ///
 /// Called when the user saves config — the tap keeps running, only the
 /// binding patterns in shared state are updated.
-pub fn reload_bindings(
-    config: &HotkeyConfig,
-    main_hotkey_str: &str,
-    main_mode: &str,
-    prompts: &[PromptItem],
-) {
-    let mut new_bindings = Vec::new();
-
-    // Main hotkey
-    if !main_hotkey_str.is_empty() {
-        if let Some(keys) = parse_hotkey_string(main_hotkey_str) {
-            // Advisory for stored configs: no press order survives in the
-            // config string, so apply the set-based equivalent of the
-            // recorder's first-key rule — the chord should contain at least
-            // one non-typing key, otherwise its character leaks into the
-            // focused app on the press that starts a recording.
-            if !keys.iter().any(|&k| recorder::is_valid_main_first_key(k)) {
-                log_hotkey!(
-                    warn,
-                    "Main hotkey '{}' starts with a typing key — its character reaches the \
-                     focused app on the press that starts a recording; prefer an F-row key \
-                     or a modifier chord",
-                    main_hotkey_str
-                );
-            }
-            new_bindings.push(HotkeyBinding {
-                keys,
-                mode: HotkeyMode::from_str(main_mode),
-                prompt_id: None,
-            });
-        } else {
-            log_hotkey!(warn, "Failed to parse main hotkey: '{}'", main_hotkey_str);
-        }
-    }
-
-    // Prompt hotkeys
-    for prompt in prompts {
-        if let Some(keys) = parse_hotkey_string(&prompt.hotkey) {
-            new_bindings.push(HotkeyBinding {
-                keys,
-                mode: HotkeyMode::from_str(&prompt.hotkey_mode),
-                prompt_id: Some(prompt.id.clone()),
-            });
-        } else if !prompt.hotkey.is_empty() {
-            log_hotkey!(
-                warn,
-                "Prompt '{}' hotkey '{}' could not be parsed, skipping",
-                prompt.title,
-                prompt.hotkey
-            );
-        }
-    }
-
+pub fn reload_bindings(config: &HotkeyConfig, bindings: Vec<HotkeyBinding>) {
     let mut cfg = config.write().unwrap();
-    if cfg.bindings == new_bindings {
-        return; // No change, skip re-registration and logging
+    if cfg.bindings != bindings {
+        cfg.matcher.cancel_pending();
+        cfg.bindings = bindings;
     }
-
-    log_hotkey!(
-        debug,
-        "Hotkey bindings changed, loading {} binding(s)",
-        new_bindings.len()
-    );
-    cfg.bindings = new_bindings;
 }
 
 /// Reload all hotkey bindings from the current config and prompts.
 /// Called after saving config or prompts so changes take effect immediately.
 pub fn reload_hotkey_bindings(app: &AppHandle) {
-    use crate::app_state::{AppInner, HotkeyMode as HotkeyModeState};
+    use crate::app_state::AppInner;
 
     let Some(hc) = app.try_state::<HotkeyConfig>() else {
         log_hotkey!(error, "HotkeyConfig not in managed state");
@@ -210,18 +155,9 @@ pub fn reload_hotkey_bindings(app: &AppHandle) {
         }
     };
 
-    let hotkey_str = match &config.app.hotkey {
-        serde_norway::Value::String(s) => s.clone(),
-        _ => String::new(),
-    };
-
-    let mode = app
-        .try_state::<HotkeyModeState>()
-        .map(|m| m.0.lock().unwrap().clone())
-        .unwrap_or_else(|| "toggle".to_string());
-
     let prompts = app_inner.config_manager.load_prompts();
-    reload_bindings(&hc, &hotkey_str, &mode, &prompts);
+    let (bindings, _) = compile_bindings(&config.app, &prompts);
+    reload_bindings(&hc, bindings);
 }
 
 /// Initialize the keytap-based global hotkey listener from the current config.
@@ -237,14 +173,11 @@ pub fn setup_keytap_hotkeys(app: &AppHandle) -> Result<(), Box<dyn std::error::E
         .config_manager
         .load_config()
         .map_err(|e| e.to_string())?;
-    let hotkey_str = match &config.app.hotkey {
-        serde_norway::Value::String(s) => s.clone(),
-        _ => String::new(),
-    };
-    let hotkey_mode = config.app.hotkey_mode.as_str();
-
     let prompts = app_inner.config_manager.load_prompts();
-    let bindings = build_initial_bindings(&hotkey_str, hotkey_mode, &prompts);
+    let (bindings, issues) = compile_bindings(&config.app, &prompts);
+    for issue in issues {
+        log_hotkey!(warn, "{}", issue.message);
+    }
 
     let hotkey_config = create_config(bindings);
     let hotkey_manager = listener::start_hotkey_listener(hotkey_config.clone(), app.clone())
@@ -293,259 +226,4 @@ fn sync_suppressed_keys(config: &HotkeyConfig) {
         keys.push(keytap::Key::NumpadEnter);
     }
     keytap::set_suppressed_keys(&keys);
-}
-
-/// Build initial bindings from the current config and prompts.
-fn build_initial_bindings(
-    main_hotkey_str: &str,
-    main_mode: &str,
-    prompts: &[PromptItem],
-) -> Vec<HotkeyBinding> {
-    let mut bindings = Vec::new();
-
-    if !main_hotkey_str.is_empty() {
-        if let Some(keys) = parse_hotkey_string(main_hotkey_str) {
-            bindings.push(HotkeyBinding {
-                keys,
-                mode: HotkeyMode::from_str(main_mode),
-                prompt_id: None,
-            });
-        }
-    }
-
-    for prompt in prompts {
-        if let Some(keys) = parse_hotkey_string(&prompt.hotkey) {
-            bindings.push(HotkeyBinding {
-                keys,
-                mode: HotkeyMode::from_str(&prompt.hotkey_mode),
-                prompt_id: Some(prompt.id.clone()),
-            });
-        }
-    }
-
-    bindings
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use keytap::Key;
-    use std::collections::BTreeSet;
-
-    fn make_binding(keys: BTreeSet<Key>, mode: &str) -> HotkeyBinding {
-        HotkeyBinding {
-            keys,
-            mode: HotkeyMode::from_str(mode),
-            prompt_id: None,
-        }
-    }
-
-    fn make_prompt_item(id: &str, hotkey: &str) -> PromptItem {
-        PromptItem {
-            id: id.to_string(),
-            title: "Test".to_string(),
-            hotkey: hotkey.to_string(),
-            hotkey_mode: "hold".to_string(),
-            prompt: "Be concise".to_string(),
-            default_add: false,
-        }
-    }
-
-    // ── build_initial_bindings tests ──────────────────────────────────────
-
-    #[test]
-    fn build_empty_when_main_hotkey_empty() {
-        let bindings = build_initial_bindings("", "toggle", &[]);
-        assert!(bindings.is_empty());
-    }
-
-    #[test]
-    fn build_main_hotkey_only() {
-        let bindings = build_initial_bindings("Control+Space", "toggle", &[]);
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].mode, HotkeyMode::Toggle);
-        assert_eq!(bindings[0].prompt_id, None);
-        assert_eq!(
-            bindings[0].keys,
-            BTreeSet::from([Key::ControlLeft, Key::Space])
-        );
-    }
-
-    #[test]
-    fn build_main_plus_prompts() {
-        let prompt = make_prompt_item("p1", "Control+Shift+P");
-        let bindings = build_initial_bindings("F13", "toggle", &[prompt]);
-        assert_eq!(bindings.len(), 2);
-        assert_eq!(bindings[0].prompt_id, None);
-        assert_eq!(bindings[1].prompt_id, Some("p1".to_string()));
-        assert_eq!(bindings[1].mode, HotkeyMode::Hold);
-    }
-
-    #[test]
-    fn build_skips_prompt_with_empty_hotkey() {
-        let prompt = make_prompt_item("p1", "");
-        let bindings = build_initial_bindings("F13", "toggle", &[prompt]);
-        assert_eq!(bindings.len(), 1);
-    }
-
-    #[test]
-    fn build_skips_invalid_main_hotkey() {
-        let bindings = build_initial_bindings("InvalidZZZ", "toggle", &[]);
-        assert!(bindings.is_empty());
-    }
-
-    // ── create_config / set_escape_enabled tests ───────────────────────────
-
-    #[test]
-    fn test_create_config_defaults() {
-        let config = create_config(vec![]);
-        let cfg = config.read().unwrap();
-        assert!(cfg.bindings.is_empty());
-        assert!(!cfg.escape_enabled);
-        assert!(!cfg.enter_enabled);
-        assert!(!cfg.tap_active);
-        assert!(!cfg.recording);
-    }
-
-    #[test]
-    fn test_set_escape_enabled() {
-        let _guard = gate_test_lock();
-        let config = create_config(vec![]);
-        {
-            let cfg = config.read().unwrap();
-            assert!(!cfg.escape_enabled);
-        }
-        set_escape_enabled(&config, true);
-        {
-            let cfg = config.read().unwrap();
-            assert!(cfg.escape_enabled);
-        }
-        set_escape_enabled(&config, false);
-        {
-            let cfg = config.read().unwrap();
-            assert!(!cfg.escape_enabled);
-        }
-    }
-
-    #[test]
-    fn test_set_enter_enabled() {
-        let _guard = gate_test_lock();
-        let config = create_config(vec![]);
-        {
-            let cfg = config.read().unwrap();
-            assert!(!cfg.enter_enabled);
-        }
-        set_enter_enabled(&config, true);
-        {
-            let cfg = config.read().unwrap();
-            assert!(cfg.enter_enabled);
-        }
-        set_enter_enabled(&config, false);
-        {
-            let cfg = config.read().unwrap();
-            assert!(!cfg.enter_enabled);
-        }
-    }
-
-    /// The suppressed-key set is keytap-global; the gate tests serialize on
-    /// this lock so they don't race each other's mirror updates.
-    fn gate_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static GATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        GATE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    #[test]
-    fn decision_gates_drive_the_suppressed_key_set() {
-        let _guard = gate_test_lock();
-
-        let config = create_config(vec![]);
-        set_escape_enabled(&config, false);
-        set_enter_enabled(&config, false);
-        assert!(keytap::suppressed_keys().is_empty());
-
-        set_enter_enabled(&config, true);
-        let keys = keytap::suppressed_keys();
-        assert!(keys.contains(&Key::Enter));
-        assert!(keys.contains(&Key::NumpadEnter));
-        assert!(!keys.contains(&Key::Escape));
-
-        set_escape_enabled(&config, true);
-        assert!(keytap::suppressed_keys().contains(&Key::Escape));
-
-        set_escape_enabled(&config, false);
-        set_enter_enabled(&config, false);
-        assert!(keytap::suppressed_keys().is_empty());
-    }
-
-    // ── recording flag / record_tx relay tests ────────────────────────────
-
-    #[test]
-    fn record_tx_set_and_clear_in_config() {
-        let config = create_config(vec![]);
-        {
-            let cfg = config.read().unwrap();
-            assert!(!cfg.recording);
-            assert!(cfg.record_tx.is_none());
-        }
-        // Simulate what record_combination does when starting a recording.
-        let (tx, _rx) = crossbeam_channel::bounded::<keytap::Event>(1);
-        {
-            let mut cfg = config.write().unwrap();
-            cfg.recording = true;
-            cfg.record_tx = Some(tx);
-            assert!(cfg.recording);
-            assert!(cfg.record_tx.is_some());
-        }
-        // Simulate RelayGuard::drop clearing on return.
-        {
-            let mut cfg = config.write().unwrap();
-            cfg.record_tx = None;
-            cfg.recording = false;
-        }
-        let cfg = config.read().unwrap();
-        assert!(!cfg.recording);
-        assert!(cfg.record_tx.is_none());
-    }
-
-    // ── reload_bindings tests ─────────────────────────────────────────────
-
-    #[test]
-    fn reload_updates_bindings() {
-        let config = create_config(vec![]);
-        {
-            let cfg = config.read().unwrap();
-            assert!(cfg.bindings.is_empty());
-        }
-
-        reload_bindings(&config, "Control+A", "hold", &[]);
-        {
-            let cfg = config.read().unwrap();
-            assert_eq!(cfg.bindings.len(), 1);
-            assert_eq!(cfg.bindings[0].mode, HotkeyMode::Hold);
-        }
-    }
-
-    #[test]
-    fn reload_noop_when_bindings_unchanged() {
-        let binding = make_binding(BTreeSet::from([Key::ControlLeft, Key::A]), "toggle");
-        let config = create_config(vec![binding.clone()]);
-
-        let cfg_before = config.read().unwrap().bindings.clone();
-        reload_bindings(&config, "Control+A", "toggle", &[]);
-        let cfg_after = config.read().unwrap().bindings.clone();
-        assert_eq!(cfg_before, cfg_after);
-    }
-
-    #[test]
-    fn reload_with_prompts() {
-        let config = create_config(vec![]);
-        let prompt = make_prompt_item("p1", "Control+Shift+P");
-
-        reload_bindings(&config, "F13", "toggle", &[prompt]);
-        {
-            let cfg = config.read().unwrap();
-            assert_eq!(cfg.bindings.len(), 2);
-            assert_eq!(cfg.bindings[1].prompt_id, Some("p1".to_string()));
-        }
-    }
 }

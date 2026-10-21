@@ -185,6 +185,12 @@ fn migrate_app_section(legacy_app: Option<&Mapping>, app: &mut Mapping) {
     put_str(app, "hotkey", hotkey.as_deref().unwrap_or(DEFAULT_HOTKEY));
 
     copy_str(legacy_app, app, "hotkey_mode");
+    let voice_key = if app.get(kv("hotkey_mode")).and_then(Value::as_str) == Some("hold") {
+        ""
+    } else {
+        hotkey.as_deref().unwrap_or(DEFAULT_HOTKEY)
+    };
+    put_str(app, "voice_hotkey", voice_key);
     copy_str(legacy_app, app, "theme");
     copy_str(legacy_app, app, "overlay_style");
     copy_bool(legacy_app, app, "remove_trailing_period");
@@ -674,6 +680,7 @@ llm:
             v.get("app").unwrap().get("hotkey").unwrap().as_str(),
             Some("Control+Space")
         );
+        assert_eq!(v["app"]["voice_hotkey"].as_str(), Some("Control+Space"));
         // app prefs copied
         assert_eq!(
             v.get("app").unwrap().get("theme").unwrap().as_str(),
@@ -709,6 +716,21 @@ llm:
         let llm = v.get("llm").unwrap().as_mapping().unwrap();
         assert!(llm.get(kv("enabled")).is_none());
         assert_eq!(llm.get(kv("provider")).unwrap().as_str(), Some("deepseek"));
+    }
+
+    #[test]
+    fn legacy_hold_migration_preserves_wake_key_but_requires_new_hold_key() {
+        let (legacy, data, res) = fixture();
+        fs::write(
+            legacy.join("config.yaml"),
+            LEGACY_CONFIG.replace("hotkey_mode: toggle", "hotkey_mode: hold"),
+        )
+        .unwrap();
+        migrate_config(&legacy.join("config.yaml"), &data.join("config.yaml"), &res).unwrap();
+        let v: Value =
+            serde_norway::from_str(&fs::read_to_string(data.join("config.yaml")).unwrap()).unwrap();
+        assert_eq!(v["app"]["hotkey"].as_str(), Some("Control+Space"));
+        assert_eq!(v["app"]["voice_hotkey"].as_str(), Some(""));
     }
 
     #[test]

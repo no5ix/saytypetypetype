@@ -45,8 +45,9 @@ VoicePaste uses the `keytap` crate for global hotkey registration, replacing `ta
 ```rust
 struct HotkeyBinding {
     keys: BTreeSet<Key>,     // All keys that must be held simultaneously
-    mode: String,            // "toggle" or "hold"
-    prompt_id: Option<String>, // None = main hotkey, Some(id) = prompt hotkey
+    mode: HotkeyMode,        // Toggle or Hold
+    prompt_id: Option<String>, // None = raw input, Some(id) = prompt hotkey
+    wake_only: bool,         // Global toggle start; never a stop binding
 }
 ```
 
@@ -63,47 +64,53 @@ stateDiagram-v2
     }
 
     state "Hold Mode" as Hold {
-        Idle --> Recording : keydown (hold chord completes)
+        Idle --> Recording : exact complete chord held for 500ms
         Recording --> Idle : release (any chord key)
         Recording --> Idle : escape
     }
 ```
 
-In both modes recording starts **neutral** — the prompt is decided when the
-recording ends, from the longest chord held at that point (see below).
+### Matching and dispatch
 
-### How Mode Dispatch Works
+`MatcherState` consumes the ordered keytap stream and a monotonic clock. Toggle
+wakes on release of an exact global-key cycle. Every key in that cycle must
+belong to the same fully pressed combination; releasing an extra key cannot
+restore a shorter candidate. All ordinary key events are observed, including
+letters outside registered shortcuts. Unbound lock keys invalidate a candidate
+without waiting for potentially missing lock-key release events.
 
-A pure state machine, `MatcherState` (held under `HotkeyConfig`), consumes every
-keytap event and emits zero or more `HotkeyAction`s:
+The global `app.hotkey` always starts toggle recordings. `app.voice_hotkey`
+selects the raw-input stop key in toggle mode, or the independent hold shortcut
+in hold mode. Prompt toggle keys are stop-only. Only the raw toggle stop may
+share the global key. Other duplicate bindings are invalid; containment is
+allowed only between toggle bindings. Hold shortcuts require a non-typing key
+(function row, Tab or modifier), matching the recorder's first-key restriction.
 
-- `StartRecording { is_main }` — begin a **neutral** recording (prompt undecided)
-- `StopRecording { prompt_id }` — end the recording; finalize with this prompt
+For hold mode, the 500ms deadline begins when the **entire configured chord**
+is pressed. Holding Ctrl for 200ms or 600ms before pressing C does not count
+against the Ctrl+C deadline. An extra key or an early release cancels the
+candidate until all keys are released. Timers run in the listener's ordered loop,
+not detached tasks. An event at the deadline is processed after the due start,
+so an immediate release produces start then stop in that order.
 
-`longest_match(held, bindings)` resolves chord conflicts: of all bindings whose
-keys are a subset of the currently held keys, the one with the most keys wins;
-ties break by registration order (main hotkey first). This replaces the old
-first-subset match that let a bare `Ctrl` steal `Ctrl+Shift`.
+On activation the hold binding and template are frozen. New keys cannot switch
+or finalize that session. Releasing any original member ends it; ESC cancels.
+Toggle sessions accept only their captured toggle stop bindings. The original
+bindings remain in effect for the active session across settings changes.
 
-**Hold**: the moment a hold chord's keys are all pressed (keydown), recording
-starts — zero latency, prompt undecided. It ends when any of those keys is
-released; the prompt is the longest chord reached during the hold (the peak).
+Actions carry explicit modes. A single dispatcher orders microphone startup
+before a queued release; ASR/LLM finalization runs separately, and new starts
+while it is in progress are rejected. Cancel generations revoke queued starts.
+The global key retains the existing retry behavior on retryable failures. If no
+toggle stop binding is enabled, it only retries failures and cannot start a new
+recording that has no normal stop key.
 
-**Toggle**: a press cycle is the span from the first keydown to the held set
-emptying at keyup. Recording starts when the start cycle completes (if it
-reached a toggle chord), and stops when the next cycle completes. The prompt is
-the longest chord reached during the **stop** cycle — so starting with
-`Ctrl+Shift` but stopping with plain `Ctrl` yields raw output, and vice versa.
-
-Because the chord is fully known at the stop/peak moment, prefix conflicts
-resolve correctly with **no timeout and no pending**.
-
-The start/stop logic in `lib.rs`:
-- `on_recording_start(is_main)`: if the main hotkey was used while a retryable
-  failure is shown, retry it instead; otherwise `start_recording()`. If the
-  start is diverted to retry or fails, the matcher is reset so it doesn't think
-  a session is active.
-- `on_recording_stop(prompt_id)`: set `ActivePromptId`, then `stop_recording()`.
+After two seconds without keyboard events, native key-state queries may reclaim
+**confirmed released** keys. Silence alone never clears a key. Unknown states
+are retained. A lost release in an active hold cancels rather than submitting
+possibly unintended output. macOS uses Core Graphics HID state and side-specific modifier flags (generic-only
+modifier flags are unknown, not proof that one side was released); Windows uses
+GetAsyncKeyState. These probes are recovery checks, not the hotkey event source.
 
 ### Escape Cancellation
 
@@ -143,11 +150,9 @@ Each prompt in `prompts.json` can have its own hotkey and mode:
 }
 ```
 
-Recording always starts **neutral** — the prompt is decided by the stop chord
-(the longest chord held when the recording ends), not by the key that started
-it. When a prompt-specific stop chord is used, `on_recording_stop` sets
-`active_prompt_id` to `Some("polish-en")` and `finalize_and_paste` runs the LLM
-polish; a main-hotkey stop (`active_prompt_id = None`) pastes raw text.
+Toggle recordings start neutral; the configured stop key chooses the final
+prompt. Hold recordings freeze their prompt at activation and retain it until
+release. `on_recording_stop` passes that prompt to the existing polishing flow.
 
 Before polishing, `finalize_and_paste` validates the LLM config — if it's
 incomplete (missing key/URL/model), it downgrades to raw text with a warning
@@ -155,19 +160,21 @@ instead of letting the call fail.
 
 ## Frontend Hotkey Recording
 
-The settings UI (`HotkeyPage.tsx`) records new hotkeys via DOM capture-phase keyboard events:
+The settings UI calls the backend recorder through the resident keytap event
+relay on both platforms, preserving physical left/right keys and press order.
+ESC or the 10-second capture timeout leaves the previous setting unchanged.
+Global and hold fields enforce the first-key restriction. The shared backend
+binding compiler validates conflicts before saving; rejected edits show a toast.
+Startup uses the same compiler and disables conflicting bindings while preserving
+saved values. The global key and its allowed raw stop alias take priority.
+Settings reports disabled bindings once per visit through a toast. Empty bindings
+are normal disabled states. Switching mode keeps valid keys; if the new mode
+invalidates the key, settings clears that field, saves the new mode and reports
+the reason through a toast. Ordinary key edits still reject invalid replacements.
 
-1. User clicks "Record" button
-2. Capture-phase `keydown` events collect pressed keys
-3. `keyup` finalizes the combination
-4. Keys are sorted canonically (modifiers first, then main key)
-5. Display string is generated for the UI
-6. Result is saved to `config.yaml` as a string like `"Control+Shift+A"`
-
-Key behaviors:
-- Space key's `preventDefault` only on non-Mac platforms (avoids suppressing keyup on Mac)
-- 300ms timeout after last keydown before auto-finalizing
-- Left/right modifier distinction is preserved
+Legacy raw toggle keys become explicit `voice_hotkey` values. Legacy raw hold
+mode keeps the global key but leaves `voice_hotkey` empty for reconfiguration.
+The migration only runs when the new field is absent.
 
 ### Display: native modifier glyphs
 
@@ -184,7 +191,7 @@ When the user saves settings:
 1. `save_config_object()` writes `config.yaml`
 2. `reload_hotkey_bindings()` is called, which rebuilds the binding list from the new config
 3. The listener thread picks up the new bindings on its next iteration (no restart needed)
-4. `MatcherState` is preserved across reloads (an in-flight session keeps its tracking); reload mid-recording is not expected
+4. Pending timers are cancelled; active sessions retain their original mode, template and stop bindings
 5. If bindings haven't changed, the reload is a no-op
 
 ### Permission Recovery

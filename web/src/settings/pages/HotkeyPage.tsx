@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { loadPrompts, savePrompts } from "@/settings/bridge";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { loadPrompts, savePrompts, validateHotkeySettings } from "@/settings/bridge";
 import { HotkeyInput } from "@/settings/components/HotkeyInput";
 import { KeyCap } from "@/settings/components/KeyCap";
 import { SegmentedControl } from "@/settings/components/SegmentedControl";
@@ -23,11 +23,13 @@ const MODE_OPTIONS = [
 ];
 
 export function HotkeyPage() {
-  const { settings, scheduleSave } = useSettings();
+  const { settings, scheduleSave, refresh } = useSettings();
   const cfg = settings?.parsedConfig || ({} as Record<string, unknown>);
   const app = (cfg.app || {}) as Record<string, string | undefined>;
   // Keep an explicit empty string (user cleared the key) distinct from missing.
   const hotkeyStr = app.hotkey ?? "F13";
+  const voiceHotkey = app.voice_hotkey ?? (app.hotkey_mode === "hold" ? "" : hotkeyStr);
+  const issues = (settings?.runtime?.hotkeyIssues ?? []) as { id: string; message: string }[];
   const hotkeyMode = (app.hotkey_mode as string) || "toggle";
   // Show Apple symbols on macOS, native labels (Ctrl/Alt/Win/Shift) on Windows.
   const isMac = settings?.runtime?.platform === "macos";
@@ -51,15 +53,64 @@ export function HotkeyPage() {
     [activeRecorder],
   );
 
-  // Immutable update of a single prompt + persist. Shared by mode switches and
-  // record/clear of the prompt's own hotkey.
+  // Existing disabled bindings are reported once per visit, never as persistent
+  // inline errors. An intentionally empty shortcut is a normal disabled state.
+  const shownIssues = useRef(new Set<string>());
+  useEffect(() => {
+    const messages = issues
+      .map((issue) => issue.message)
+      .filter((message) => !shownIssues.current.has(message));
+    for (const message of messages) shownIssues.current.add(message);
+    if (messages.length > 0) showToast(messages.join("；"), "error");
+  }, [issues, showToast]);
+
   const updatePrompt = useCallback(
     async (index: number, patch: Partial<PromptItem>) => {
-      const updated = prompts.map((p, i) => (i === index ? { ...p, ...patch } : p));
-      setPrompts(updated);
-      await savePrompts(updated as unknown[]);
+      let updated = prompts.map((p, i) => (i === index ? { ...p, ...patch } : p));
+      try {
+        let clearedReason: string | undefined;
+        const targetId =
+          patch.hotkey_mode === undefined ? undefined : `prompt:${prompts[index].id}`;
+        try {
+          await validateHotkeySettings(cfg, updated, targetId);
+        } catch (error) {
+          if (patch.hotkey_mode === undefined) throw error;
+          updated = updated.map((p, i) => (i === index ? { ...p, hotkey: "" } : p));
+          await validateHotkeySettings(cfg, updated, targetId);
+          clearedReason = `${String(error)}；已清除该快捷键，请重新设置`;
+        }
+        await savePrompts(updated as unknown[]);
+        setPrompts(updated);
+        await refresh();
+        if (clearedReason) showToast(clearedReason, "error");
+      } catch (error) {
+        showToast(String(error), "error");
+      }
     },
-    [prompts],
+    [cfg, prompts, refresh, showToast],
+  );
+
+  const updateApp = useCallback(
+    async (patch: Record<string, string>) => {
+      try {
+        let updates = patch;
+        let clearedReason: string | undefined;
+        const targetId = patch.hotkey_mode === undefined ? undefined : "voice";
+        try {
+          await validateHotkeySettings({ ...cfg, app: { ...app, ...updates } }, prompts, targetId);
+        } catch (error) {
+          if (patch.hotkey_mode === undefined) throw error;
+          updates = { ...patch, voice_hotkey: "" };
+          await validateHotkeySettings({ ...cfg, app: { ...app, ...updates } }, prompts, targetId);
+          clearedReason = `${String(error)}；已清除该快捷键，请重新设置`;
+        }
+        await scheduleSave({ app: updates });
+        if (clearedReason) showToast(clearedReason, "error");
+      } catch (error) {
+        showToast(String(error), "error");
+      }
+    },
+    [cfg, app, prompts, scheduleSave, showToast],
   );
 
   // The recordable hotkey field for one prompt row — its "stop" key in toggle
@@ -70,6 +121,8 @@ export function HotkeyPage() {
       const recorderId = `prompt:${item.id}`;
       return {
         isMac,
+        validateFirstKey: item.hotkey_mode === "hold",
+        onInvalid: (reason: string) => showToast(reason, "error"),
         busy: isBusyFor(recorderId),
         onStart: () => setActiveRecorder(recorderId),
         onDone: () => setActiveRecorder(null),
@@ -77,15 +130,15 @@ export function HotkeyPage() {
         onClear: () => updatePrompt(index, { hotkey: "" }),
       };
     },
-    [isMac, isBusyFor, updatePrompt],
+    [isMac, isBusyFor, updatePrompt, showToast],
   );
 
   return (
     <PageLayout>
       <PageHeader title="快捷键" description="为语音输入配置自定义快捷键。">
         <div className="flex flex-col gap-1 mt-2 text-text-muted">
-          <p>免提模式：按一次「语音唤起」开始，再按一次结束，或按润色快捷键在结束时润色；</p>
-          <p>按住说话：按住对应快捷键开始，松开结束。</p>
+          <p>免提模式：按全局主键开始，按语音输入或润色模板各自的结束键完成；</p>
+          <p>按住说话：完整按住对应快捷键 500ms 后开始，松开结束；启动后其他按键不改变本次录音。</p>
           <p>
             录制快捷键时按 <KeyCap label={normalizeHotkeyToken("ESC", isMac).main} /> 取消
           </p>
@@ -96,7 +149,7 @@ export function HotkeyPage() {
       <Section>
         <SectionHeader
           title="全局语音主键"
-          subtitle="免提模式的唤起键 / 按住说话键；所有免提模式均以此键开始录音。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。"
+          subtitle="所有免提模式均以此键开始录音；按住说话需另设独立快捷键。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。"
         />
         <SectionContent>
           <SectionItemList>
@@ -110,8 +163,8 @@ export function HotkeyPage() {
                   busy={isBusyFor("main")}
                   onStart={() => setActiveRecorder("main")}
                   onDone={() => setActiveRecorder(null)}
-                  onCommit={(hk) => scheduleSave({ app: { hotkey: hk } })}
-                  onClear={() => scheduleSave({ app: { hotkey: "" } })}
+                  onCommit={(hk) => updateApp({ hotkey: hk })}
+                  onClear={() => updateApp({ hotkey: "" })}
                   validateFirstKey
                   onInvalid={(reason) => showToast(reason, "error")}
                 />
@@ -132,18 +185,42 @@ export function HotkeyPage() {
                 <div className="flex items-center gap-2">
                   {hotkeyMode === "toggle" ? (
                     <>
-                      {/* start = main key (locked); stop = press main key again (locked) */}
+                      {/* start = main key (locked); stop = independently configurable raw-input key */}
                       <HotkeyInput value={hotkeyStr} isMac={isMac} locked />
                       <span className="text-xs text-text-muted">→</span>
-                      <HotkeyInput value={hotkeyStr} isMac={isMac} locked />
+                      <HotkeyInput
+                        value={voiceHotkey}
+                        isMac={isMac}
+                        busy={isBusyFor("voice")}
+                        onStart={() => setActiveRecorder("voice")}
+                        onDone={() => setActiveRecorder(null)}
+                        onCommit={(hk) => updateApp({ voice_hotkey: hk })}
+                        onClear={() => updateApp({ voice_hotkey: "" })}
+                        onInvalid={(reason) => showToast(reason, "error")}
+                      />
                     </>
                   ) : (
-                    <HotkeyInput value={hotkeyStr} isMac={isMac} locked />
+                    <HotkeyInput
+                      value={voiceHotkey}
+                      isMac={isMac}
+                      validateFirstKey
+                      busy={isBusyFor("voice")}
+                      onStart={() => setActiveRecorder("voice")}
+                      onDone={() => setActiveRecorder(null)}
+                      onCommit={(hk) => updateApp({ voice_hotkey: hk })}
+                      onClear={() => updateApp({ voice_hotkey: "" })}
+                      onInvalid={(reason) => showToast(reason, "error")}
+                    />
                   )}
                   <SegmentedControl
                     options={MODE_OPTIONS}
                     value={hotkeyMode}
-                    onChange={(v) => scheduleSave({ app: { hotkey_mode: v } })}
+                    onChange={(v) =>
+                      updateApp({
+                        hotkey_mode: v,
+                        voice_hotkey: voiceHotkey || (v === "toggle" ? hotkeyStr : ""),
+                      })
+                    }
                   />
                 </div>
               }

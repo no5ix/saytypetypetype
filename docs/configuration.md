@@ -116,8 +116,9 @@ Three top-level sections:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hotkey` | string/array | `"F13"` | Global hotkey binding |
-| `hotkey_mode` | string | `"toggle"` | `"toggle"` or `"hold"` |
+| `hotkey` | string/array | `"F13"` | Global toggle wake key, independent of the raw-input mode |
+| `hotkey_mode` | string | `"toggle"` | Raw-input mode: `"toggle"` or `"hold"` |
+| `voice_hotkey` | string | `"F13"` | Raw-input stop key in toggle mode, or independent 500ms hold shortcut; empty disables this binding |
 | `remove_trailing_period` | bool | `true` | Strip trailing period from ASR output |
 | `keep_clipboard` | bool | `true` | Keep text in clipboard after paste |
 | `theme` | string | `"system"` | `"dark"` / `"light"` / `"system"` |

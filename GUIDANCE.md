@@ -17,11 +17,13 @@
 
 ## Hotkey Configuration
 
-- Settings > Hotkeys to customize your hotkey
-- Two trigger modes are supported:
-  - **Toggle**: press once to start, press again to stop. Press `ESC` to cancel mid-recording.
-  - **Hold**: hold the hotkey to speak, release to stop.
-- Independent hotkeys can be assigned to different text polishing templates.
+Go to **Settings > Hotkeys** to choose how to use voice input and each polishing template:
+
+- **Toggle**: press the global wake key to start recording, then the corresponding stop key to finish. Voice input defaults to pressing the global key again to stop; using a polishing template's stop key also polishes the recognized text.
+- **Hold**: hold the corresponding hotkey for **0.5 seconds**, wait for the start cue before speaking, then release to finish.
+- **Cancel recording**: press `ESC`. Nothing from this recording will be pasted.
+
+If a shortcut conflict is reported when assigning hotkeys or switching modes, follow the prompt to choose another hotkey.
 
 ## Text Polishing Configuration
 

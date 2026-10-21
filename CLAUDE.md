@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**VoicePaste** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default hotkey is `F13` (configurable), supports both toggle and hold-to-talk modes, and auto-pastes recognized text into the currently focused input field. Supports macOS and Windows.
+**VoicePaste** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default global wake key is `F13` (configurable); all toggle recordings start with it, while hold-to-talk uses independent shortcuts held for 500ms, and auto-pastes recognized text into the currently focused input field. Supports macOS and Windows.
 
 Uses ByteDance Doubao streaming ASR via WebSocket with a custom binary framing protocol (gzip-compressed JSON payloads).
 
@@ -74,7 +74,7 @@ Each window has its own typed IPC module — `web/src/overlay/bridge.ts` and `we
 - **Toggle mode** (default): Press once to start recording, press again to stop and paste.
 - **Hold mode**: Hold the key to record, release to stop and paste.
 - Supports both simple accelerator strings (`"F13"`, `"Control+Space"`) and recorded custom combinations.
-- Prompt templates can have their own hotkeys with independent mode settings.
+- Prompt templates can have their own hotkeys with independent mode settings. Hold bindings cannot duplicate or contain another binding; toggle bindings allow containment. `app.voice_hotkey` is the raw-input toggle stop or hold key, separate from the global `app.hotkey`.
 
 ### Data Flow
 

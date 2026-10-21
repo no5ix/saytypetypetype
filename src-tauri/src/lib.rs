@@ -163,6 +163,7 @@ pub fn run() {
             commands::open_accessibility_settings,
             commands::reinit_hotkey,
             commands::record_hotkey,
+            commands::validate_hotkey_settings,
             commands::select_sound_file,
             commands::play_recording_preview,
             commands::stop_recording_preview,

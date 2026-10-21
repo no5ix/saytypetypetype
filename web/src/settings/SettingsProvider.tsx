@@ -8,7 +8,7 @@ interface SettingsContextValue {
   settings: SettingsData | null;
   config: ParsedConfig | null;
   loading: boolean;
-  scheduleSave: (updates: Partial<ConfigPayload>) => void;
+  scheduleSave: (updates: Partial<ConfigPayload>) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -66,16 +66,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const scheduleSave = useCallback(
     (updates: Partial<ConfigPayload>) => {
-      saveChainRef.current = saveChainRef.current
-        .then(async () => {
-          const nextConfig = mergeConfig(configRef.current, updates);
-          await saveConfigObject(nextConfig);
-          await load();
-        })
-        .catch(() => {
-          // Keep the chain alive if a single save fails; the unchanged
-          // settings state surfaces the issue rather than a logged error.
-        });
+      const pending = saveChainRef.current.then(async () => {
+        const nextConfig = mergeConfig(configRef.current, updates);
+        await saveConfigObject(nextConfig);
+        await load();
+      });
+      saveChainRef.current = pending.catch(() => {});
+      return pending;
     },
     [load],
   );

@@ -156,6 +156,7 @@ pub async fn get_settings_data(state: State<'_, AppState>) -> Result<serde_json:
             "accessibilityStatus": check_accessibility(),
             "version": version,
             "platform": std::env::consts::OS,
+            "hotkeyIssues": crate::hotkey::compile_bindings(&config.app, &state.config_manager.load_prompts()).1,
             "theme": {
                 "preference": theme_preference.clone(),
                 "resolved": resolve_theme(&theme_preference),
@@ -224,6 +225,27 @@ pub async fn save_config_object(
             "hotkeyDisplay": hotkey,
         },
     }))
+}
+
+/// Preview a complete shortcut change before the UI commits it.
+#[tauri::command]
+pub async fn validate_hotkey_settings(
+    state: State<'_, AppState>,
+    config_object: serde_norway::Value,
+    prompts: Vec<PromptItem>,
+    target_id: Option<String>,
+) -> Result<(), String> {
+    let candidate: crate::config::AppConfig =
+        serde_norway::from_value(config_object).map_err(|e| format!("配置格式错误：{e}"))?;
+    if let Some(target) = target_id {
+        crate::hotkey::validate_target(&candidate.app, &prompts, &target)?;
+    }
+    crate::hotkey::validate_change(
+        &candidate.app,
+        &prompts,
+        &state.config_manager.load_config()?.app,
+        &state.config_manager.load_prompts(),
+    )
 }
 
 /// Load prompts.

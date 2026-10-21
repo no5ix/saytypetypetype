@@ -367,3 +367,16 @@ export async function saveHotwords(data: HotwordData): Promise<void> {
 export async function loadBuiltinHotwords(): Promise<HotwordData> {
   return invoke("load_builtin_hotwords");
 }
+
+/** Check a prospective shortcut edit without changing persisted settings. */
+export function validateHotkeySettings(
+  configObject: ConfigPayload,
+  prompts: PromptItem[],
+  targetId?: string,
+): Promise<void> {
+  return invoke("validate_hotkey_settings", {
+    configObject,
+    prompts,
+    ...(targetId ? { targetId } : {}),
+  });
+}

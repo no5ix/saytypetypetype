@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use crate::model::ModelRegistry;
 
@@ -221,6 +221,9 @@ pub struct AppSettings {
     pub hotkey: serde_norway::Value,
     #[serde(default = "default_hotkey_mode")]
     pub hotkey_mode: String,
+    /// Raw-input stop key (toggle) or independent hold key. None is legacy.
+    #[serde(default)]
+    pub voice_hotkey: Option<String>,
     #[serde(default = "default_true")]
     pub remove_trailing_period: bool,
     #[serde(default = "default_true")]
@@ -912,6 +915,7 @@ impl Default for AppConfig {
                 last_polish_prompt_id: None,
                 hotkey: default_hotkey(),
                 hotkey_mode: default_hotkey_mode(),
+                voice_hotkey: default_hotkey().as_str().map(str::to_string),
                 remove_trailing_period: true,
                 keep_clipboard: true,
                 keep_recordings: false,
@@ -1029,6 +1033,7 @@ pub struct ConfigManager {
     prompts_path: PathBuf,
     /// Path to the bundled built-in `prompts.json` (read-only app resource).
     builtin_prompts_path: PathBuf,
+    hotkey_updates: Mutex<()>,
     cached_config: RwLock<AppConfig>,
     cached_prompts: RwLock<Vec<PromptItem>>,
 }
@@ -1078,6 +1083,28 @@ impl ConfigManager {
         }
 
         // Load config into memory cache
+        // Separate the global wake key from the old raw-input binding once.
+        // Legacy hold keys cannot also remain the global toggle wake key.
+        if let Ok(text) = fs::read_to_string(&config_path) {
+            if let Ok(mut value) = serde_norway::from_str::<serde_norway::Value>(&text) {
+                if let Ok(typed) = serde_norway::from_value::<AppConfig>(value.clone()) {
+                    if typed.app.voice_hotkey.is_none() {
+                        let key = if typed.app.hotkey_mode == "hold" {
+                            "".to_string()
+                        } else {
+                            typed.app.hotkey.as_str().unwrap_or("").to_string()
+                        };
+                        if !value["app"].is_mapping() {
+                            value["app"] = serde_norway::Value::Mapping(Default::default());
+                        }
+                        value["app"]["voice_hotkey"] = serde_norway::Value::String(key);
+                        if let Ok(yaml) = serde_norway::to_string(&value) {
+                            let _ = fs::write(&config_path, yaml);
+                        }
+                    }
+                }
+            }
+        }
         let config = Self::read_config_from_disk(&config_path);
 
         // Load prompts into memory cache (read-only, no default merge).
@@ -1095,6 +1122,7 @@ impl ConfigManager {
             config_path,
             prompts_path,
             builtin_prompts_path,
+            hotkey_updates: Mutex::new(()),
             cached_config: RwLock::new(config),
             cached_prompts: RwLock::new(prompts),
         }
@@ -1141,6 +1169,16 @@ impl ConfigManager {
 
     /// Save config as a parsed YAML value, update memory cache and disk.
     pub fn save_config(&self, config: &serde_norway::Value) -> Result<(), String> {
+        let _guard = self.hotkey_updates.lock().unwrap();
+        let candidate: AppConfig =
+            serde_norway::from_value(config.clone()).map_err(|e| format!("配置格式错误：{e}"))?;
+        let prompts = self.load_prompts();
+        crate::hotkey::validate_change(
+            &candidate.app,
+            &prompts,
+            &self.load_config()?.app,
+            &prompts,
+        )?;
         if let Some(raw) = config
             .get("audio")
             .and_then(|a| a.get(ELEVENLABS_REALTIME_ID))
@@ -1184,6 +1222,9 @@ impl ConfigManager {
 
     /// Save prompts, update memory cache and disk.
     pub fn save_prompts(&self, prompts: &[PromptItem]) -> Result<(), String> {
+        let _guard = self.hotkey_updates.lock().unwrap();
+        let config = self.load_config()?;
+        crate::hotkey::validate_change(&config.app, prompts, &config.app, &self.load_prompts())?;
         let json = serde_json::to_string_pretty(prompts)
             .map_err(|e| format!("Failed to serialize prompts: {}", e))?;
         fs::write(&self.prompts_path, json)
@@ -1682,5 +1723,103 @@ mod elevenlabs_tests {
         .err()
         .unwrap();
         assert!(error.contains("ElevenLabs API Key"));
+    }
+}
+
+#[cfg(test)]
+mod hotkey_tests {
+    use super::*;
+    #[test]
+    fn legacy_raw_hotkey_is_split_once_without_changing_global_key() {
+        for mode in ["toggle", "hold"] {
+            let data = tempfile::tempdir().unwrap();
+            let resources = tempfile::tempdir().unwrap();
+            let path = data.path().join("config.yaml");
+            fs::write(
+                &path,
+                format!("app:\n  hotkey: ControlRight\n  hotkey_mode: {mode}\n"),
+            )
+            .unwrap();
+            let manager = ConfigManager::new(data.path(), resources.path());
+            let config = manager.load_config().unwrap();
+            assert_eq!(config.app.hotkey.as_str(), Some("ControlRight"));
+            assert_eq!(config.app.hotkey_mode, mode);
+            assert_eq!(
+                config.app.voice_hotkey.as_deref(),
+                Some(if mode == "hold" { "" } else { "ControlRight" })
+            );
+            let first = fs::read_to_string(&path).unwrap();
+            let _ = ConfigManager::new(data.path(), resources.path());
+            assert_eq!(fs::read_to_string(path).unwrap(), first);
+        }
+    }
+    #[test]
+    fn explicit_empty_raw_stop_is_preserved_across_restart() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        fs::write(
+            data.path().join("config.yaml"),
+            "app:\n  hotkey: F13\n  voice_hotkey: ''\n",
+        )
+        .unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        assert_eq!(
+            manager.load_config().unwrap().app.voice_hotkey.as_deref(),
+            Some("")
+        );
+    }
+    #[test]
+    fn conflicting_config_is_rejected_without_writing_or_updating_cache() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        let initial = AppConfig::default();
+        manager
+            .save_config(&serde_norway::to_value(&initial).unwrap())
+            .unwrap();
+        let before = fs::read_to_string(manager.config_path()).unwrap();
+        let mut changed = initial.clone();
+        changed.app.hotkey_mode = "hold".into();
+        assert!(manager
+            .save_config(&serde_norway::to_value(changed).unwrap())
+            .is_err());
+        assert_eq!(fs::read_to_string(manager.config_path()).unwrap(), before);
+        assert_eq!(manager.load_config().unwrap().app.hotkey_mode, "toggle");
+    }
+    #[test]
+    fn concurrent_config_and_prompt_saves_cannot_introduce_a_conflict() {
+        let data = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::new(data.path(), resources.path());
+        manager
+            .save_config(&serde_norway::to_value(AppConfig::default()).unwrap())
+            .unwrap();
+        let mut changed = AppConfig::default();
+        changed.app.hotkey = "F2".into();
+        changed.app.voice_hotkey = Some("F2".into());
+        let value = serde_norway::to_value(changed).unwrap();
+        let prompt: PromptItem = serde_json::from_value(
+            serde_json::json!({"id":"p","title":"P","hotkey":"F2","hotkey_mode":"hold"}),
+        )
+        .unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let (a, b) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                barrier.wait();
+                manager.save_config(&value)
+            });
+            let second = scope.spawn(|| {
+                barrier.wait();
+                manager.save_prompts(&[prompt])
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_ne!(a.is_ok(), b.is_ok());
+        assert!(crate::hotkey::compile_bindings(
+            &manager.load_config().unwrap().app,
+            &manager.load_prompts()
+        )
+        .1
+        .is_empty());
     }
 }

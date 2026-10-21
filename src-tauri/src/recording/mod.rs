@@ -76,6 +76,22 @@ pub(crate) async fn on_recording_start(
         }
     }
 
+    // A global wake must have a usable toggle stop. Keep retry handling above
+    // available even when every feature is hold-only or its stop is disabled.
+    if is_main {
+        let inner = app_handle.state::<Arc<app_state::AppInner>>();
+        let can_stop = inner.config_manager.load_config().is_ok_and(|config| {
+            hotkey::compile_bindings(&config.app, &inner.config_manager.load_prompts())
+                .0
+                .iter()
+                .any(|b| !b.wake_only && b.mode == hotkey::HotkeyMode::Toggle)
+        });
+        if !can_stop {
+            reset_matcher_recording(&app_handle);
+            return;
+        }
+    }
+
     let inner = app_handle.state::<Arc<app_state::AppInner>>();
     *inner.recording_mode.lock().await = mode;
     crate::overlay::invalidate_feedback(&inner);

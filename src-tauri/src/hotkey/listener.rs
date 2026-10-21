@@ -4,7 +4,7 @@
 use keytap::{EventKind, Key, RecvTimeoutError, Tap};
 use std::time::{Duration, Instant};
 
-use super::matcher::{is_relevant_hotkey_event, HotkeyAction};
+use super::matcher::HotkeyAction;
 use super::{HotkeyConfig, HotkeyManager};
 
 /// Start the global hotkey listener thread.
@@ -105,7 +105,11 @@ fn install_suppress_handler(config: &HotkeyConfig) {
             // FlagsChanged events are not swallowed by keytap.
             return key != Key::Escape;
         }
-        cfg.matcher.should_swallow(key, &cfg.bindings)
+        if !cfg.matcher.should_swallow(key, &cfg.bindings, &[]) {
+            return false;
+        }
+        cfg.matcher
+            .should_swallow(key, &cfg.bindings, &super::physical::modifier_states())
     })));
 }
 
@@ -156,16 +160,63 @@ pub fn ensure_hotkey_active(config: &HotkeyConfig, app_handle: &tauri::AppHandle
 fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHandle) {
     let mut escape_was_pressed = false;
     let mut enter_was_pressed = false;
-    // Timestamp of the last received keytap event (any event, even filtered
-    // ones — they still prove the user is at the keyboard). When no event has
-    // arrived for [`STALE_QUIESCENCE`] yet `held` still holds keys, those keys
-    // are stuck (lost keyup) and get reclaimed.
     let mut last_event_at = Instant::now();
-    /// How long with zero keyboard activity before stuck `held` keys are reclaimed.
-    const STALE_QUIESCENCE: Duration = Duration::from_secs(2);
+    let (actions_tx, mut actions_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(u64, HotkeyAction)>();
+    let action_handle = app_handle.clone();
+    let action_config = config.clone();
+    // Serialize microphone startup and release, but never queue a new recording
+    // behind ASR/LLM finalization. ESC remains independent of that work.
+    tauri::async_runtime::spawn(async move {
+        let mut finishing: Option<tauri::async_runtime::JoinHandle<()>> = None;
+        while let Some((generation, action)) = actions_rx.recv().await {
+            match action {
+                HotkeyAction::StartRecording { is_main, mode } => {
+                    if action_config.read().unwrap().matcher.generation() != generation {
+                        continue;
+                    }
+                    if finishing
+                        .as_ref()
+                        .is_some_and(|task| !task.inner().is_finished())
+                    {
+                        action_config.write().unwrap().matcher.reset_recording();
+                        continue;
+                    }
+                    crate::recording::on_recording_start(action_handle.clone(), is_main, mode)
+                        .await;
+                    // Internal resets also occur on retry and failed startup;
+                    // only tear down an actual microphone recording here.
+                    if action_config.read().unwrap().matcher.generation() != generation
+                        && crate::recording::is_recording(&action_handle)
+                    {
+                        crate::recording::on_escape(action_handle.clone()).await;
+                    }
+                }
+                HotkeyAction::StopRecording { prompt_id } => {
+                    if action_config.read().unwrap().matcher.generation() != generation {
+                        continue;
+                    }
+                    let handle = action_handle.clone();
+                    finishing = Some(tauri::async_runtime::spawn(async move {
+                        crate::recording::on_recording_stop(handle, prompt_id).await;
+                    }));
+                }
+            }
+        }
+    });
 
     loop {
-        match tap.recv_timeout(std::time::Duration::from_millis(100)) {
+        let wait = config
+            .read()
+            .unwrap()
+            .matcher
+            .pending_deadline()
+            .map(|at| {
+                at.saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(100))
+            })
+            .unwrap_or(Duration::from_millis(100));
+        match tap.recv_timeout(wait) {
             Ok(event) => {
                 last_event_at = Instant::now();
                 let event_kind = event.kind;
@@ -179,7 +230,7 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                     (
                         cfg.recording,
                         cfg.record_tx.clone(),
-                        cfg.escape_enabled,
+                        cfg.escape_enabled || cfg.matcher.recording_mode().is_some(),
                         cfg.enter_enabled,
                         cfg.bindings.clone(),
                     )
@@ -190,6 +241,7 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                 // matching bindings. This avoids a second WH_KEYBOARD_LL hook
                 // (unreliable on Windows with two taps per process).
                 if is_recording {
+                    config.write().unwrap().matcher.cancel_pending();
                     // Record every received event before recorder rules or
                     // main-hotkey validation can reject it. Never log typing
                     // outside an active shortcut-recording session.
@@ -213,6 +265,10 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                     continue;
                 }
 
+                // Also cancel a 500ms candidate before recording/ESC gating begins.
+                if matches!(event_kind, EventKind::KeyDown(Key::Escape)) {
+                    config.write().unwrap().matcher.cancel_pending();
+                }
                 // Escape cancellation (independent of chord matching).
                 if matches!(event_kind, EventKind::KeyUp(Key::Escape)) {
                     escape_was_pressed = false;
@@ -222,6 +278,7 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                     && !escape_was_pressed
                 {
                     escape_was_pressed = true;
+                    config.write().unwrap().matcher.reset_recording();
                     let handle = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
                         crate::recording::on_escape(handle).await;
@@ -249,47 +306,62 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                     });
                 }
 
-                // Allowlist: drop events for keys that are neither part of a
-                // registered binding nor a modifier (CapsLock, NumLock,
-                // ordinary typing, …).
-                // Such keys can jam the matcher's `held` set when their keyup
-                // goes undelivered, so they never enter it.
-                if !is_relevant_hotkey_event(event_kind, &bindings) {
-                    continue;
-                }
-
-                // Drive the state machine under the write lock, then dispatch
-                // the emitted actions without holding the lock.
+                // Track all ordinary keys, including ones outside every binding,
+                // so an extra letter can invalidate an otherwise matching chord.
                 let actions = {
                     let mut cfg = config.write().unwrap();
-                    cfg.matcher.process(event_kind, &bindings)
+                    let actions = cfg.matcher.process_at(event_kind, &bindings, event.time);
+                    (cfg.matcher.generation(), actions)
                 };
-                for action in actions {
-                    match action {
-                        HotkeyAction::StartRecording { is_main } => spawn_recording_start(
-                            app_handle,
-                            is_main,
-                            config
-                                .read()
-                                .unwrap()
-                                .matcher
-                                .recording_mode()
-                                .unwrap_or(super::HotkeyMode::Toggle),
-                        ),
-                        HotkeyAction::StopRecording { prompt_id } => {
-                            spawn_recording_stop(app_handle, prompt_id)
-                        }
-                    }
+                for action in actions.1 {
+                    let _ = actions_tx.send((actions.0, action));
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                // Idle reclaim: with no keyboard activity for a while, any keys
-                // still in `held` are stuck (lost keyup). Reclaim them, but
-                // only while idle — never during an active recording.
-                if Instant::now().duration_since(last_event_at) >= STALE_QUIESCENCE {
-                    config.write().unwrap().matcher.clear_stale_held();
+                let mut cfg = config.write().unwrap();
+                if cfg.recording {
+                    cfg.matcher.cancel_pending();
+                    continue;
                 }
-                continue;
+                // Check before delayed activation as well as during idle recovery:
+                // a lost early release must not start a microphone at the deadline.
+                // Unknown native states remain untouched.
+                let deadline_due = cfg
+                    .matcher
+                    .pending_deadline()
+                    .is_some_and(|at| Instant::now() >= at);
+                if deadline_due || last_event_at.elapsed() >= Duration::from_secs(2) {
+                    let released: Vec<_> = cfg
+                        .matcher
+                        .held
+                        .iter()
+                        .copied()
+                        .filter(|key| {
+                            let pressed = super::physical::is_pressed(*key);
+                            if deadline_due {
+                                // Only a complete configured hold chord reaches this
+                                // probe: never log ordinary typing outside a candidate.
+                                log_hotkey!(
+                                    info,
+                                    "hold stage=deadline key={:?} native_pressed={:?}",
+                                    key,
+                                    pressed
+                                );
+                            }
+                            pressed == Some(false)
+                        })
+                        .collect();
+                    if cfg.matcher.recover_released(&released) {
+                        cfg.matcher.reset_recording();
+                        let handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::recording::on_escape(handle).await;
+                        });
+                    }
+                }
+                for action in cfg.matcher.tick(Instant::now()) {
+                    let _ = actions_tx.send((cfg.matcher.generation(), action));
+                }
             }
             Err(RecvTimeoutError::Disconnected) => {
                 log_hotkey!(debug, "Tap disconnected, listener thread exiting");
@@ -297,23 +369,6 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
             }
         }
     }
-}
-
-/// Dispatch a "start recording" action to the async runtime.
-fn spawn_recording_start(app_handle: &tauri::AppHandle, is_main: bool, mode: super::HotkeyMode) {
-    let handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::recording::on_recording_start(handle, is_main, mode).await;
-    });
-}
-
-/// Dispatch a "stop recording" action (with the resolved prompt) to the async
-/// runtime.
-fn spawn_recording_stop(app_handle: &tauri::AppHandle, prompt_id: Option<String>) {
-    let handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::recording::on_recording_stop(handle, prompt_id).await;
-    });
 }
 
 /// Reset the matcher's recording tracking. Called by lib.rs when a recording

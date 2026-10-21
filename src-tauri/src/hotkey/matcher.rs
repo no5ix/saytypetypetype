@@ -1,806 +1,559 @@
-//! Hotkey chord-matching state machine over the raw keytap event stream.
-
+//! Ordered hotkey state machine. Time is supplied by the listener for deterministic tests.
 use keytap::{EventKind, Key};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use super::{HotkeyBinding, HotkeyMode};
 
-/// Actions emitted by [`MatcherState::process`]. The listener spawns these on
-/// the async runtime; lib.rs decides whether a `StartRecording` actually
-/// records (or is diverted to a retry) and resets the matcher when it doesn't.
+pub const HOLD_DELAY: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyAction {
-    /// Begin a neutral recording — the prompt is decided later, on stop.
-    /// `is_main` is true when the triggering chord is the main hotkey
-    /// (prompt_id `None`), which gates the "press main hotkey to retry the
-    /// last failure" shortcut.
-    StartRecording { is_main: bool },
-    /// End the recording and finalize with the given prompt (`None` = raw
-    /// paste, no polishing).
+    StartRecording { is_main: bool, mode: HotkeyMode },
     StopRecording { prompt_id: Option<String> },
 }
 
-/// Pure state machine over the raw keytap event stream.
-///
-/// Resolves chord conflicts without any timeout/pending:
-/// - A **hold** chord starts recording the instant its keys are all pressed
-///   (keydown) — zero latency, prompt undecided.
-/// - A **toggle** chord starts/stops on completion of a press cycle (the held
-///   set empties at keyup). Only the **main** toggle chord (prompt_id `None`)
-///   wakes recording; toggle prompt chords are stop-only — they finalize and
-///   polish when pressed during a recording. The prompt is the longest chord
-///   reached in that stop cycle.
-/// - Recording always starts *neutral*; the prompt is fixed only when it ends,
-///   from the longest chord held during the hold (peak) or the stop cycle.
-///   The chord is fully known at that point, so prefix conflicts like `Ctrl`
-///   vs `Ctrl+Shift` resolve correctly with no waiting.
 #[derive(Debug, Default)]
 pub struct MatcherState {
-    /// Currently physically held keys.
     pub(super) held: HashSet<Key>,
-    /// Longest binding matched during the current press cycle / hold (peak).
-    cycle_best: Option<usize>,
-    /// What the matcher believes is recording, if anything. Authoritative on
-    /// the hotkey side; lib.rs resets it via [`MatcherState::reset_recording`]
-    /// when a start is diverted to retry or fails, or when recording cancels.
-    recording: Option<HotkeyMode>,
-    /// For hold: the binding that started the session — its keys leaving the
-    /// held set ends the session.
-    active_hold: Option<usize>,
+    // Union of keys in this cycle: removing an extra key never restores a candidate.
+    cycle_keys: HashSet<Key>,
+    candidate: Option<HotkeyBinding>,
+    pending: Option<(HotkeyBinding, Instant)>,
+    active: Option<HotkeyBinding>,
+    blocked: bool,
+    generation: u64,
+    active_stops: Vec<HotkeyBinding>,
 }
 
 impl MatcherState {
-    pub fn recording_mode(&self) -> Option<HotkeyMode> {
-        self.recording
-    }
-
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Clear all matcher-side state after the app ended a recording out-of-band.
-    pub fn reset_recording(&mut self) {
-        self.held.clear();
-        self.recording = None;
-        self.cycle_best = None;
-        self.active_hold = None;
+    pub fn recording_mode(&self) -> Option<HotkeyMode> {
+        self.active.as_ref().map(|b| b.mode)
     }
 
-    /// Advance the machine one event. Returns the actions to dispatch.
-    ///
-    /// The caller (the listener) filters events via
-    /// [`is_relevant_hotkey_event`], so `held` only ever tracks keys that are
-    /// part of some binding, plus modifiers.
-    pub fn process(&mut self, kind: EventKind, bindings: &[HotkeyBinding]) -> Vec<HotkeyAction> {
-        let mut actions = Vec::new();
+    /// Preserve physical state across cancel, retry and failed start. Require release
+    /// before another trigger, rather than treating a still-held key as a new press.
+    pub fn reset_recording(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.active_stops.clear();
+        self.active = None;
+        self.cancel_pending();
+    }
+
+    pub fn cancel_pending(&mut self) {
+        self.pending = None;
+        self.candidate = None;
+        self.blocked = !self.held.is_empty();
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn pending_deadline(&self) -> Option<Instant> {
+        self.pending.as_ref().map(|(_, at)| *at + HOLD_DELAY)
+    }
+
+    pub fn tick(&mut self, now: Instant) -> Vec<HotkeyAction> {
+        let Some((binding, since)) = self.pending.as_ref() else {
+            return vec![];
+        };
+        if now.saturating_duration_since(*since) < HOLD_DELAY {
+            return vec![];
+        }
+        let binding = binding.clone();
+        self.pending = None;
+        if self.blocked || !exact(&self.held, &binding) {
+            return vec![];
+        }
+        self.active = Some(binding);
+        vec![HotkeyAction::StartRecording {
+            is_main: false,
+            mode: HotkeyMode::Hold,
+        }]
+    }
+
+    pub fn process_at(
+        &mut self,
+        kind: EventKind,
+        bindings: &[HotkeyBinding],
+        now: Instant,
+    ) -> Vec<HotkeyAction> {
+        // A queued event can arrive after the deadline before the timeout tick.
+        let mut actions = self.tick(now);
+        let stop_bindings = self.active_stops.clone();
+        let bindings = if self.recording_mode() == Some(HotkeyMode::Toggle) {
+            &stop_bindings[..]
+        } else {
+            bindings
+        };
         match kind {
-            EventKind::KeyDown(k) => {
-                self.held.insert(k);
-                self.update_cycle_best(bindings);
-                // Hold starts on keydown the moment its chord completes.
-                if self.recording.is_none() {
-                    if let Some(idx) = longest_match(&self.held, bindings) {
-                        if bindings[idx].mode == HotkeyMode::Hold {
-                            let is_main = bindings[idx].prompt_id.is_none();
-                            self.recording = Some(HotkeyMode::Hold);
-                            self.active_hold = Some(idx);
-                            actions.push(HotkeyAction::StartRecording { is_main });
-                        }
-                    }
+            EventKind::KeyRepeat(_) => return actions,
+            EventKind::KeyDown(key) => {
+                if !self.held.insert(key) {
+                    return actions;
                 }
-            }
-            EventKind::KeyUp(k) => {
-                self.held.remove(&k);
-                // No update_cycle_best here: cycle_best only grows, and a KeyUp
-                // shrinks `held`, so it could never produce a longer match — the
-                // call was a guaranteed no-op.
-                match self.recording {
-                    Some(HotkeyMode::Hold) => {
-                        // End when the active hold chord is no longer fully held.
-                        let still_held = self
-                            .active_hold
-                            .map(|i| bindings[i].keys.iter().all(|key| self.held.contains(key)))
-                            .unwrap_or(false);
-                        if !still_held {
-                            let prompt_id = self
-                                .cycle_best
-                                .and_then(|i| bindings.get(i))
-                                .and_then(|b| b.prompt_id.clone());
-                            self.reset_recording();
-                            actions.push(HotkeyAction::StopRecording { prompt_id });
-                        }
+                if matches!(key, Key::CapsLock | Key::NumLock | Key::ScrollLock)
+                    && !bindings.iter().any(|b| b.keys.contains(&key))
+                {
+                    self.held.remove(&key);
+                    if self.recording_mode() != Some(HotkeyMode::Hold) {
+                        self.blocked = !self.held.is_empty();
+                        self.pending = None;
+                        self.candidate = None;
                     }
-                    Some(HotkeyMode::Toggle) => {
-                        if self.held.is_empty() {
-                            // Stop only if this cycle reached a toggle chord.
-                            if let Some(i) = self
-                                .cycle_best
-                                .filter(|&i| bindings[i].mode == HotkeyMode::Toggle)
-                            {
-                                let prompt_id = bindings.get(i).and_then(|b| b.prompt_id.clone());
-                                self.reset_recording();
-                                actions.push(HotkeyAction::StopRecording { prompt_id });
+                    return actions;
+                }
+                // Lock hold sessions to the original combination and template.
+                if self.recording_mode() == Some(HotkeyMode::Hold) {
+                    return actions;
+                }
+                self.cycle_keys.insert(key);
+                if self.blocked {
+                    return actions;
+                }
+                let is_recording = self.active.is_some();
+                // Every key observed in the cycle must belong to a possible full
+                // binding; a foreign key permanently invalidates this cycle.
+                let eligible = |b: &&HotkeyBinding| {
+                    if is_recording {
+                        b.mode == HotkeyMode::Toggle && !b.wake_only
+                    } else {
+                        b.wake_only || b.mode == HotkeyMode::Hold
+                    }
+                };
+                if !bindings
+                    .iter()
+                    .filter(eligible)
+                    .any(|b| self.cycle_keys.iter().all(|k| b.keys.contains(k)))
+                {
+                    self.blocked = true;
+                    self.pending = None;
+                    self.candidate = None;
+                    return actions;
+                }
+                let matched = bindings
+                    .iter()
+                    .filter(eligible)
+                    .find(|b| exact(&self.held, b) && exact(&self.cycle_keys, b));
+                self.candidate = matched.cloned();
+                self.pending = matched
+                    .filter(|b| b.mode == HotkeyMode::Hold)
+                    .map(|b| (b.clone(), now));
+            }
+            EventKind::KeyUp(key) => {
+                let was_held = self.held.remove(&key);
+                if !was_held {
+                    return actions;
+                }
+                if let Some(active) = self.active.as_ref().filter(|b| b.mode == HotkeyMode::Hold) {
+                    if active.keys.contains(&key) {
+                        let prompt_id = active.prompt_id.clone();
+                        self.active = None;
+                        self.cancel_pending();
+                        actions.push(HotkeyAction::StopRecording { prompt_id });
+                    }
+                } else {
+                    self.pending = None;
+                    if self.held.is_empty() && !self.blocked {
+                        if let Some(binding) = self
+                            .candidate
+                            .take()
+                            .filter(|b| b.mode == HotkeyMode::Toggle && exact(&self.cycle_keys, b))
+                        {
+                            if self.active.is_some() {
+                                self.active = None;
+                                self.active_stops.clear();
+                                actions.push(HotkeyAction::StopRecording {
+                                    prompt_id: binding.prompt_id,
+                                });
                             } else {
-                                // Only irrelevant keys pressed — keep recording,
-                                // begin a fresh stop cycle.
-                                self.cycle_best = None;
+                                self.active = Some(binding);
+                                self.active_stops = bindings
+                                    .iter()
+                                    .filter(|b| !b.wake_only && b.mode == HotkeyMode::Toggle)
+                                    .cloned()
+                                    .collect();
+                                actions.push(HotkeyAction::StartRecording {
+                                    is_main: true,
+                                    mode: HotkeyMode::Toggle,
+                                });
                             }
-                        }
-                    }
-                    None => {
-                        if self.held.is_empty() {
-                            // Start cycle: in hands-free (toggle) mode only the main
-                            // hotkey (prompt_id None) wakes recording; toggle prompt
-                            // chords are stop-only — they finalize + polish once a
-                            // recording is already running.
-                            if self
-                                .cycle_best
-                                .filter(|&i| bindings[i].mode == HotkeyMode::Toggle)
-                                .filter(|&i| bindings[i].prompt_id.is_none())
-                                .is_some()
-                            {
-                                self.recording = Some(HotkeyMode::Toggle);
-                                actions.push(HotkeyAction::StartRecording { is_main: true });
-                            }
-                            self.cycle_best = None;
                         }
                     }
                 }
+                if self.held.is_empty() {
+                    self.cycle_keys.clear();
+                    self.candidate = None;
+                    self.pending = None;
+                    self.blocked = false;
+                }
             }
-            EventKind::KeyRepeat(_) => {}
         }
         actions
     }
 
-    /// Track the longest binding matched since the cycle/hold began. Only grows
-    /// (strictly longer) so it holds the peak across a hold.
-    fn update_cycle_best(&mut self, bindings: &[HotkeyBinding]) {
-        if let Some(idx) = longest_match(&self.held, bindings) {
-            let take = self
-                .cycle_best
-                .map(|prev| bindings[idx].keys.len() > bindings[prev].keys.len())
-                .unwrap_or(true);
-            if take {
-                self.cycle_best = Some(idx);
-            }
+    /// Lost-key recovery never submits output: only known released keys are removed.
+    /// Missing releases invalidate the cycle; an active hold is cancelled by caller.
+    pub fn recover_released(&mut self, released: &[Key]) -> bool {
+        let cancel_hold = self.active.as_ref().is_some_and(|b| {
+            b.mode == HotkeyMode::Hold && released.iter().any(|k| b.keys.contains(k))
+        });
+        for key in released {
+            self.held.remove(key);
         }
+        if !released.is_empty() {
+            self.cancel_pending();
+        }
+        if self.held.is_empty() {
+            self.cycle_keys.clear();
+            self.blocked = false;
+        }
+        cancel_hold
     }
 
-    /// Whether a fresh press of `key` should be swallowed instead of reaching
-    /// the focused app. True only while a recording is active and `key`
-    /// completes a registered chord (every other key of that chord is already
-    /// held, and no modifier outside it): the press is then a command to the
-    /// recording, not typing. While idle nothing is swallowed, so a plain key
-    /// bound as a stop-only prompt hotkey still types normally.
-    pub(super) fn should_suppress(&self, key: Key, bindings: &[HotkeyBinding]) -> bool {
-        self.recording.is_some()
-            && bindings.iter().any(|b| {
-                b.keys.contains(&key)
-                    && b.keys.iter().all(|k| *k == key || self.held.contains(k))
-                    && no_foreign_modifier(&self.held, b)
-            })
-    }
-
-    /// Whether a press of `key` must not reach the foreground app at all —
-    /// the decision the keytap suppress predicate runs on every key event.
-    /// Layered on the same exact-match semantics as [`should_suppress`]:
-    ///
-    /// 1. Modifiers never swallow: they carry no character of their own and
-    ///    swallowing one corrupts the system modifier state.
-    /// 2. A key that *completes* the main binding's chord (its other keys
-    ///    already held, no foreign modifier) swallows regardless of the
-    ///    recording flag — a completing main-chord press is always a command
-    ///    (start or stop), so its character must never leak into the focused
-    ///    app. This covers the press that *starts* a recording, which
-    ///    [`should_suppress`] cannot: the recording flag only rises after the
-    ///    key's release (toggle) or asynchronously after the press (hold).
-    ///    A chord member pressed *alone* stays ordinary typing — with a
-    ///    `Ctrl+F13` main key, a bare `F13` must not swallow.
-    /// 3. Otherwise [`should_suppress`]: a prompt stop key completing its
-    ///    chord while a recording runs.
-    pub(super) fn should_swallow(&self, key: Key, bindings: &[HotkeyBinding]) -> bool {
-        if EXACT_MODIFIERS.contains(&key) {
+    /// Only toggle commands swallow characters. Hold candidates and active holds
+    /// leave ordinary application shortcuts alone throughout their lifetime.
+    pub(super) fn should_swallow(
+        &self,
+        key: Key,
+        bindings: &[HotkeyBinding],
+        modifier_states: &[(Key, bool)],
+    ) -> bool {
+        if is_modifier(key) || self.blocked || self.recording_mode() == Some(HotkeyMode::Hold) {
             return false;
         }
-        if bindings.iter().any(|b| {
-            b.prompt_id.is_none()
-                && b.keys.contains(&key)
-                && b.keys.iter().all(|k| *k == key || self.held.contains(k))
-                && no_foreign_modifier(&self.held, b)
-        }) {
-            return true;
-        }
-        self.should_suppress(key, bindings)
-    }
-
-    /// Reclaim `held` keys stuck down by a lost keyup. The listener calls this
-    /// from its idle tick, and only while idle (`recording` is None), so it
-    /// never interferes with an active recording — hold-to-talk or a toggle
-    /// session mid-pause are both left untouched.
-    pub fn clear_stale_held(&mut self) {
-        if self.recording.is_none() && !self.held.is_empty() {
-            self.held.clear();
-            self.cycle_best = None;
-        }
-    }
-}
-
-/// Modifiers that must match a binding exactly. `Fn` is deliberately absent:
-/// on laptop keyboards it is how the F-row keys are physically reached.
-const EXACT_MODIFIERS: &[Key] = &[
-    Key::ControlLeft,
-    Key::ControlRight,
-    Key::AltLeft,
-    Key::AltRight,
-    Key::ShiftLeft,
-    Key::ShiftRight,
-    Key::MetaLeft,
-    Key::MetaRight,
-];
-
-/// Whether every held modifier belongs to `binding`. A hotkey `F` must not
-/// fire for `Ctrl+F` — that is the focused app's shortcut, not ours.
-fn no_foreign_modifier(held: &HashSet<Key>, binding: &HotkeyBinding) -> bool {
-    held.iter()
-        .all(|k| !EXACT_MODIFIERS.contains(k) || binding.keys.contains(k))
-}
-
-/// Longest-match resolution: of all bindings whose keys are a subset of `held`
-/// with no foreign modifier held, the one with the most keys wins; ties are
-/// broken by registration order (earlier wins). Replaces the old
-/// first-subset-match that let a bare `Ctrl` steal `Ctrl+Shift`.
-pub fn longest_match(held: &HashSet<Key>, bindings: &[HotkeyBinding]) -> Option<usize> {
-    let mut best: Option<(usize, usize)> = None;
-    for (i, b) in bindings.iter().enumerate() {
-        if !b.keys.is_empty()
-            && b.keys.iter().all(|k| held.contains(k))
-            && no_foreign_modifier(held, b)
-        {
-            let len = b.keys.len();
-            let take = match best {
-                None => true,
-                Some((_, best_len)) => len > best_len,
-            };
-            if take {
-                best = Some((i, len));
+        let mut held = self.held.clone();
+        for (modifier, pressed) in modifier_states {
+            if *pressed {
+                held.insert(*modifier);
+            } else {
+                held.remove(modifier);
             }
         }
+        bindings.iter().any(|b| {
+            b.mode == HotkeyMode::Toggle
+                && (if self.active.is_some() {
+                    !b.wake_only
+                } else {
+                    b.wake_only
+                })
+                && b.keys.contains(&key)
+                && b.keys.iter().all(|k| *k == key || held.contains(k))
+                && held
+                    .iter()
+                    .chain(self.cycle_keys.iter())
+                    .all(|k| b.keys.contains(k))
+        })
     }
-    best.map(|(i, _)| i)
 }
 
-fn hotkey_event_key(kind: EventKind) -> Option<Key> {
-    match kind {
-        EventKind::KeyDown(key) | EventKind::KeyUp(key) | EventKind::KeyRepeat(key) => Some(key),
-    }
+fn exact(keys: &HashSet<Key>, binding: &HotkeyBinding) -> bool {
+    keys.len() == binding.keys.len() && keys.iter().all(|k| binding.keys.contains(k))
 }
 
-fn key_is_registered_hotkey_part(key: Key, bindings: &[HotkeyBinding]) -> bool {
-    bindings.iter().any(|binding| binding.keys.contains(&key))
-}
-
-/// Whether an event concerns a key the matcher must track: a key that is part
-/// of some registered hotkey binding, or any modifier (needed to reject chords
-/// with a foreign modifier held). The listener drops everything else at the
-/// boundary so keys like CapsLock or NumLock — whose keyup the OS often fails
-/// to deliver — can never enter the matcher's `held` set and jam the toggle
-/// cycle.
-pub(super) fn is_relevant_hotkey_event(kind: EventKind, bindings: &[HotkeyBinding]) -> bool {
-    hotkey_event_key(kind)
-        .map(|k| EXACT_MODIFIERS.contains(&k) || key_is_registered_hotkey_part(k, bindings))
-        .unwrap_or(false)
+pub(super) fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ControlLeft
+            | Key::ControlRight
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::MetaLeft
+            | Key::MetaRight
+            | Key::Function
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keytap::{EventKind, Key};
+    use EventKind::{KeyDown as down, KeyUp as up};
 
-    fn down(k: Key) -> EventKind {
-        EventKind::KeyDown(k)
-    }
-    fn up(k: Key) -> EventKind {
-        EventKind::KeyUp(k)
-    }
-
-    /// Drive the matcher through an event sequence, collecting emitted actions.
-    fn run_matcher(bindings: &[HotkeyBinding], events: &[EventKind]) -> Vec<HotkeyAction> {
-        let mut m = MatcherState::new();
-        run_matcher_from(&mut m, bindings, events)
-    }
-
-    fn run_matcher_from(
-        matcher: &mut MatcherState,
-        bindings: &[HotkeyBinding],
-        events: &[EventKind],
-    ) -> Vec<HotkeyAction> {
-        let mut out = Vec::new();
-        for e in events {
-            out.extend(matcher.process(*e, bindings));
-        }
-        out
-    }
-
-    fn binding(keys: &[Key], mode: &str, prompt_id: Option<&str>) -> HotkeyBinding {
+    fn binding(
+        keys: &[Key],
+        mode: HotkeyMode,
+        prompt: Option<&str>,
+        wake_only: bool,
+    ) -> HotkeyBinding {
         HotkeyBinding {
             keys: keys.iter().copied().collect(),
-            mode: HotkeyMode::from_str(mode),
-            prompt_id: prompt_id.map(str::to_string),
+            mode,
+            prompt_id: prompt.map(str::to_string),
+            wake_only,
+        }
+    }
+    fn hold(keys: &[Key]) -> Vec<HotkeyBinding> {
+        vec![binding(keys, HotkeyMode::Hold, Some("polish"), false)]
+    }
+    fn toggle() -> Vec<HotkeyBinding> {
+        vec![
+            binding(&[Key::MetaRight], HotkeyMode::Toggle, None, true),
+            binding(&[Key::MetaRight], HotkeyMode::Toggle, None, false),
+        ]
+    }
+    fn event(
+        m: &mut MatcherState,
+        b: &[HotkeyBinding],
+        base: Instant,
+        ms: u64,
+        e: EventKind,
+    ) -> Vec<HotkeyAction> {
+        m.process_at(e, b, base + Duration::from_millis(ms))
+    }
+    fn start(mode: HotkeyMode) -> HotkeyAction {
+        HotkeyAction::StartRecording {
+            is_main: mode == HotkeyMode::Toggle,
+            mode,
         }
     }
 
     #[test]
-    fn toggle_main_cycle_starts_neutral_then_stops_raw() {
-        let bindings = [binding(&[Key::ControlLeft], "toggle", None)];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                up(Key::ControlLeft),
-                down(Key::ControlLeft),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording { prompt_id: None },
-            ]
-        );
-    }
-
-    #[test]
-    fn toggle_prefix_conflict_stop_chord_decides_prompt() {
-        let bindings = [
-            binding(&[Key::ControlLeft], "toggle", None),
-            binding(
-                &[Key::ControlLeft, Key::ShiftLeft],
-                "toggle",
-                Some("polish"),
-            ),
-        ];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                up(Key::ControlLeft),
-                down(Key::ControlLeft),
-                down(Key::ShiftLeft),
-                up(Key::ShiftLeft),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording {
-                    prompt_id: Some("polish".to_string())
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn toggle_main_only_wakes_prompt_chord_is_stop_only() {
-        let bindings = [
-            binding(&[Key::ControlLeft], "toggle", None),
-            binding(
-                &[Key::ControlLeft, Key::ShiftLeft],
-                "toggle",
-                Some("polish"),
-            ),
-        ];
-        // Hands-free wake is main-only: pressing the longer prompt chord
-        // (Ctrl+Shift) while idle does NOT start. The main chord (Ctrl) then
-        // wakes, and pressing it again stops raw.
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::ShiftLeft),
-                up(Key::ShiftLeft),
-                up(Key::ControlLeft),
-                down(Key::ControlLeft),
-                up(Key::ControlLeft),
-                down(Key::ControlLeft),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording { prompt_id: None },
-            ]
-        );
-    }
-
-    #[test]
-    fn toggle_prompt_chord_does_not_start_when_idle() {
-        // A toggle prompt chord pressed while idle must never wake recording —
-        // only the main hotkey does. The prompt chord only acts on stop.
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(
-                &[Key::ControlLeft, Key::ShiftLeft],
-                "toggle",
-                Some("polish"),
-            ),
-        ];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::ShiftLeft),
-                up(Key::ShiftLeft),
-                up(Key::ControlLeft),
-                down(Key::F13),
-                up(Key::F13),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![HotkeyAction::StartRecording { is_main: true }]
-        );
-    }
-
-    #[test]
-    fn hold_starts_on_keydown_stops_on_release() {
-        let bindings = [binding(&[Key::ControlLeft], "hold", None)];
-        let actions = run_matcher(&bindings, &[down(Key::ControlLeft), up(Key::ControlLeft)]);
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording { prompt_id: None },
-            ]
-        );
-    }
-
-    #[test]
-    fn hold_prefix_conflict_uses_peak_for_prompt() {
-        let bindings = [
-            binding(&[Key::ControlLeft], "hold", None),
-            binding(&[Key::ControlLeft, Key::ShiftLeft], "hold", Some("polish")),
-        ];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::ShiftLeft),
-                up(Key::ShiftLeft),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording {
-                    prompt_id: Some("polish".to_string())
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn hold_short_only_yields_raw_prompt() {
-        let bindings = [
-            binding(&[Key::ControlLeft], "hold", None),
-            binding(&[Key::ControlLeft, Key::ShiftLeft], "hold", Some("polish")),
-        ];
-        let actions = run_matcher(&bindings, &[down(Key::ControlLeft), up(Key::ControlLeft)]);
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording { prompt_id: None },
-            ]
-        );
-    }
-
-    #[test]
-    fn mixed_toggle_short_hold_long_no_conflict() {
-        let bindings = [
-            binding(&[Key::ControlLeft], "toggle", None),
-            binding(&[Key::ControlLeft, Key::ShiftLeft], "hold", Some("polish")),
-        ];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::ShiftLeft),
-                up(Key::ShiftLeft),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: false },
-                HotkeyAction::StopRecording {
-                    prompt_id: Some("polish".to_string())
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn toggle_irrelevant_key_during_recording_does_not_stop() {
-        let bindings = [binding(&[Key::F13], "toggle", None)];
-        let actions = run_matcher(
-            &bindings,
-            &[
-                down(Key::F13),
-                up(Key::F13),
-                down(Key::Space),
-                up(Key::Space),
-                down(Key::F13),
-                up(Key::F13),
-            ],
-        );
-        assert_eq!(
-            actions,
-            vec![
-                HotkeyAction::StartRecording { is_main: true },
-                HotkeyAction::StopRecording { prompt_id: None },
-            ]
-        );
-    }
-
-    #[test]
-    fn longest_match_prefers_more_keys_then_registration_order() {
-        let bindings = [
-            binding(&[Key::A], "toggle", None),         // idx 0, len 1
-            binding(&[Key::A, Key::B], "toggle", None), // idx 1, len 2
-            binding(&[Key::A, Key::C], "toggle", None), // idx 2, len 2 (tie with 1)
-        ];
-        // A+B and A+C both match with len 2; earlier registration (idx 1) wins.
-        let held: HashSet<Key> = [Key::A, Key::B, Key::C].into_iter().collect();
-        assert_eq!(longest_match(&held, &bindings), Some(1));
-
-        let held: HashSet<Key> = [Key::A, Key::C].into_iter().collect();
-        assert_eq!(longest_match(&held, &bindings), Some(2));
-
-        let held: HashSet<Key> = [Key::A].into_iter().collect();
-        assert_eq!(longest_match(&held, &bindings), Some(0));
-    }
-
-    #[test]
-    fn reset_recording_clears_session_tracking() {
-        let bindings = [binding(&[Key::F13], "hold", None)];
+    fn hold_waits_for_full_500ms() {
+        let b = hold(&[Key::ControlLeft]);
         let mut m = MatcherState::new();
-        let started = m.process(down(Key::F13), &bindings);
-        assert_eq!(started.len(), 1); // StartRecording emitted → session active
-        m.reset_recording();
-        // After reset, releasing the key must not emit a stray StopRecording
-        // (the session was cancelled out-of-band).
-        let actions = m.process(up(Key::F13), &bindings);
-        assert!(actions.is_empty());
-    }
-
-    #[test]
-    fn reset_recording_clears_stale_held_keys() {
-        let bindings = [binding(&[Key::F13], "toggle", None)];
-        let mut m = MatcherState::new();
-
-        // Simulate a lost keyup for an unrelated key. If reset leaves physical
-        // held state behind, the next toggle cycle never sees held.is_empty().
-        assert!(m.process(down(Key::Space), &bindings).is_empty());
-        assert!(m
-            .process(down(Key::F13), &bindings)
-            .into_iter()
-            .chain(m.process(up(Key::F13), &bindings))
-            .collect::<Vec<_>>()
-            .is_empty());
-
-        m.reset_recording();
-        let actions = run_matcher_from(&mut m, &bindings, &[down(Key::F13), up(Key::F13)]);
+        let t = Instant::now();
+        assert!(event(&mut m, &b, t, 0, down(Key::ControlLeft)).is_empty());
+        assert!(m.tick(t + Duration::from_millis(499)).is_empty());
+        assert_eq!(m.tick(t + HOLD_DELAY), vec![start(HotkeyMode::Hold)]);
+        assert!(m.tick(t + HOLD_DELAY).is_empty());
         assert_eq!(
-            actions,
-            vec![HotkeyAction::StartRecording { is_main: true }]
-        );
-    }
-
-    #[test]
-    fn allowlist_drops_events_for_unregistered_keys() {
-        // Only keys that are part of a registered binding are relevant; anything
-        // else (CapsLock, NumLock, plain typing) is dropped at the listener
-        // boundary so it can never jam the matcher's held set.
-        let bindings = [binding(&[Key::Function], "toggle", None)];
-        assert!(!is_relevant_hotkey_event(down(Key::CapsLock), &bindings));
-        assert!(!is_relevant_hotkey_event(down(Key::NumLock), &bindings));
-        assert!(!is_relevant_hotkey_event(down(Key::Space), &bindings));
-        assert!(is_relevant_hotkey_event(down(Key::Function), &bindings));
-        assert!(is_relevant_hotkey_event(up(Key::Function), &bindings));
-    }
-
-    #[test]
-    fn clear_stale_held_only_while_idle() {
-        let bindings = [binding(&[Key::Function], "hold", None)];
-        let mut m = MatcherState::new();
-
-        // Start a hold session: Function is held and the matcher is recording.
-        assert_eq!(
-            m.process(down(Key::Function), &bindings),
-            vec![HotkeyAction::StartRecording { is_main: true }]
-        );
-        // While recording, stale reclaim must NOT touch held.
-        m.clear_stale_held();
-        assert_eq!(
-            m.process(up(Key::Function), &bindings),
-            vec![HotkeyAction::StopRecording { prompt_id: None }]
-        );
-
-        // Idle again with a stuck key (a lost keyup): reclaim clears it.
-        m.held.insert(Key::Function);
-        m.clear_stale_held();
-        assert!(m.held.is_empty());
-    }
-
-    #[test]
-    fn foreign_modifier_blocks_plain_stop_key() {
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(&[Key::F], "toggle", Some("translate")),
-        ];
-        let mut m = MatcherState::new();
-        run_matcher_from(&mut m, &bindings, &[down(Key::F13), up(Key::F13)]);
-        // Ctrl+F belongs to the focused app: the recording keeps running.
-        let actions = run_matcher_from(
-            &mut m,
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::F),
-                up(Key::F),
-                up(Key::ControlLeft),
-            ],
-        );
-        assert!(actions.is_empty());
-        // Releasing Ctrl first must not turn the still-held F into a match.
-        let actions = run_matcher_from(
-            &mut m,
-            &bindings,
-            &[
-                down(Key::ControlLeft),
-                down(Key::F),
-                up(Key::ControlLeft),
-                up(Key::F),
-            ],
-        );
-        assert!(actions.is_empty());
-        // A bare F still stops with its prompt.
-        let actions = run_matcher_from(&mut m, &bindings, &[down(Key::F), up(Key::F)]);
-        assert_eq!(
-            actions,
+            event(&mut m, &b, t, 501, up(Key::ControlLeft)),
             vec![HotkeyAction::StopRecording {
-                prompt_id: Some("translate".to_string())
+                prompt_id: Some("polish".into())
             }]
         );
     }
-
     #[test]
-    fn foreign_modifier_blocks_start() {
-        let toggle = [binding(&[Key::F13], "toggle", None)];
-        let events = [
-            down(Key::ShiftLeft),
-            down(Key::F13),
-            up(Key::F13),
-            up(Key::ShiftLeft),
+    fn extra_key_at_200ms_invalidates_whole_hold_cycle() {
+        let b = hold(&[Key::ControlLeft]);
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        event(&mut m, &b, t, 200, down(Key::C));
+        event(&mut m, &b, t, 220, up(Key::C));
+        assert!(m.tick(t + Duration::from_secs(1)).is_empty());
+        event(&mut m, &b, t, 1100, up(Key::ControlLeft));
+        event(&mut m, &b, t, 1200, down(Key::ControlLeft));
+        assert_eq!(
+            m.tick(t + Duration::from_millis(1700)),
+            vec![start(HotkeyMode::Hold)]
+        );
+    }
+    #[test]
+    fn combo_delay_begins_at_last_key_regardless_of_prefix_duration() {
+        for prefix_ms in [200, 600, 3000] {
+            let b = hold(&[Key::ControlLeft, Key::C]);
+            let mut m = MatcherState::new();
+            let t = Instant::now();
+            event(&mut m, &b, t, 0, down(Key::ControlLeft));
+            assert!(m.tick(t + Duration::from_millis(prefix_ms)).is_empty());
+            event(&mut m, &b, t, prefix_ms, down(Key::C));
+            assert!(m
+                .tick(t + Duration::from_millis(prefix_ms + 499))
+                .is_empty());
+            assert_eq!(
+                m.tick(t + Duration::from_millis(prefix_ms + 500)),
+                vec![start(HotkeyMode::Hold)]
+            );
+        }
+    }
+    #[test]
+    fn release_before_deadline_never_records() {
+        let b = hold(&[Key::ControlLeft]);
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        assert!(event(&mut m, &b, t, 499, up(Key::ControlLeft)).is_empty());
+        assert!(m.tick(t + Duration::from_secs(1)).is_empty());
+    }
+    #[test]
+    fn release_at_deadline_orders_start_before_stop_even_without_tick() {
+        let b = hold(&[Key::ControlLeft]);
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        assert_eq!(
+            event(&mut m, &b, t, 500, up(Key::ControlLeft)),
+            vec![
+                start(HotkeyMode::Hold),
+                HotkeyAction::StopRecording {
+                    prompt_id: Some("polish".into())
+                }
+            ]
+        );
+    }
+    #[test]
+    fn active_hold_ignores_new_keys_templates_and_new_bindings() {
+        let mut b = hold(&[Key::ControlLeft]);
+        b.push(binding(&[Key::C], HotkeyMode::Toggle, Some("other"), false));
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        assert_eq!(
+            event(&mut m, &b, t, 600, down(Key::C)),
+            vec![start(HotkeyMode::Hold)]
+        );
+        assert!(!m.should_swallow(Key::C, &b, &[]));
+        assert_eq!(
+            event(&mut m, &[], t, 700, up(Key::ControlLeft)),
+            vec![HotkeyAction::StopRecording {
+                prompt_id: Some("polish".into())
+            }]
+        );
+        assert!(event(&mut m, &b, t, 710, up(Key::C)).is_empty());
+    }
+    #[test]
+    fn both_extra_key_orders_block_toggle_and_no_release_fallback() {
+        for extra in [Key::F, Key::ShiftLeft, Key::Function] {
+            for first in [true, false] {
+                let b = toggle();
+                let mut m = MatcherState::new();
+                let t = Instant::now();
+                let (a, c) = if first {
+                    (Key::MetaRight, extra)
+                } else {
+                    (extra, Key::MetaRight)
+                };
+                for (ms, e) in [down(a), down(c), up(c), up(a)].into_iter().enumerate() {
+                    assert!(event(&mut m, &b, t, ms as u64, e).is_empty(), "{a:?} {c:?}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn longer_toggle_stop_wins_without_firing_short_stop() {
+        let mut b = toggle();
+        b.push(binding(
+            &[Key::MetaRight, Key::ShiftLeft],
+            HotkeyMode::Toggle,
+            Some("long"),
+            false,
+        ));
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 1, up(Key::MetaRight)),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        event(&mut m, &b, t, 2, down(Key::MetaRight));
+        event(&mut m, &b, t, 3, down(Key::ShiftLeft));
+        assert!(event(&mut m, &b, t, 4, up(Key::ShiftLeft)).is_empty());
+        assert_eq!(
+            event(&mut m, &b, t, 5, up(Key::MetaRight)),
+            vec![HotkeyAction::StopRecording {
+                prompt_id: Some("long".into())
+            }]
+        );
+    }
+    #[test]
+    fn raw_custom_stop_and_global_wake_are_independent() {
+        let b = vec![
+            binding(&[Key::MetaRight], HotkeyMode::Toggle, None, true),
+            binding(&[Key::F2], HotkeyMode::Toggle, None, false),
         ];
-        assert!(run_matcher(&toggle, &events).is_empty());
-        let hold = [binding(&[Key::F13], "hold", None)];
-        assert!(run_matcher(&hold, &events).is_empty());
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 1, up(Key::MetaRight)),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        event(&mut m, &b, t, 2, down(Key::MetaRight));
+        assert!(event(&mut m, &b, t, 3, up(Key::MetaRight)).is_empty());
+        event(&mut m, &b, t, 4, down(Key::F2));
+        assert_eq!(
+            event(&mut m, &b, t, 5, up(Key::F2)),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
     }
-
     #[test]
-    fn modifiers_are_always_relevant_events() {
-        let bindings = [binding(&[Key::F], "toggle", None)];
-        assert!(is_relevant_hotkey_event(down(Key::ControlLeft), &bindings));
-        assert!(is_relevant_hotkey_event(up(Key::MetaRight), &bindings));
-        assert!(!is_relevant_hotkey_event(down(Key::G), &bindings));
-        assert!(!is_relevant_hotkey_event(down(Key::CapsLock), &bindings));
+    fn hold_keys_do_not_start_or_stop_during_toggle() {
+        let mut b = toggle();
+        b.extend(hold(&[Key::ControlLeft]));
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        event(&mut m, &b, t, 1, up(Key::MetaRight));
+        event(&mut m, &b, t, 2, down(Key::ControlLeft));
+        assert!(m.tick(t + Duration::from_secs(2)).is_empty());
+        assert!(event(&mut m, &b, t, 2100, up(Key::ControlLeft)).is_empty());
+        assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
     }
-
     #[test]
-    fn suppress_plain_stop_key_only_while_recording() {
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(&[Key::F], "toggle", Some("translate")),
+    fn cancel_and_reconfigure_revoke_pending_timers() {
+        let b = hold(&[Key::ControlLeft]);
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        m.cancel_pending();
+        assert!(m.tick(t + Duration::from_secs(1)).is_empty());
+        event(&mut m, &b, t, 1100, up(Key::ControlLeft));
+        event(&mut m, &b, t, 1200, down(Key::ControlLeft));
+        m.reset_recording();
+        assert!(m.tick(t + Duration::from_secs(3)).is_empty());
+    }
+    #[test]
+    fn recovery_preserves_held_keys_and_never_synthesizes_output() {
+        let b = hold(&[Key::ControlLeft]);
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::ControlLeft));
+        assert!(!m.recover_released(&[]));
+        assert_eq!(
+            m.tick(t + Duration::from_secs(3)),
+            vec![start(HotkeyMode::Hold)]
+        );
+        assert!(m.recover_released(&[Key::ControlLeft]));
+        m.reset_recording();
+        assert!(event(&mut m, &b, t, 3100, up(Key::ControlLeft)).is_empty());
+    }
+    #[test]
+    fn lock_keys_invalidate_without_sticking_the_next_cycle() {
+        let b = toggle();
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        event(&mut m, &b, t, 1, down(Key::CapsLock));
+        assert!(event(&mut m, &b, t, 2, up(Key::MetaRight)).is_empty());
+        event(&mut m, &b, t, 3, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 4, up(Key::MetaRight)),
+            vec![start(HotkeyMode::Toggle)]
+        );
+    }
+    #[test]
+    fn active_toggle_keeps_original_stop_bindings_after_reload() {
+        let b = toggle();
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        event(&mut m, &b, t, 1, up(Key::MetaRight));
+        m.cancel_pending();
+        event(&mut m, &[], t, 2, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &[], t, 3, up(Key::MetaRight)),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
+    }
+    #[test]
+    fn native_modifiers_prevent_stale_callback_from_swallowing_ctrl_f() {
+        let b = vec![
+            binding(&[Key::F13], HotkeyMode::Toggle, None, true),
+            binding(&[Key::F], HotkeyMode::Toggle, Some("p"), false),
         ];
         let mut m = MatcherState::new();
-        // Idle: F is ordinary typing.
-        assert!(!m.should_suppress(Key::F, &bindings));
-
-        run_matcher_from(&mut m, &bindings, &[down(Key::F13), up(Key::F13)]);
-        assert!(m.should_suppress(Key::F, &bindings));
-        assert!(m.should_suppress(Key::F13, &bindings));
-        // Keys outside every binding are never swallowed.
-        assert!(!m.should_suppress(Key::G, &bindings));
-        // Still true once the listener has already seen this keydown.
-        run_matcher_from(&mut m, &bindings, &[down(Key::F)]);
-        assert!(m.should_suppress(Key::F, &bindings));
-
-        // The stop cycle ends the recording; F types again.
-        run_matcher_from(&mut m, &bindings, &[up(Key::F)]);
-        assert!(!m.should_suppress(Key::F, &bindings));
-    }
-
-    #[test]
-    fn suppress_chord_key_requires_rest_of_chord_held() {
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(&[Key::ControlLeft, Key::F], "toggle", Some("translate")),
-        ];
-        let mut m = MatcherState::new();
-        run_matcher_from(&mut m, &bindings, &[down(Key::F13), up(Key::F13)]);
-        // Bare F does not complete Ctrl+F — it is dictation-time typing.
-        assert!(!m.should_suppress(Key::F, &bindings));
-        run_matcher_from(&mut m, &bindings, &[down(Key::ControlLeft)]);
-        assert!(m.should_suppress(Key::F, &bindings));
-    }
-
-    #[test]
-    fn suppress_skips_plain_key_with_foreign_modifier() {
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(&[Key::F], "toggle", Some("translate")),
-        ];
-        let mut m = MatcherState::new();
-        run_matcher_from(&mut m, &bindings, &[down(Key::F13), up(Key::F13)]);
-        run_matcher_from(&mut m, &bindings, &[down(Key::MetaLeft)]);
-        // Cmd+F must reach the focused app.
-        assert!(!m.should_suppress(Key::F, &bindings));
-    }
-
-    #[test]
-    fn swallow_main_key_when_idle() {
-        // The main hotkey's press IS the start command, so it swallows even
-        // before the recording flag rises; a prompt stop key and an unrelated
-        // key stay ordinary typing while idle.
-        let bindings = [
-            binding(&[Key::F13], "toggle", None),
-            binding(&[Key::F], "toggle", Some("translate")),
-        ];
-        let m = MatcherState::new();
-        assert!(m.should_swallow(Key::F13, &bindings));
-        assert!(!m.should_swallow(Key::F, &bindings));
-        assert!(!m.should_swallow(Key::G, &bindings));
-    }
-
-    #[test]
-    fn swallow_never_for_modifiers() {
-        let bindings = [binding(&[Key::ControlLeft, Key::F13], "toggle", None)];
-        let mut m = MatcherState::new();
-        assert!(!m.should_swallow(Key::ControlLeft, &bindings));
-        run_matcher_from(&mut m, &bindings, &[down(Key::ControlLeft)]);
-        // Even mid-chord: swallowing a modifier corrupts the system modifier
-        // state. The chord's non-modifier key still swallows.
-        assert!(!m.should_swallow(Key::ControlLeft, &bindings));
-        assert!(m.should_swallow(Key::F13, &bindings));
-    }
-
-    #[test]
-    fn swallow_main_key_blocked_by_foreign_modifier() {
-        let bindings = [binding(&[Key::F13], "toggle", None)];
-        let mut m = MatcherState::new();
-        run_matcher_from(&mut m, &bindings, &[down(Key::MetaLeft)]);
-        // Cmd+F13 belongs to the foreground app — nothing swallows.
-        assert!(!m.should_swallow(Key::F13, &bindings));
-    }
-
-    #[test]
-    fn swallow_chord_member_alone_is_typing() {
-        // With a Ctrl+F13 main key, a bare F13 neither fires the hotkey nor
-        // swallows — ordinary typing must keep working.
-        let bindings = [binding(&[Key::ControlLeft, Key::F13], "toggle", None)];
-        let mut m = MatcherState::new();
-        assert!(!m.should_swallow(Key::F13, &bindings));
-        // Once the rest of the chord is held, the completing press swallows.
-        run_matcher_from(&mut m, &bindings, &[down(Key::ControlLeft)]);
-        assert!(m.should_swallow(Key::F13, &bindings));
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::F13));
+        event(&mut m, &b, t, 1, up(Key::F13));
+        assert!(m.should_swallow(Key::F, &b, &[]));
+        assert!(!m.should_swallow(Key::F, &b, &[(Key::ControlLeft, true)]));
     }
 }

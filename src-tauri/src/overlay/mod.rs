@@ -196,10 +196,35 @@ pub(crate) fn emit_shortcuts(app: &AppHandle, shortcuts: &[shared::Shortcut]) {
     );
 }
 
-pub(crate) async fn begin_recording_hints(app: &AppHandle, inner: &app_state::AppInner) {
+pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::AppInner) {
     let config = inner.config_manager.load_config().ok();
-    let hotkey = hotkey::current_hotkey_label(&app.state::<Arc<app_state::AppInner>>()).await;
-    let prompts = inner.config_manager.load_prompts();
+    let toggle = *inner.recording_mode.lock().await == hotkey::HotkeyMode::Toggle;
+    let all_prompts = inner.config_manager.load_prompts();
+    let enabled = config
+        .as_ref()
+        .map(|c| hotkey::compile_bindings(&c.app, &all_prompts).0)
+        .unwrap_or_default();
+    let prompts: Vec<_> = all_prompts
+        .into_iter()
+        .filter(|p| {
+            enabled
+                .iter()
+                .any(|b| b.prompt_id.as_deref() == Some(&p.id))
+        })
+        .collect();
+    let hotkey = config
+        .as_ref()
+        .filter(|c| toggle && c.app.hotkey_mode != "hold")
+        .and_then(|c| c.app.voice_hotkey.as_deref().or(c.app.hotkey.as_str()))
+        .filter(|key| {
+            enabled.iter().any(|b| {
+                !b.wake_only
+                    && b.prompt_id.is_none()
+                    && Some(&b.keys) == hotkey::parse_hotkey_string(key).as_ref()
+            })
+        })
+        .map(hotkey::format_hotkey_label)
+        .unwrap_or_default();
     let selected = select_hint_prompt(
         &prompts,
         config
@@ -211,14 +236,14 @@ pub(crate) async fn begin_recording_hints(app: &AppHandle, inner: &app_state::Ap
     if !hotkey.is_empty() {
         shortcuts.push(shared::Shortcut::new(hotkey, "完成"));
     }
-    if let Some(prompt) = selected {
+    if let Some(prompt) = selected.filter(|_| toggle) {
         shortcuts.push(shared::Shortcut::new(
             hotkey::format_hotkey_label(&prompt.hotkey),
             &prompt.title,
         ));
     }
     *inner.recording_hints.lock().await = Some(shared::RecordingHints {
-        toggle: *inner.recording_mode.lock().await == hotkey::HotkeyMode::Toggle,
+        toggle,
         shortcuts,
         last_signal: std::time::Instant::now(),
         shown: false,
