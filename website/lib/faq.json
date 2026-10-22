@@ -1,0 +1,62 @@
+[
+  {
+    "question": {
+      "en": "Which systems are supported?",
+      "zh": "支持哪些系统？"
+    },
+    "answer": {
+      "en": "macOS on Apple Silicon and Intel, and Windows x64.",
+      "zh": "支持 macOS（Apple Silicon 与 Intel）和 Windows x64。"
+    }
+  },
+  {
+    "question": {
+      "en": "Is VoicePaste free?",
+      "zh": "软件免费吗？"
+    },
+    "answer": {
+      "en": "The app is free and open source. Your chosen online transcription or polishing provider may charge separately.",
+      "zh": "软件免费、开源。你选择的在线识别或润色服务可能另行收费。"
+    }
+  },
+  {
+    "question": {
+      "en": "What do I need to set up?",
+      "zh": "使用前需要配置什么？"
+    },
+    "answer": {
+      "en": "Grant the required permissions, connect an online provider or download a local model, then set your hotkey.",
+      "zh": "授予所需权限，配置在线服务或下载本地模型，再设置快捷键即可。"
+    }
+  },
+  {
+    "question": {
+      "en": "Can I use it offline?",
+      "zh": "可以完全离线使用吗？"
+    },
+    "answer": {
+      "en": "Local transcription works offline. For offline polishing, configure a local Ollama model.",
+      "zh": "本地识别可以离线使用；如需离线润色，可以配置本地 Ollama。"
+    }
+  },
+  {
+    "question": {
+      "en": "Where does my data go?",
+      "zh": "音频和文字会发送到哪里？"
+    },
+    "answer": {
+      "en": "Local transcription processes audio on your device. Online transcription or polishing sends the relevant content to your configured provider.",
+      "zh": "本地识别在设备上处理音频。使用在线识别或润色时，相关内容会发送至你配置的服务。"
+    }
+  },
+  {
+    "question": {
+      "en": "Have a question or suggestion?",
+      "zh": "遇到问题或想提建议？"
+    },
+    "answer": {
+      "en": "Check the documentation, or share a bug report or suggestion on GitHub Issues.",
+      "zh": "先看看配置文档，或前往 GitHub Issues 提交问题与建议。"
+    }
+  }
+]

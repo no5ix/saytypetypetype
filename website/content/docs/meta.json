@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "index",
+    "permissions",
+    "hotkeys",
+    "models",
+    "templates",
+    "hotwords",
+    "sounds",
+    "privacy"
+  ],
+  "title": "Documentation"
+}
