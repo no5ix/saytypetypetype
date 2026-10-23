@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - 'website/**'
       - '.claude/**'
       - 'LICENSE'
       - '.env.example'
@@ -14,6 +15,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - 'website/**'
       - '.claude/**'
       - 'LICENSE'
       - '.env.example'
