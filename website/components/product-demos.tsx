@@ -97,11 +97,7 @@ function Pill({
   const confirmed =
     phase === "recording" ? Math.max(0, children.length - 6) : children.length
   return (
-    <div
-      className={`voice-pill voice-pill-${phase}`}
-      data-ui
-      data-phase={phase}
-    >
+    <div className="voice-pill" data-ui data-phase={phase}>
       {phase === "recording" && <Waveform />}
       {phase === "complete" && (
         <Check className="size-4 shrink-0" aria-hidden="true" />
@@ -205,7 +201,7 @@ export function ScenarioDemo({ locale }: { locale: Locale }) {
           <p className="mt-5 max-w-sm">{data[3]}</p>
         </div>
         <div
-          className={`demo-desktop relative flex min-h-[430px] flex-col items-center justify-center gap-7 overflow-hidden p-8 max-sm:min-h-[400px] max-sm:px-5 ${phase === "recording" && clock.running ? "is-running" : ""}`}
+          className={`relative flex min-h-[430px] flex-col items-center justify-center gap-7 overflow-hidden rounded-[24px] bg-muted p-8 max-sm:min-h-[400px] max-sm:px-5 ${phase === "recording" && clock.running ? "is-running" : ""}`}
           data-ui
           data-phase={phase}
         >
@@ -269,12 +265,14 @@ export function SoundDemo({ locale }: { locale: Locale }) {
         data-ui
         data-phase={phase}
       >
-        <div className={`cue-presentation ${cue ? "cue-active" : ""}`}>
+        <div
+          className={`flex w-full items-center justify-center gap-2 ${cue ? "cue-active" : ""}`}
+        >
           <SoundRipple left />
           <Pill phase={phase}>{text}</Pill>
           <SoundRipple />
         </div>
-        <p className="demo-caption">
+        <p className="text-center text-[13px] leading-[1.7] text-muted-foreground">
           {en ? "A cue to start. A cue when done." : "开始有提示，完成有回应。"}
         </p>
       </div>
@@ -304,11 +302,7 @@ export function TemplateChoiceDemo({ locale }: { locale: Locale }) {
         : "润色中…"
       : typed(raw, elapsed, 3000)
   return (
-    <article
-      ref={ref}
-      className="feature-card"
-      id="template-choice-feature"
-    >
+    <article ref={ref} className="feature-card" id="template-choice-feature">
       <h3 className="text-lead">
         {en ? "Speak first. Choose how to write." : "先说，再选怎么表达。"}
       </h3>
@@ -345,7 +339,7 @@ export function TemplateChoiceDemo({ locale }: { locale: Locale }) {
         >
           {text}
         </Pill>
-        <p className="demo-caption">
+        <p className="text-center text-[13px] leading-[1.7] text-muted-foreground">
           {en
             ? "Example keys. Every shortcut is customizable."
             : "按键仅为示例，快捷键均可自定义。"}
@@ -363,11 +357,7 @@ export function StreamDemo({ locale }: { locale: Locale }) {
     ? "Give each thought a little room to become clear."
     : "把脑海里的想法，一点点说清楚。"
   return (
-    <article
-      ref={ref}
-      className="feature-card"
-      id="stream-feature"
-    >
+    <article ref={ref} className="feature-card" id="stream-feature">
       <h3 className="text-lead">
         {en
           ? "Streaming text, as you speak."
@@ -379,7 +369,7 @@ export function StreamDemo({ locale }: { locale: Locale }) {
           : "支持实时预览的识别模型，让转写逐步呈现。"}
       </p>
       <div className="feature-canvas stream-canvas" data-ui>
-        <p className="stream-line">
+        <p className="text-[26px] leading-[1.6] max-lg:text-2xl">
           {clock.running ? typed(text, clock.time, 3200) : text}
         </p>
       </div>
@@ -417,7 +407,7 @@ export function AutoVideo({ locale }: { locale: Locale }) {
   return (
     <video
       ref={ref}
-      className="hero-video reveal mx-auto mt-12 block h-auto w-full max-w-5xl"
+      className="reveal mx-auto mt-12 block aspect-[1116/648] h-auto w-full max-w-5xl rounded-2xl object-contain"
       width={1116}
       height={648}
       poster="/assets/demo-poster.jpg"

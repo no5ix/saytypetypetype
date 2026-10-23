@@ -17,13 +17,13 @@ export function HomeContent({ locale }: { locale: Locale }) {
         >
           <h1
             id="hero-title"
-            className="hero-heading reveal mx-auto max-w-3xl text-muted-foreground"
+            className="reveal mx-auto max-w-3xl text-[clamp(18px,2vw,24px)] text-muted-foreground"
           >
             {locale === "en"
               ? "A free, lightweight, open-source desktop voice tool."
               : "免费、轻量、开源的桌面语音输入工具。"}
           </h1>
-          <p className="hero-tagline reveal mt-5 text-display">
+          <p className="reveal mt-5 font-heading text-display font-semibold tracking-[-0.045em] text-balance">
             {locale === "en" ? (
               <>
                 Think freely.
@@ -34,7 +34,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
               "慢慢想，随意说。"
             )}
           </p>
-          <p className="hero-description reveal mx-auto mt-6 max-w-2xl">
+          <p className="reveal mx-auto mt-6 max-w-2xl leading-[1.8] text-balance max-sm:text-lg">
             {locale === "en"
               ? "VoicePaste turns scattered thoughts into clear writing."
               : "VoicePaste 帮你把零散想法整理成清楚的文字。"}
@@ -46,7 +46,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
               <DownloadButton platform="windows-x64" secondary={true} />
             </div>
             <Link
-              className="more-downloads mt-5 inline-block text-sm"
+              className="mt-5 inline-block text-sm hover:underline hover:underline-offset-4"
               href={`/${locale}/downloads#history-title`}
             >
               <span>
@@ -77,7 +77,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
               )}
             </h2>
             <Link
-              className="text-link mt-6 inline-block"
+              className="mt-6 inline-block text-sm font-[550]"
               href={`/${locale}/docs`}
             >
               <span>
@@ -119,7 +119,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
                   <DownloadButton platform="windows-x64" secondary={true} />
                 </div>
                 <Link
-                  className="more-downloads mt-5 inline-block text-sm"
+                  className="mt-5 inline-block text-sm hover:underline hover:underline-offset-4"
                   href={`/${locale}/downloads#history-title`}
                 >
                   <span>
@@ -134,7 +134,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
             </div>
             <Image
               sizes="(max-width: 768px) 100vw, 600px"
-              className="closing-mark reveal w-full max-w-xs justify-self-end max-sm:max-w-48"
+              className="mark-invert reveal w-full max-w-xs justify-self-end max-sm:max-w-48"
               src="/assets/mark.png"
               width={1024}
               height={1024}

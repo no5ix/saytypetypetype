@@ -32,7 +32,13 @@ export function SiteHeader({ locale }: { locale: Locale }) {
           className="brand inline-flex shrink-0 items-center gap-2"
           href={`/${locale}`}
         >
-          <Image src="/assets/mark.png" width="34" height="34" alt="" />
+          <Image
+            className="mark-invert"
+            src="/assets/mark.png"
+            width="34"
+            height="34"
+            alt=""
+          />
           VoicePaste
         </Link>
         <nav

@@ -121,17 +121,111 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@utility wrap {
+  margin-inline: auto;
+  width: calc(100% - 64px);
+  max-width: 1200px;
+
+  @media (max-width: 640px) {
+    width: calc(100% - 40px);
+  }
+}
+
+@utility section-space {
+  margin-top: 144px;
+
+  @media (max-width: 1023px) {
+    margin-top: 96px;
+  }
+
+  @media (max-width: 640px) {
+    margin-top: 80px;
+  }
+}
+
+@utility text-display {
+  font-size: clamp(44px, 6vw, 80px);
+  line-height: 1.18;
+}
+
+@utility text-head {
+  font-size: clamp(32px, 3.5vw, 48px);
+}
+
+@utility text-lead {
+  font-size: 24px;
+
+  @media (max-width: 640px) {
+    font-size: 22px;
+  }
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+    scroll-padding-top: 28px;
+  }
   body {
     @apply bg-background text-foreground;
   }
-  html {
-    @apply font-sans;
+  :focus-visible {
+    outline: 3px solid var(--primary);
+    outline-offset: 5px;
+  }
+  ::selection {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+}
+
+@layer components {
+  .brand {
+    @apply text-lead;
+    font-family: "Sora Variable", "Sora", sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.035em;
+  }
+  @media (max-width: 640px) {
+    .brand {
+      font-size: 20px;
+    }
+    .brand img {
+      width: 28px;
+      height: 28px;
+    }
+  }
+  .mark-invert {
+    filter: invert(1);
+    mix-blend-mode: multiply;
+  }
+  .dark .mark-invert {
+    filter: none;
+    mix-blend-mode: screen;
+  }
+  .skip-link {
+    @apply fixed top-3 left-4 z-50 bg-foreground px-5 py-3 text-background;
+    translate: 0 -10rem;
+  }
+  .skip-link:focus {
+    translate: 0 0;
   }
 }
 

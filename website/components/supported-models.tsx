@@ -228,7 +228,7 @@ export function SupportedModels({ locale }: { locale: Locale }) {
   const en = locale === "en"
   return (
     <section
-      className="wrap section-space supported-models"
+      className="supported-models wrap section-space"
       aria-labelledby="models-title"
     >
       <h2 id="models-title" className="reveal text-head">
@@ -240,7 +240,10 @@ export function SupportedModels({ locale }: { locale: Locale }) {
           : "在线模型，填写自己申请的 API Key；本地识别与润色，让音频和文本留在设备上。"}
       </p>
       <ModelTables locale={locale} />
-      <Link className="model-guide mt-7" href={`/${locale}/docs/compatibility`}>
+      <Link
+        className="mt-7 inline-block text-sm text-foreground underline underline-offset-[5px]"
+        href={`/${locale}/docs/compatibility`}
+      >
         {en ? "View compatibility list" : "查看完整兼容清单"} ↗
       </Link>
     </section>
