@@ -1,8 +1,33 @@
 ---
-title: "Local processing & privacy"
-description: "Local models process audio on your device. After downloading and configuring a model, transcription can run offline."
+title: "Local processing and privacy"
 ---
 
-Online transcription sends audio to your chosen provider. Online polishing sends the relevant text to that provider.
+## Where audio is recognized
 
-For an entirely local workflow, use both local transcription and local polishing, or disable polishing. The app is free; online services may charge separately.
+- **Local recognition**: After downloading and configuring a model, audio is processed on the device and recognition can work offline.
+- **Online recognition**: Recorded audio is sent to your selected provider. Its policies govern retention and use.
+
+## Where polishing text goes
+
+- **Online language model**: Translation or polishing sends the text and template instructions to the selected service. Hotword enhancement may also include hotwords.
+- **Local language model**: A service such as Ollama running on your device processes the text locally. Check that the configured endpoint really points to your device.
+
+Local recognition does not automatically make later polishing local.
+
+## Keep audio and text processing local
+
+1. Download and enable a local recognition model under Audio Models.
+2. Use plain transcription without online polishing, or configure a language model running on your device.
+3. Once downloads finish, verify the configuration with an actual input.
+
+Network activity for model downloads or update checks is separate from where audio and text are processed.
+
+## Local history and recordings
+
+The app provides local history for reviewing results and retrying failed inputs. App Settings → Keep Recordings controls whether recordings from the most recent month are retained. Failed recordings are still retained for retry when this option is off.
+
+To control retention on your device, review both history and recording settings. Local processing does not mean nothing is saved locally.
+
+## Fees and accounts
+
+VoicePaste is free software. Online recognition and polishing providers may charge separately. API keys are your service credentials; do not share them or include them in public screenshots.

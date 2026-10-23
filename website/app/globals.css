@@ -136,6 +136,11 @@
 }
 
 /* Keep documentation selection readable on the shared page background. */
+#nd-docs-layout {
+  --fd-layout-width: 100%;
+  --color-fd-primary: var(--foreground);
+}
+
 #nd-sidebar,
 #nd-sidebar-mobile {
   --color-fd-primary: var(--foreground);

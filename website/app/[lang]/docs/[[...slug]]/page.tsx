@@ -2,12 +2,7 @@ import { source } from "@/lib/source"
 import { notFound } from "next/navigation"
 import { isLocale } from "@/lib/i18n"
 import { pageMetadata } from "@/lib/seo"
-import {
-  DocsBody,
-  DocsDescription,
-  DocsPage,
-  DocsTitle,
-} from "fumadocs-ui/page"
+import { DocsBody, DocsPage, DocsTitle } from "fumadocs-ui/page"
 import defaultMdxComponents from "fumadocs-ui/mdx"
 type Props = { params: Promise<{ lang: string; slug?: string[] }> }
 export function generateStaticParams() {
@@ -22,7 +17,7 @@ export async function generateMetadata({ params }: Props) {
     lang,
     "/docs" + (slug.length ? "/" + slug.join("/") : ""),
     page.data.title,
-    page.data.description ?? ""
+    page.data.title
   )
 }
 export default async function Page({ params }: Props) {
@@ -31,9 +26,8 @@ export default async function Page({ params }: Props) {
   if (!page) notFound()
   const MDX = page.data.body
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
+    <DocsPage toc={page.data.toc} full={page.data.full} className="max-w-none">
       <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
         <MDX components={defaultMdxComponents} />
       </DocsBody>

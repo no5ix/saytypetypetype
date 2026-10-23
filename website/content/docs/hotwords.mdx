@@ -1,10 +1,39 @@
 ---
-title: "Hotword lists"
-description: "Add names, products and specialist terms in Settings → Hotwords. You can keep several groups and activate one at a time."
+title: "Hotwords"
 ---
 
-Separate multiple entries with commas and press Enter. Use hotword|weight to assign a weight from 1–10; the default is 4.
+## Create and enable a group
 
-Hotword boosting can be Auto, Disabled or Enabled. Restoration recovers your original capitalization, punctuation and formatting after recognition.
+1. Open Settings → Hotwords, create a group, and name it.
+2. Add names, products, or technical terms, such as `VoicePaste`.
+3. Enable the group you want to use. You can save multiple groups, but only one is active at a time.
 
-![VoicePaste settings](/assets/hotwords.jpg)
+## Bulk entry and weights
+
+- Separate terms with English commas and press Enter, for example `VoicePaste, Anthropic, Claude`.
+- Use `term|weight` for an optional weight, such as `Anthropic|8`. The range is 1–10; the default is 4.
+
+![Hotword settings](/assets/hotwords.jpg)
+
+## Enhancement and replacement
+
+Configure these options in the current recognition model's parameters. Enhancement controls whether hotwords are added to polishing requests; it does not disable the recognizer's own hotword support:
+
+- **Enhancement · Auto**: Prefer the model's own hotword support. If unavailable and this input uses polishing, provide the terms to the language model.
+- **Enhancement · Off**: Do not add hotwords to the language model request.
+- **Enhancement · On**: Always add terms when this input uses a language model, even if the recognizer already supports hotwords.
+- **Replacement**: Restore matched terms to their saved form after recognition, including capitalization, punctuation, or special formatting.
+
+## Check the result
+
+Enable the group and test a sentence containing the term. See the [Volcengine guide](/en/docs/api/volcengine#hotwords-and-advanced-parameters) for online hotword tables.
+
+## Common questions
+
+### Why can recognition still be wrong after adding hotwords?
+
+Hotwords are hints, not a guarantee of correct recognition. Check the active group and your model's supported features in the [compatibility list](/en/docs/compatibility).
+
+### Why do the same weights behave differently across models?
+
+How weights affect recognition depends on the model. Results are not identical across providers.

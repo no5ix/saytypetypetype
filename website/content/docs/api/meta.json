@@ -1,0 +1,9 @@
+{
+  "title": "Model API setup",
+  "pages": [
+    "../compatibility",
+    "volcengine",
+    "elevenlabs",
+    "deepseek"
+  ]
+}

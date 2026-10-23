@@ -1,14 +1,46 @@
 ---
-title: "Transcription models"
-description: "Online: choose a provider in Audio Model → Online Models, enter your own credentials, and save. Provider pricing and data policies apply."
+title: "Recognition models"
 ---
 
-Volcengine: activate streaming recognition in the Doubao Speech console, create an API key, then enter the credentials in VoicePaste.
+## Choose online or local recognition
 
-ElevenLabs: create a key in ElevenAPI → API Keys and enable Speech to Text access.
+- **Online models** require a network connection and your own API credentials. Audio is sent to the selected provider.
+- **Local models** require an initial download, then recognize audio on your device. No API key is needed, but they use local memory and processing resources.
 
-Local: select and download a model in Audio Model → Local Models, then enable it. Required VAD and punctuation models are configured alongside it.
+Compare languages, hotwords, and streaming in the [compatibility list](/en/docs/compatibility).
 
-Language, hotword and live-preview support vary by model. Start with the default settings and adjust as needed.
+## Configure an online model
 
-![VoicePaste settings](/assets/models.jpg)
+1. Open Settings → Audio Models → Online Models and select a provider.
+2. Get credentials using the [Volcengine (Doubao)](/en/docs/api/volcengine) or [ElevenLabs](/en/docs/api/elevenlabs) guide.
+3. Enter them in the model card, save, and enable the model.
+4. Record a sentence with a shortcut and check the result.
+
+Fees, quotas, and data processing rules are set by the provider. Start with the default parameters and adjust only after recognition works.
+
+## Download and enable a local model
+
+1. Open Settings → Audio Models → Local Models.
+2. Choose a model for your language and device resources, then download it. Required voice activity detection (VAD) and punctuation components are prepared according to the model configuration.
+3. Wait for the download to finish, then enable the model.
+4. Complete a voice input to verify it works.
+
+![Local recognition model settings](/assets/models.jpg)
+
+## Adjust parameters
+
+Adjust the model's parameter settings only when needed. Keep defaults if unsure. Use Custom Configuration when you need to tune local inference further.
+
+## Common questions
+
+### What if a local model download fails?
+
+Check the connection and free disk space, then retry.
+
+### What if online recognition fails?
+
+Check saved credentials, service activation, account quota, and the connection. For provider-specific checks, see [Volcengine](/en/docs/api/volcengine#common-questions) and [ElevenLabs](/en/docs/api/elevenlabs#common-questions).
+
+### Why does live text look different across models?
+
+Some models stream natively; others use the app's simulated preview. See the [compatibility list](/en/docs/compatibility).

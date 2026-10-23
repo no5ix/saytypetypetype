@@ -4,8 +4,8 @@
     "permissions",
     "hotkeys",
     "models",
-    "compatibility",
     "templates",
+    "api",
     "hotwords",
     "sounds",
     "privacy"

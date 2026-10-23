@@ -1,0 +1,75 @@
+---
+title: "Volcengine (Doubao speech)"
+---
+
+This guide connects Doubao speech recognition to VoicePaste. It is not setup for the Doubao chat app or text-to-speech service.
+
+These screenshots come from the earlier guide. Layouts may differ in the current version; follow the field names. Select an image to open it at full size.
+
+## 1. Activate speech recognition
+
+1. Sign in to [service activation in the Doubao speech console](https://console.volcengine.com/speech/new/setting/activate).
+2. In the current project, find Streaming Speech Recognition 2.0 and follow the activation steps.
+
+   [![Activate Streaming Speech Recognition 2.0 in the Doubao speech console](/assets/docs/doubao-config-new-service.png)](/assets/docs/doubao-config-new-service.png)
+3. Check service status and available quota. The current console determines charges, trial allowance, and any required top-up.
+
+## 2. Create an API key
+
+1. Open [API Key management](https://console.volcengine.com/speech/new/setting/apikeys).
+2. Select the same project where you activated the service, then create or retrieve a key.
+
+   [![Create or view a key in Doubao speech API Key management](/assets/docs/doubao-config-new-key.png)](/assets/docs/doubao-config-new-key.png)
+3. Store it for the next step. Keys and resources from different projects cannot be mixed.
+
+## 3. Configure VoicePaste
+
+1. Open Settings → Audio Models → Online Models and find the Volcengine Doubao streaming recognizer.
+2. Enter the API key in its parameter settings. If legacy credentials already exist and the authentication selector is shown, choose the new mode.
+3. Keep other defaults, save, and enable the model.
+
+   [![Doubao speech API key configuration in an earlier VoicePaste interface](/assets/docs/asr-doubao-new.png)](/assets/docs/asr-doubao-new.png)
+4. Record a sentence into an input field and check the output.
+
+## Existing legacy credentials
+
+Existing accounts can use legacy `App ID` and `Access Token` credentials. New users should use the API key steps above; both credential sets are not required.
+
+1. In the [legacy Doubao speech console](https://console.volcengine.com/speech/app), create or select an app and choose Doubao Streaming ASR Model 2.0 (Hourly) as its capability.
+
+   [![Create an app and select speech recognition in the legacy Doubao console](/assets/docs/api-step1.png)](/assets/docs/api-step1.png)
+
+2. Open the model, select the app, activate the service, and retrieve its App ID and Access Token.
+
+   [![View the selected app and authentication fields in the legacy Doubao console](/assets/docs/api-step2.png)](/assets/docs/api-step2.png)
+
+3. Choose legacy authentication in VoicePaste's model parameters, enter the corresponding credentials, and save.
+
+   [![App ID and Access Token fields in VoicePaste legacy authentication settings](/assets/docs/asr-doubao-old.png)](/assets/docs/asr-doubao-old.png)
+
+## Hotwords and advanced parameters
+
+- **Local hotwords**: Create and enable a group under [Hotwords](/en/docs/hotwords).
+- **Online hotword table**: Create one in [Hotword management](https://console.volcengine.com/speech/new/hot-word), then enter its ID in the model's hotword table field.
+- **Online replacement table**: Create one in [Replacement management](https://console.volcengine.com/speech/new/correct-word), then enter its ID in the replacement table field.
+- **Other parameters**: Adjust only after basic recognition works. Language and dialect support varies by API mode.
+
+## Common questions
+
+### What if the service is not active?
+
+Return to service activation and check that Streaming Speech Recognition 2.0 is active in the current project.
+
+### What if the API key belongs to a different project?
+
+Check that the key and recognition service belong to the same project. Keys and resources from different projects cannot be mixed.
+
+### What if authentication fails?
+
+Check the complete credentials and matching authentication mode: an API key for the new mode, or App ID and Access Token for legacy mode. Do not include a full key in screenshots or error reports.
+
+### What if quota is insufficient or the connection fails?
+
+Check account quota and service usage in the console, then check connectivity to the recognition service.
+
+Official references: [Console guide](https://docs.volcengine.com/docs/DoubaoVoice/console-guidance?lang=zh) · [Speech recognition API](https://docs.volcengine.com/docs/DoubaoVoice/LargemodelstreamingautomaticspeechrecognitionAPI?lang=zh)

@@ -4,6 +4,7 @@ import type { Locale } from "@/lib/i18n"
 const asrModels = [
   {
     name: ["豆包流式识别 2.0", "Doubao Streaming ASR 2.0"],
+    guide: "api/volcengine",
     online: true,
     feature: [
       "中英混说；方言支持随接口模式而异",
@@ -14,6 +15,7 @@ const asrModels = [
   },
   {
     name: ["ElevenLabs Scribe v2 Realtime", "ElevenLabs Scribe v2 Realtime"],
+    guide: "api/elevenlabs",
     online: true,
     feature: [
       "高精度多语言转写，自动识别语言",
@@ -24,6 +26,7 @@ const asrModels = [
   },
   {
     name: ["SenseVoice INT8", "SenseVoice INT8"],
+    guide: "models",
     online: false,
     feature: [
       "轻量量化模型，支持中英日韩粤",
@@ -34,6 +37,7 @@ const asrModels = [
   },
   {
     name: ["FunASR-Nano INT8", "FunASR-Nano INT8"],
+    guide: "models",
     online: false,
     feature: [
       "中英日识别，支持中文方言与歌词",
@@ -44,6 +48,7 @@ const asrModels = [
   },
   {
     name: ["Zipformer 中英双语", "Zipformer Chinese–English"],
+    guide: "models",
     online: false,
     feature: [
       "原生流式，中英混说，低延迟",
@@ -54,6 +59,7 @@ const asrModels = [
   },
   {
     name: ["Zipformer 中文 INT8", "Zipformer Chinese INT8"],
+    guide: "models",
     online: false,
     feature: [
       "原生流式，轻量中文量化模型",
@@ -64,6 +70,7 @@ const asrModels = [
   },
   {
     name: ["Qwen3-ASR 0.6B INT8", "Qwen3-ASR 0.6B INT8"],
+    guide: "models",
     online: false,
     feature: [
       "多语言、中文方言，支持歌词识别",
@@ -110,6 +117,7 @@ export function ModelTables({
                 <>
                   <th scope="col">{en ? "Native streaming" : "原生流式"}</th>
                   <th scope="col">{en ? "Hotwords" : "热词"}</th>
+                  <th scope="col">{en ? "Setup guide" : "配置指南"}</th>
                 </>
               )}
             </tr>
@@ -140,6 +148,17 @@ export function ModelTables({
                           ? "No"
                           : "不支持"}
                     </td>
+                    <td>
+                      <Link href={`/${locale}/docs/${model.guide}`}>
+                        {model.online
+                          ? en
+                            ? "Get API key"
+                            : "申请 API Key"
+                          : en
+                            ? "Local setup"
+                            : "本地配置"}
+                      </Link>
+                    </td>
                   </>
                 )}
               </tr>
@@ -156,6 +175,9 @@ export function ModelTables({
                 {en ? "Service / runtime" : "服务 / 运行工具"}
               </th>
               <th scope="col">{en ? "Runs" : "运行"}</th>
+              {detailed && (
+                <th scope="col">{en ? "Setup guide" : "配置指南"}</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -163,6 +185,21 @@ export function ModelTables({
               <tr key={service.name}>
                 <th scope="row">{service.name}</th>
                 <td>{mode(service.online)}</td>
+                {detailed && (
+                  <td>
+                    <Link
+                      href={`/${locale}/docs/${service.name === "DeepSeek" ? "api/deepseek" : "templates"}`}
+                    >
+                      {service.name === "DeepSeek"
+                        ? en
+                          ? "Get API key"
+                          : "申请 API Key"
+                        : en
+                          ? "Configure service"
+                          : "配置服务"}
+                    </Link>
+                  </td>
+                )}
               </tr>
             ))}
             {detailed && (
@@ -173,6 +210,11 @@ export function ModelTables({
                     : "自定义 OpenAI 兼容服务"}
                 </th>
                 <td>{en ? "Online / Local" : "在线 / 本地"}</td>
+                <td>
+                  <Link href={`/${locale}/docs/templates`}>
+                    {en ? "Configure service" : "配置服务"}
+                  </Link>
+                </td>
               </tr>
             )}
           </tbody>
