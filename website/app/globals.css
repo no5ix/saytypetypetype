@@ -35,7 +35,7 @@
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
   --radius: 0.875rem;
-  --sidebar: oklch(0.988 0.003 106.5);
+  --sidebar: var(--background);
   --sidebar-foreground: oklch(0.153 0.006 107.1);
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -69,7 +69,7 @@
   --chart-3: oklch(0.646 0.222 41.116);
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
-  --sidebar: oklch(0.228 0.013 107.4);
+  --sidebar: var(--background);
   --sidebar-foreground: oklch(0.988 0.003 106.5);
   --sidebar-primary: oklch(0.705 0.213 47.604);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -133,4 +133,10 @@
   html {
     @apply font-sans;
   }
+}
+
+/* Keep documentation selection readable on the shared page background. */
+#nd-sidebar,
+#nd-sidebar-mobile {
+  --color-fd-primary: var(--foreground);
 }

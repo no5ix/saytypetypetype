@@ -42,7 +42,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
             target="_blank"
             rel="noreferrer"
           >
-            MIT License ↗
+            {en ? "License" : "开源协议"} ↗
           </a>
         </nav>
       </div>

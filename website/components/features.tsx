@@ -1,67 +1,12 @@
 import Image from "next/image"
-import Link from "next/link"
 import type { Locale } from "@/lib/i18n"
-import { SoundDemo, StreamDemo, LanguageDemo } from "./product-demos"
+import {
+  StreamDemo,
+  LanguageDemo,
+  SoundDemo,
+  TemplateChoiceDemo,
+} from "./product-demos"
 
-function ModelChoices({ locale }: { locale: Locale }) {
-  const en = locale === "en"
-  const groups = [
-    {
-      title: en ? "Online · Your API key" : "在线 · 自带 API Key",
-      brands: [
-        { name: "ElevenLabs", icon: "elevenlabs" },
-        { name: "OpenAI", icon: "openai" },
-      ],
-    },
-    {
-      title: en ? "Local · On your device" : "本地 · 在设备上运行",
-      brands: [
-        { name: "Qwen", icon: "qwen" },
-        { name: "Ollama", icon: "ollama" },
-      ],
-    },
-  ]
-  return (
-    <article className="feature-card feature-wide">
-      <div className="feature-copy">
-        <h3 className="text-lead">
-          {en ? "Your models. Your choice." : "模型，由你选择。"}
-        </h3>
-        <p className="mt-4">
-          {en
-            ? "Bring your own API key, or keep transcription and polishing on your device."
-            : "在线自带 API Key，也可以选择本地识别与润色。"}
-        </p>
-      </div>
-      <div className="feature-canvas model-canvas">
-        <div className="model-groups">
-          {groups.map((group) => (
-            <div key={group.title} className="model-group">
-              <p className="model-group-title">{group.title}</p>
-              <div className="model-brands">
-                {group.brands.map((brand) => (
-                  <div key={brand.name} className="model-brand">
-                    <Image
-                      src={`/assets/brands/${brand.icon}.svg`}
-                      width={40}
-                      height={40}
-                      alt=""
-                      className="model-brand-icon"
-                    />
-                    <span>{brand.name}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <Link href={`/${locale}/docs/models`} className="model-guide">
-          {en ? "Explore model settings" : "查看模型配置"} ↗
-        </Link>
-      </div>
-    </article>
-  )
-}
 function IllustratedFeature({
   locale,
   type,
@@ -93,21 +38,41 @@ function IllustratedFeature({
       ? "Personal vocabulary illustrated with VoicePaste, Ollama and macOS"
       : "以 VoicePaste、Ollama 和 macOS 展示自定义词汇的概念配图"
   return (
-    <article className="feature-card feature-wide">
+    <article className="feature-card">
       <div className="feature-copy">
         <h3 className="text-lead">{title}</h3>
         <p className="mt-4">{description}</p>
       </div>
-      <div className="feature-canvas illustration-canvas">
+      <div
+        className={`feature-canvas illustration-canvas ${template ? "template-illustration" : ""}`}
+      >
         <Image
           src={`/assets/illustrations/${type}.png`}
           width={1536}
           height={1024}
           alt={alt}
-          sizes="(max-width: 767px) calc(100vw - 40px), (max-width: 1279px) 62vw, 760px"
+          sizes="(max-width: 640px) calc(100vw - 88px), 560px"
           className="feature-illustration"
         />
+        {template && (
+          <div className="template-keys" aria-hidden="true">
+            {[1, 2, 3].map((key) => (
+              <span key={key}>
+                <kbd>Fn</kbd>
+                <span>+</span>
+                <kbd>{key}</kbd>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
+      {template && (
+        <p className="mt-4 text-sm text-muted-foreground">
+          {en
+            ? "Example shortcuts. Set your own keys for each template."
+            : "快捷键仅为示例，每个模板都可自定义。"}
+        </p>
+      )}
     </article>
   )
 }
@@ -121,27 +86,17 @@ export function Features({ locale }: { locale: Locale }) {
     >
       <div className="wrap">
         <h2 id="features-title" className="reveal text-head">
-          {en ? (
-            <>
-              Keep your train
-              <br />
-              of thought.
-            </>
-          ) : (
-            <>
-              思路不用停，
-              <br />
-              表达慢慢来。
-            </>
-          )}
+          {en ? "Keep your train of thought." : "思路不用停，表达慢慢来。"}
         </h2>
         <div className="feature-grid">
-          <ModelChoices locale={locale} />
+          <TemplateChoiceDemo locale={locale} />
           <SoundDemo locale={locale} />
           <StreamDemo locale={locale} />
+          <LanguageDemo locale={locale} />
+        </div>
+        <div className="feature-pair">
           <IllustratedFeature locale={locale} type="templates" />
           <IllustratedFeature locale={locale} type="hotwords" />
-          <LanguageDemo locale={locale} />
         </div>
       </div>
     </section>

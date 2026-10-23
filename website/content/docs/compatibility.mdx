@@ -1,0 +1,39 @@
+---
+title: "Model compatibility"
+description: "Browse built-in recognition models, online polishing services and local runtimes."
+---
+
+import { ModelTables } from "@/components/supported-models"
+
+## Recognition and polishing
+
+These tables reflect the built-in configuration. Each recognition model has its own row. Polishing services and local runtimes are listed individually; choose a specific language model within your service. An integration listed here does not mean every account, model version and parameter combination has been tested live.
+
+<ModelTables locale="en" detailed />
+
+## Understanding recognition features
+
+- **Native streaming** means the current VoicePaste integration receives ongoing recognition results. Both Zipformer variants stream locally.
+- **Simulated preview** is available for SenseVoice, FunASR-Nano and Qwen3-ASR through the app’s offline recognizer integration. It is distinct from native streaming.
+- **Hotwords** require support from both the model and its configuration. Enable the relevant keyterm setting for ElevenLabs. VAD and punctuation models are supporting components, rather than separate transcription services.
+- **Doubao dialects** depend on the API mode and model version. The official documentation distinguishes bidirectional streaming from streaming input; capabilities vary between modes. Configure the service using its API documentation.
+
+## Online and local
+
+Online recognition sends audio to your chosen service. Online polishing sends the text to be processed. To keep both on your device, use local recognition with local polishing, or turn polishing off.
+
+Ollama runs local models; install a model and enable its compatible endpoint. SiliconFlow and OpenRouter are model platforms: use your own API key and a model name provided by the platform. Custom services must expose an OpenAI-compatible Chat Completions endpoint; arbitrary APIs are not interchangeable. The Anthropic preset uses its compatibility endpoint and requires supported models and parameters.
+
+[Configure recognition](/en/docs/models) · [Configure polishing and templates](/en/docs/templates)
+
+## Official capability references
+
+These references describe the upstream models and APIs. VoicePaste’s current integration may expose a subset of those capabilities.
+
+- [Doubao speech models and API modes](https://docs.volcengine.com/docs/DoubaoVoice/model-list?lang=zh)
+- [ElevenLabs Scribe v2 Realtime](https://elevenlabs.io/blog/introducing-scribe-v2-realtime)
+- [SenseVoice](https://k2-fsa.github.io/sherpa/onnx/sense-voice/index.html)
+- [FunASR-Nano](https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512)
+- [Streaming Zipformer models](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-transducer/zipformer-transducer-models.html)
+- [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)
+- [Anthropic compatibility endpoint](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)

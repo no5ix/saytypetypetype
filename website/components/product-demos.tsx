@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useRef, useState, type RefObject } from "react"
-import { Volume2, Check } from "lucide-react"
+import { Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import type { Locale } from "@/lib/i18n"
 import { examples } from "@/lib/scenarios"
@@ -73,6 +73,20 @@ function Waveform() {
     </span>
   )
 }
+function SoundRipple({ left = false }: { left?: boolean }) {
+  return (
+    <svg
+      className={`sound-ripple ${left ? "sound-ripple-left" : ""}`}
+      viewBox="0 0 32 56"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="M4 20 A12 12 0 0 1 4 36" />
+      <path d="M11 12 A24 24 0 0 1 11 44" />
+      <path d="M18 4 A36 36 0 0 1 18 52" />
+    </svg>
+  )
+}
 function Pill({
   children,
   phase = "recording",
@@ -117,12 +131,7 @@ export function ScenarioDemo({ locale }: { locale: Locale }) {
           ? "processing"
           : "complete"
   const en = locale === "en"
-  const output =
-    phase === "complete"
-      ? clock.reduced || !clock.running
-        ? data[5]
-        : typed(data[5], elapsed - 4800, 1500)
-      : ""
+  const output = phase === "complete" ? data[5] : ""
   const transcript =
     phase === "recording"
       ? typed(data[4], elapsed, 3200)
@@ -142,19 +151,7 @@ export function ScenarioDemo({ locale }: { locale: Locale }) {
     >
       <div className="mb-10 flex flex-wrap items-end justify-between gap-8">
         <h2 id="scenarios-title" className="reveal text-head">
-          {en ? (
-            <>
-              One thought.
-              <br />
-              Many ways to write.
-            </>
-          ) : (
-            <>
-              一句口述，
-              <br />
-              多种表达。
-            </>
-          )}
+          {en ? "One thought. Many ways to write." : "一句口述，多种表达。"}
         </h2>
         <div
           className="flex flex-wrap gap-2"
@@ -236,46 +233,29 @@ export function ScenarioDemo({ locale }: { locale: Locale }) {
 export function SoundDemo({ locale }: { locale: Locale }) {
   const ref = useRef<HTMLDivElement>(null)
   const clock = useDemoClock(ref, 7000)
-  const [enabled, setEnabled] = useState(false)
   const en = locale === "en"
-  const phase = clock.time < 3500 ? "start" : "end"
-  const audio = useRef<{
-    start: HTMLAudioElement
-    end: HTMLAudioElement
-  } | null>(null)
-  useEffect(() => {
-    audio.current = {
-      start: new Audio("/assets/start.mp3"),
-      end: new Audio("/assets/end.mp3"),
-    }
-    return () => {
-      Object.values(audio.current ?? {}).forEach((cue) => {
-        cue.pause()
-        cue.currentTime = 0
-      })
-      audio.current = null
-    }
-  }, [])
-  useEffect(() => {
-    const cues = audio.current
-    if (!cues) return
-    Object.values(cues).forEach((cue) => {
-      cue.pause()
-      cue.currentTime = 0
-    })
-    if (enabled && clock.running)
-      cues[phase].play().catch(() => setEnabled(false))
-    return () =>
-      Object.values(cues).forEach((cue) => {
-        cue.pause()
-      })
-  }, [enabled, phase, clock.running])
+  const phase = !clock.running
+    ? "complete"
+    : clock.time < 1600
+      ? "processing"
+      : clock.time < 4600
+        ? "recording"
+        : "complete"
+  const text =
+    phase === "processing"
+      ? en
+        ? "Preparing…"
+        : "准备中"
+      : phase === "recording"
+        ? en
+          ? "Recording…"
+          : "正在聆听"
+        : en
+          ? "Text delivered"
+          : "输入完成"
+  const cue = phase !== "recording"
   return (
-    <article
-      ref={ref}
-      className={`feature-card ${clock.running ? "is-running" : ""}`}
-      id="sound-feature"
-    >
+    <article ref={ref} className="feature-card" id="sound-feature">
       <h3 className="text-lead">
         {en ? "Hear when it happens." : "每次输入，都有回应。"}
       </h3>
@@ -284,45 +264,97 @@ export function SoundDemo({ locale }: { locale: Locale }) {
           ? "A clear sound when recording starts and your text is ready."
           : "开始录音、完成输入，用声音给你明确回应。"}
       </p>
-      <div className="sound-demo feature-canvas sound-canvas" data-ui>
-        <div className="flex items-center justify-between gap-4">
-          <span className="sound-phase">
-            {phase === "start"
-              ? en
-                ? "Recording started"
-                : "开始录音"
-              : en
-                ? "Text delivered"
-                : "输入完成"}
-          </span>
-          <Button
-            variant="ghost"
-            className="min-h-11"
-            aria-pressed={enabled}
-            onClick={() => setEnabled(!enabled)}
-          >
-            <Volume2 />
-            {enabled
-              ? en
-                ? "Mute sound"
-                : "关闭声音"
-              : en
-                ? "Enable sound"
-                : "开启声音"}
-          </Button>
+      <div
+        className={`feature-canvas cue-canvas ${clock.running ? "is-running" : ""}`}
+        data-ui
+        data-phase={phase}
+      >
+        <div className={`cue-presentation ${cue ? "cue-active" : ""}`}>
+          <SoundRipple left />
+          <Pill phase={phase}>{text}</Pill>
+          <SoundRipple />
         </div>
-        <div
-          className="sound-timeline mt-6 flex items-center gap-2"
-          aria-hidden="true"
-        >
-          {Array.from({ length: 24 }, (_, i) => (
-            <i key={i} />
-          ))}
-        </div>
+        <p className="demo-caption">
+          {en ? "A cue to start. A cue when done." : "开始有提示，完成有回应。"}
+        </p>
       </div>
     </article>
   )
 }
+
+export function TemplateChoiceDemo({ locale }: { locale: Locale }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const clock = useDemoClock(ref, 10000)
+  const en = locale === "en"
+  const elapsed = clock.time
+  const complete = !clock.running || elapsed >= 7600
+  const choosing = clock.running && elapsed >= 6000 && elapsed < 6600
+  const processing = clock.running && elapsed >= 6600 && elapsed < 7600
+  const showHints = !clock.running || elapsed >= 5000
+  const raw = en
+    ? "The designs are ready, let's review them tomorrow."
+    : "设计稿好了，明天一起过一下吧。"
+  const text = complete
+    ? en
+      ? "The designs are ready. Let’s review them tomorrow."
+      : "设计稿已完成，邀请大家明天一起评审。"
+    : processing
+      ? en
+        ? "Polishing…"
+        : "润色中…"
+      : typed(raw, elapsed, 3000)
+  return (
+    <article
+      ref={ref}
+      className="feature-card feature-wide"
+      id="template-choice-feature"
+    >
+      <h3 className="text-lead">
+        {en ? "Speak first. Choose how to write." : "先说，再选怎么表达。"}
+      </h3>
+      <p className="mt-4">
+        {en
+          ? "Get your thoughts out, then finish with the original text or a translation or polishing template."
+          : "先把想法说出来，说完再决定直接输入，还是用模板翻译、润色。"}
+      </p>
+      <div
+        className={`feature-canvas choice-canvas ${clock.running && !processing && !complete ? "is-running" : ""}`}
+        data-ui
+      >
+        <div
+          className={`demo-shortcuts ${showHints ? "shortcuts-visible" : ""}`}
+          aria-hidden="true"
+        >
+          <span>
+            <kbd>Esc</kbd>
+            {en ? "Cancel" : "取消"}
+          </span>
+          <span>
+            <kbd>Fn</kbd>
+            {en ? "Finish" : "完成"}
+          </span>
+          <span className={choosing ? "shortcut-pressed" : ""}>
+            <kbd>Fn + 1</kbd>
+            {en ? "Polish" : "润色"}
+          </span>
+        </div>
+        <Pill
+          phase={
+            complete ? "complete" : processing ? "processing" : "recording"
+          }
+        >
+          {text}
+        </Pill>
+        <p className="demo-caption">
+          {en
+            ? "Example keys. Every shortcut is customizable."
+            : "按键仅为示例，快捷键均可自定义。"}
+        </p>
+      </div>
+    </article>
+  )
+}
+
 export function StreamDemo({ locale }: { locale: Locale }) {
   const ref = useRef<HTMLDivElement>(null)
   const clock = useDemoClock(ref, 6500)
@@ -331,14 +363,20 @@ export function StreamDemo({ locale }: { locale: Locale }) {
     ? "Give each thought a little room to become clear."
     : "把脑海里的想法，一点点说清楚。"
   return (
-    <article ref={ref} className="feature-card" id="stream-feature">
+    <article
+      ref={ref}
+      className="feature-card feature-wide"
+      id="stream-feature"
+    >
       <h3 className="text-lead">
-        {en ? "See it as you say it." : "说到哪里，看到哪里。"}
+        {en
+          ? "Streaming text, as you speak."
+          : "流式输出，说到哪里，看到哪里。"}
       </h3>
       <p className="mt-4">
         {en
-          ? "Follow your words as they appear. Stop whenever you need to rethink."
-          : "转写逐步呈现，随时确认、及时停止。"}
+          ? "With a model that supports live preview, your transcript appears as you speak."
+          : "支持实时预览的识别模型，让转写逐步呈现。"}
       </p>
       <div className="stream-demo feature-canvas stream-canvas" data-ui>
         <p className="stream-line">

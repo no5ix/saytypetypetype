@@ -2,6 +2,7 @@ import Link from "next/link"
 import Image from "next/image"
 import { FAQ } from "./faq"
 import { Features } from "./features"
+import { SupportedModels } from "./supported-models"
 import type { Locale } from "@/lib/i18n"
 import { DownloadButton } from "./download-button"
 import { ScenarioDemo, AutoVideo, RevealObserver } from "./product-demos"
@@ -14,31 +15,29 @@ export function HomeContent({ locale }: { locale: Locale }) {
           className="hero wrap pt-12 text-center max-sm:pt-8"
           aria-labelledby="hero-title"
         >
-          <h1 id="hero-title" className="reveal text-display">
-            {locale === "en" ? (
-              <>
-                {"Think freely."}
-                <br />
-                {"Speak naturally."}
-              </>
-            ) : (
-              <>{"慢慢想，随意说。"}</>
-            )}
+          <h1
+            id="hero-title"
+            className="hero-heading reveal mx-auto max-w-3xl text-muted-foreground"
+          >
+            {locale === "en"
+              ? "A free, lightweight, open-source desktop voice tool."
+              : "免费、轻量、开源的桌面语音输入工具。"}
           </h1>
-          <p className="hero-description reveal mx-auto mt-8 max-w-2xl">
+          <p className="hero-tagline reveal mt-5 text-display">
             {locale === "en" ? (
               <>
-                {
-                  "Turn scattered thoughts into clear writing. A free, lightweight, open-source desktop voice tool."
-                }
+                Think freely.
+                <br />
+                Speak naturally.
               </>
             ) : (
-              <>
-                {
-                  "VoicePaste 帮你把零散想法整理成清楚的文字。免费、轻量、开源的桌面语音输入工具。"
-                }
-              </>
+              "慢慢想，随意说。"
             )}
+          </p>
+          <p className="hero-description reveal mx-auto mt-6 max-w-2xl">
+            {locale === "en"
+              ? "VoicePaste turns scattered thoughts into clear writing."
+              : "VoicePaste 帮你把零散想法整理成清楚的文字。"}
           </p>
           <div className="reveal mt-8 flex flex-col items-center">
             <div className="flex flex-wrap gap-3">
@@ -48,13 +47,13 @@ export function HomeContent({ locale }: { locale: Locale }) {
             </div>
             <Link
               className="more-downloads mt-5 inline-block text-sm"
-              href={`/${locale}/downloads`}
+              href={`/${locale}/downloads#history-title`}
             >
               <span>
                 {locale === "en" ? (
-                  <>{"More versions →"}</>
+                  <>{"Previous releases →"}</>
                 ) : (
-                  <>{"更多版本 →"}</>
+                  <>{"历史版本 →"}</>
                 )}
               </span>
             </Link>
@@ -62,6 +61,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
           <AutoVideo locale={locale} />
         </section>
         <ScenarioDemo locale={locale} />
+        <SupportedModels locale={locale} />
         <Features locale={locale} />
         <section
           id="faq"
@@ -93,7 +93,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
         </section>
         <section
           id="download"
-          className="section-space bg-demo-dark py-20 text-on-dark"
+          className="section-space bg-muted py-20 text-foreground"
         >
           <div className="wrap grid items-center gap-10 md:grid-cols-[1.3fr_.7fr]">
             <div>
@@ -120,13 +120,13 @@ export function HomeContent({ locale }: { locale: Locale }) {
                 </div>
                 <Link
                   className="more-downloads mt-5 inline-block text-sm"
-                  href={`/${locale}/downloads`}
+                  href={`/${locale}/downloads#history-title`}
                 >
                   <span>
                     {locale === "en" ? (
-                      <>{"More versions →"}</>
+                      <>{"Previous releases →"}</>
                     ) : (
-                      <>{"更多版本 →"}</>
+                      <>{"历史版本 →"}</>
                     )}
                   </span>
                 </Link>
