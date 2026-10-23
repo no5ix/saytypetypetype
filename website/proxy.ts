@@ -7,7 +7,7 @@ export function proxy(request: NextRequest) {
   )
   const destination = request.nextUrl.clone()
   destination.pathname = `/${locale}${destination.pathname === "/" ? "" : destination.pathname}`
-  const response = NextResponse.redirect(destination, 307)
+  const response = NextResponse.redirect(destination, 308)
   response.headers.set("Vary", "Accept-Language, Cookie")
   response.headers.set("Cache-Control", "private, no-store")
   return response
