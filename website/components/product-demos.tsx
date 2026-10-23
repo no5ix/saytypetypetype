@@ -407,12 +407,13 @@ export function AutoVideo({ locale }: { locale: Locale }) {
   return (
     <video
       ref={ref}
-      className="reveal mx-auto mt-12 block aspect-[1116/648] h-auto w-full max-w-5xl rounded-2xl object-contain"
-      width={1116}
-      height={648}
+      className="reveal mx-auto mt-12 block aspect-video h-auto w-full max-w-5xl rounded-2xl object-contain"
+      width={1920}
+      height={1080}
       poster="/assets/demo-poster.jpg"
       preload="metadata"
       muted
+      controls
       loop
       playsInline
       aria-label={
