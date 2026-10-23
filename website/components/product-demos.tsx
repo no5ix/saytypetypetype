@@ -306,7 +306,7 @@ export function TemplateChoiceDemo({ locale }: { locale: Locale }) {
   return (
     <article
       ref={ref}
-      className="feature-card feature-wide"
+      className="feature-card"
       id="template-choice-feature"
     >
       <h3 className="text-lead">
@@ -365,7 +365,7 @@ export function StreamDemo({ locale }: { locale: Locale }) {
   return (
     <article
       ref={ref}
-      className="feature-card feature-wide"
+      className="feature-card"
       id="stream-feature"
     >
       <h3 className="text-lead">

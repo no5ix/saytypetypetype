@@ -337,12 +337,13 @@ button:active {
 }
 
 .features-section {
-  padding-block: 64px;
+  background: color-mix(in srgb, var(--foreground) 5%, var(--background));
+  padding-block: 72px;
 }
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 28px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
   margin-top: 56px;
 }
 .feature-card {
@@ -365,9 +366,6 @@ button:active {
   line-height: 1.65;
   max-width: 42em;
 }
-.feature-wide {
-  grid-column: span 2;
-}
 .feature-canvas {
   margin-top: 28px;
   position: relative;
@@ -388,11 +386,11 @@ button:active {
 .feature-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 28px;
-  margin-top: 28px;
+  gap: 24px;
+  margin-top: 24px;
 }
 .illustration-canvas {
-  aspect-ratio: 3/2;
+  aspect-ratio: 16 / 10;
   min-height: 0;
   flex: initial;
   background: transparent;
@@ -451,15 +449,12 @@ button:active {
 }
 @media (max-width: 1023px) {
   .features-section {
-    padding-block: 20px;
+    padding-block: 32px;
   }
   .feature-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
     margin-top: 36px;
-  }
-  .feature-wide {
-    grid-column: auto;
   }
   .feature-card {
     padding: 24px;
