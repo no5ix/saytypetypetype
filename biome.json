@@ -58,7 +58,8 @@
       "!**/out",
       "!**/dist",
       "!**/src-tauri/target",
-      "!**/src-tauri/gen"
+      "!**/src-tauri/gen",
+      "!website"
     ],
     "ignoreUnknown": true
   },
