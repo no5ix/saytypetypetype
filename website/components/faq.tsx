@@ -1,4 +1,5 @@
 "use client"
+import Link from "next/link"
 import {
   Accordion,
   AccordionItem,
@@ -21,6 +22,18 @@ export function FAQ({ locale }: { locale: Locale }) {
           </AccordionTrigger>
           <AccordionContent className="pb-6 text-base leading-relaxed">
             {item.answer[locale]}
+            {item.link && (
+              <Link
+                href={
+                  item.link.path.startsWith("/")
+                    ? `/${locale}${item.link.path}`
+                    : item.link.path
+                }
+                className="mt-3 block w-fit underline underline-offset-4"
+              >
+                {item.link.label[locale]}
+              </Link>
+            )}
           </AccordionContent>
         </AccordionItem>
       ))}

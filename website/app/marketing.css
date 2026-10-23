@@ -395,6 +395,7 @@ button:active {
   aspect-ratio: 3/2;
   min-height: 0;
   flex: initial;
+  background: transparent;
 }
 .feature-illustration {
   display: block;
@@ -481,8 +482,6 @@ button:active {
 @media (max-width: 640px) {
   .feature-pair {
     grid-template-columns: 1fr;
-  }
-  .feature-pair {
     gap: 24px;
     margin-top: 24px;
   }

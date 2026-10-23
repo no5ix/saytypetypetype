@@ -43,11 +43,9 @@ function IllustratedFeature({
         <h3 className="text-lead">{title}</h3>
         <p className="mt-4">{description}</p>
       </div>
-      <div
-        className={`feature-canvas illustration-canvas ${template ? "template-illustration" : ""}`}
-      >
+      <div className="feature-canvas illustration-canvas">
         <Image
-          src={`/assets/illustrations/${type}.png`}
+          src={`/assets/illustrations/${type}-transparent.png`}
           width={1536}
           height={1024}
           alt={alt}

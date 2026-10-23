@@ -378,7 +378,7 @@ export function StreamDemo({ locale }: { locale: Locale }) {
           ? "With a model that supports live preview, your transcript appears as you speak."
           : "支持实时预览的识别模型，让转写逐步呈现。"}
       </p>
-      <div className="stream-demo feature-canvas stream-canvas" data-ui>
+      <div className="feature-canvas stream-canvas" data-ui>
         <p className="stream-line">
           {clock.running ? typed(text, clock.time, 3200) : text}
         </p>

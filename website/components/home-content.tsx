@@ -12,7 +12,7 @@ export function HomeContent({ locale }: { locale: Locale }) {
       <RevealObserver />
       <main id="main">
         <section
-          className="hero wrap pt-12 text-center max-sm:pt-8"
+          className="wrap pt-12 text-center max-sm:pt-8"
           aria-labelledby="hero-title"
         >
           <h1
