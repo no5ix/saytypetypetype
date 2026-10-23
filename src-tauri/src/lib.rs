@@ -24,7 +24,15 @@ use tauri::{image::Image, tray::TrayIconBuilder, App, Listener, Manager, RunEven
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Tao's default Raw Input registration can starve keytap's Windows
+    // low-level keyboard hook while the WebView has focus. Filtering device
+    // events removes that registration; VoicePaste does not consume them.
+    #[cfg(target_os = "windows")]
+    let builder = builder.device_event_filter(tauri::DeviceEventFilter::Always);
+
+    builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
