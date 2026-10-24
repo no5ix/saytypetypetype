@@ -71,7 +71,7 @@ export interface ModelDownloadProgress {
 
 export async function openHelpGuide(): Promise<void> {
   return invoke("plugin:shell|open", {
-    path: "https://github.com/that-yolanda/voicepaste/blob/master/GUIDANCE.zh.md",
+    path: "https://voicepaste.dev/docs",
   });
 }
 

@@ -378,8 +378,8 @@ export function isModelFieldVisible(
 
 export function credentialHelpUrl(modelId: string): string {
   return modelId === ELEVENLABS_MODEL_ID
-    ? "https://elevenlabs.io/app/settings/api-keys"
-    : "https://console.volcengine.com/speech/app";
+    ? "https://voicepaste.dev/docs/api/elevenlabs"
+    : "https://voicepaste.dev/docs/api/volcengine";
 }
 
 /** Infer a control type from the value when FIELD_META omits `type`. */
