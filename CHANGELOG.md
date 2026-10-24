@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.1.5 (2026-10-24)
+This update adds ElevenLabs realtime speech recognition, makes the default hotkeys reachable on common keyboards, hardens toggle and hold hotkey handling, and introduces a new logo with a bilingual product website.
+
+### New Features & Improvements
+- **ElevenLabs Realtime Speech Recognition** — ElevenLabs can now be selected for realtime speech recognition. Final output comes from server confirmations, so interim text never leaks into what is pasted, confirmed transcripts finish immediately instead of waiting for a fixed timeout, and failed transcriptions are kept for an explicit retry. Model settings add tooltips and visible paid-feature notices.
+- **Accessible Default Hotkeys** — The default wake key is now left Command on macOS and left Ctrl on Windows, and left Shift finishes a recording through the general-cleanup template — all reachable on common keyboards. Existing custom bindings are preserved.
+- **New Logo and Product Website** — Refreshed the app logo and launched a bilingual product website at voicepaste.dev with interactive demos, setup documentation, a download portal, and release history.
+- **Updated Model Details** — Refreshed pricing and capability details for online recognition models and removed obsolete setup guidance.
+
+### Fixed
+- **Toggle and Hold Hotkey Conflicts** — Hands-free wake keys are now independent from raw-input shortcuts. Recordings require an exact chord match and a 500ms hold before they start, invalid shortcuts are cleared with a toast when switching modes, and macOS right-side modifiers keep working, with safe recovery when a key release is lost.
+- **Windows Shortcut Recording** — Fixed shortcut recording in settings not capturing any keys on Windows while the settings window had focus.
+- **Clearer Settings Guidance** — In-app help and the ElevenLabs / Volcengine credential links now open the guides on voicepaste.dev, supported transcript confirmation modes are explained, and ElevenLabs API key setup is documented in both languages.
+
+### Under the Hood
+- Added a website workspace with the bilingual product site and download portal; desktop and website checks are now split in CI.
+- Updated contribution guidelines for the desktop and website codebases.
+
 ## v2.1.4 (2026-10-14)
 
 This update substantially improves voice overlay animations, making appearance, dismissal, and resizing smoother. It also adds polishing failure retry and polishing from history, alongside hotkey improvements.
