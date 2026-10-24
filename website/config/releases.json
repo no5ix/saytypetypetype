@@ -1,7 +1,38 @@
 {
-  "latest": "v2.1.4",
+  "latest": "v2.1.5",
   "githubReleases": "https://github.com/that-yolanda/voicepaste/releases",
   "releases": [
+    {
+      "version": "v2.1.5",
+      "date": "2026-10-24",
+      "releaseUrl": "https://github.com/that-yolanda/voicepaste/releases/tag/v2.1.5",
+      "files": [
+        {
+          "platform": "macos-arm64",
+          "url": "https://github.com/that-yolanda/voicepaste/releases/download/v2.1.5/VoicePaste_2.1.5_aarch64.dmg",
+          "filename": "VoicePaste_2.1.5_aarch64.dmg",
+          "size": 15959767
+        },
+        {
+          "platform": "windows-x64",
+          "url": "https://github.com/that-yolanda/voicepaste/releases/download/v2.1.5/VoicePaste_2.1.5_x64-setup.exe",
+          "filename": "VoicePaste_2.1.5_x64-setup.exe",
+          "size": 10267101
+        },
+        {
+          "platform": "macos-x64",
+          "url": "https://github.com/that-yolanda/voicepaste/releases/download/v2.1.5/VoicePaste_2.1.5_x64.dmg",
+          "filename": "VoicePaste_2.1.5_x64.dmg",
+          "size": 18014121
+        },
+        {
+          "platform": "windows-msi",
+          "url": "https://github.com/that-yolanda/voicepaste/releases/download/v2.1.5/VoicePaste_2.1.5_x64_en-US.msi",
+          "filename": "VoicePaste_2.1.5_x64_en-US.msi",
+          "size": 14794752
+        }
+      ]
+    },
     {
       "version": "v2.1.4",
       "date": "2026-10-14",
