@@ -12,7 +12,6 @@ export const metadata: Metadata = {
     default: "VoicePaste — Think freely. Speak naturally.",
     template: "%s | VoicePaste",
   },
-  icons: { icon: "/assets/mark.png" },
 }
 export function generateStaticParams() {
   return locales.map((lang) => ({ lang }))
