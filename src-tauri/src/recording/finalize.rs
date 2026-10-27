@@ -353,7 +353,13 @@ pub(crate) async fn deliver_text_result(
         polish,
     )
     .await;
-    overlay::show_success(app_handle, app_inner, keep_clipboard).await;
+    // No post-paste success pill. It was drawn always-on-top near the bottom
+    // center of the screen — right where the pasted text and the caret land —
+    // so it covered the user's text. The workflow is finished: settle to Idle
+    // and dismiss the recording overlay immediately instead. Failures still
+    // surface through `show_output_error`, and the end cue is unchanged.
+    set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
+    overlay::hide(app_handle);
     cue::emit_cue(app_handle, app_inner, "end");
     Ok(())
 }

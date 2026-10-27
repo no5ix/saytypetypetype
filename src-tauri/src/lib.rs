@@ -11,6 +11,7 @@ mod hotword;
 mod llm;
 mod migration;
 mod model;
+mod model_import;
 mod overlay;
 mod paste;
 mod picker;
@@ -204,6 +205,8 @@ pub fn run() {
             commands::get_downloaded_models,
             commands::download_model,
             commands::delete_model,
+            commands::import_hf_model,
+            commands::cancel_hf_model_import,
             #[cfg(desktop)]
             updater::check_for_update,
             #[cfg(desktop)]

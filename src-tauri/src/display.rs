@@ -99,8 +99,9 @@ pub(crate) fn bottom_center_position(
 }
 
 /// Picker window size for `option_count` cards. Wider for more cards and one
-/// extra row per four options, capped to the usable area so small displays get a
-/// compact but still readable panel (the panel then scrolls).
+/// extra row per row the CSS grid will actually produce, capped to the usable
+/// area so small displays get a compact but still readable panel (the panel then
+/// scrolls).
 pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, f64) {
     let target_width: f64 = match option_count {
         0 | 1 => 560.0,
@@ -111,9 +112,19 @@ pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, 
     let width = target_width
         .min((work_area.width - 48.0).max(320.0))
         .max(320.0);
-    // Four cards fit per row at the widest layout; additional rows need a taller
-    // window, otherwise the second row would be clipped by the panel footer.
-    let rows = option_count.div_ceil(4).max(1);
+    // Rows follow the same column breakpoints as `web/src/picker/PickerApp.tsx`
+    // (1 column under 520pt, 2 under 780pt, 4 above). Deriving columns from the
+    // *clamped* width matters on narrow displays: there the panel is narrower
+    // than the target, so it fits fewer cards per row and needs more height.
+    let max_columns = if width < 520.0 {
+        1
+    } else if width < 780.0 {
+        2
+    } else {
+        4
+    };
+    let columns = max_columns.min(option_count.max(1));
+    let rows = option_count.div_ceil(columns).max(1);
     let target_height: f64 = match rows {
         1 => 380.0,
         2 => 540.0,
@@ -648,6 +659,42 @@ mod tests {
         assert_eq!(eight.1, 540.0);
         assert!(nine.1 > eight.1, "a third row grows the panel further");
         assert!(nine.1 <= work.height);
+    }
+
+    #[test]
+    fn picker_rows_follow_the_narrow_layout_column_count() {
+        // A 700pt work area clamps the panel to 652pt, where the CSS grid uses
+        // two columns instead of four. Three or four cards then need two rows,
+        // otherwise the second row would be clipped by the panel footer.
+        let work = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 700.0,
+            height: 1200.0,
+        };
+        let two = picker_window_size(work, 2);
+        let three = picker_window_size(work, 3);
+        let four = picker_window_size(work, 4);
+        assert_eq!(two.0, 620.0);
+        assert_eq!(two.1, 380.0, "two cards still share one row");
+        assert_eq!(three.0, 652.0);
+        assert_eq!(three.1, 540.0, "two columns means two rows");
+        assert_eq!(four.1, 540.0);
+        assert_eq!(
+            picker_window_size(work, 5).1,
+            700.0,
+            "five cards span three rows in two columns"
+        );
+
+        // Below 520pt the grid is a single column, so even two cards need two rows.
+        let narrow = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 1200.0,
+        };
+        assert_eq!(picker_window_size(narrow, 1).1, 380.0);
+        assert_eq!(picker_window_size(narrow, 2).1, 540.0);
     }
 
     #[test]

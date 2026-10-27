@@ -155,7 +155,33 @@ fn write_registry_file(path: &Path, registry: &ModelRegistry) -> Result<(), Stri
     }
     let json = serde_json::to_string_pretty(registry)
         .map_err(|e| format!("序列化 registry 失败: {}", e))?;
-    fs::write(path, json + "\n").map_err(|e| format!("写入 registry 失败: {}", e))
+    // Write-then-rename so an interrupted write cannot truncate the registry
+    // (imports add entries at runtime, not only during first-run setup).
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json + "\n").map_err(|e| format!("写入 registry 失败: {}", e))?;
+    fs::rename(&tmp, path).map_err(|e| format!("更新 registry 失败: {}", e))
+}
+
+/// Insert or replace one model entry, leaving every other entry untouched.
+///
+/// Used by Hugging Face imports: bundled entries, previously downloaded models
+/// and other imported models must all survive.
+pub fn upsert_registry_entry(
+    data_dir: &Path,
+    resource_dir: &Path,
+    entry: ModelEntry,
+) -> Result<(), String> {
+    let mut registry = load_registry(data_dir, resource_dir);
+    match registry
+        .models
+        .iter()
+        .position(|model| model.id == entry.id)
+    {
+        Some(index) => registry.models[index] = entry,
+        None => registry.models.push(entry),
+    }
+    registry.updated_at = chrono::Local::now().format("%Y-%m-%d").to_string();
+    write_registry_file(&registry_path(data_dir), &registry)
 }
 
 fn merge_registry(mut current: ModelRegistry, bundled: ModelRegistry) -> ModelRegistry {
@@ -242,22 +268,31 @@ pub fn get_downloaded_models(data_dir: &Path, registry: &ModelRegistry) -> Vec<S
         .collect()
 }
 
-/// Check if a specific model's required files exist.
-fn is_model_downloaded(models_base: &Path, model: &ModelEntry) -> bool {
+/// Check if a specific model's required files exist and are non-empty.
+///
+/// A zero-byte file means an interrupted download (sherpa-onnx aborts the whole
+/// process on an empty ONNX file), so it must never count as usable.
+pub(crate) fn is_model_downloaded_at(models_base: &Path, model: &ModelEntry) -> bool {
     if model.model_files.is_empty() {
         return false;
     }
     let model_dir = models_base.join(&model.id);
-    model
-        .model_files
-        .values()
-        .all(|filename| model_dir.join(filename).exists())
+    model.model_files.values().all(|filename| {
+        fs::metadata(model_dir.join(filename))
+            .map(|meta| meta.len() > 0)
+            .unwrap_or(false)
+    })
+}
+
+fn is_model_downloaded(models_base: &Path, model: &ModelEntry) -> bool {
+    is_model_downloaded_at(models_base, model)
 }
 
 /// Download a model, emitting progress events to the frontend.
 pub async fn download_model(
     app: &AppHandle,
     data_dir: &Path,
+    resource_dir: &Path,
     registry: &ModelRegistry,
     model_id: &str,
 ) -> Result<(), String> {
@@ -284,6 +319,25 @@ pub async fn download_model(
         for base_model in base_models {
             download_model_entry(app, data_dir, &base_model).await?;
         }
+    }
+
+    // Imported entries carry an `hf:` marker instead of an archive URL; re-import
+    // them through the Hugging Face path so a deleted model can be restored from
+    // the same card as bundled models.
+    if let Some(repo) = entry
+        .download_url
+        .as_deref()
+        .and_then(crate::model_import::repo_from_hf_url)
+    {
+        crate::model_import::import_repo(
+            Some(app),
+            data_dir,
+            resource_dir,
+            &repo,
+            &crate::model_import::HfEndpoints::default(),
+        )
+        .await?;
+        return Ok(());
     }
 
     download_model_entry(app, data_dir, &entry).await

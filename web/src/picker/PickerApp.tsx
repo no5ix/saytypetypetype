@@ -1,5 +1,5 @@
 import { AlertCircle, Check, ChevronRight, Loader2, Maximize2, X } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelPicker,
   getPickerState,
@@ -39,6 +39,7 @@ export function PickerApp() {
   const [view, setView] = useState<PickerView | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const width = useWindowWidth();
 
   useEffect(() => {
@@ -61,11 +62,15 @@ export function PickerApp() {
     applyTheme(view?.theme ?? "system");
   }, [view?.theme]);
 
-  // A new session starts fresh: collapse previews and re-enable selection.
+  // A new session starts fresh: collapse previews, re-enable selection, and
+  // reset the scroll offset. The picker window is reused between sessions, so a
+  // scroll position left by the previous session would otherwise open the new
+  // one mid-card, clipping the first row's title at the header edge.
   // biome-ignore lint/correctness/useExhaustiveDependencies: session id is the reset trigger
   useEffect(() => {
     setExpanded(null);
     setSubmitting(false);
+    scrollRef.current?.scrollTo({ top: 0 });
   }, [view?.sessionId]);
 
   useEffect(() => {
@@ -120,7 +125,11 @@ export function PickerApp() {
   return (
     <div className="picker-root relative h-screen w-screen p-2">
       <section className="picker-panel picker-surface flex h-full w-full flex-col overflow-hidden rounded-[20px] border bg-surface-card backdrop-blur-xl">
-        <header className="flex items-center justify-between gap-3 px-4 pt-3 pb-2">
+        {/* The header is a flex item in its own right: `shrink-0` keeps it at its
+            natural height, the opaque background hides cards scrolling behind
+            the scroll container's top edge, and `z-10` keeps the card hover
+            lift from painting over it. */}
+        <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border/50 bg-surface-card px-4 pt-3 pb-2.5">
           <div className="min-w-0">
             <h1 className="truncate text-[13px] font-semibold text-text">选择要粘贴的版本</h1>
             <p className="truncate text-[11px] text-text-muted">
@@ -145,13 +154,20 @@ export function PickerApp() {
         </header>
 
         {view.error && (
-          <div className="mx-4 mb-2 flex items-start gap-2 rounded-xl border border-error/40 bg-error/10 px-3 py-2 text-[11.5px] text-error">
+          <div className="mx-4 mt-2 mb-2 flex shrink-0 items-start gap-2 rounded-xl border border-error/40 bg-error/10 px-3 py-2 text-[11.5px] text-error">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span className="min-w-0 break-words">{view.error}</span>
           </div>
         )}
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-3 pb-2">
+        {/* Scroll region: starts *below* the header, so the first card row and
+            any row scrolled into view are clipped by this container's top edge,
+            never drawn under the header. */}
+        <div
+          ref={scrollRef}
+          data-picker-scroll=""
+          className="relative mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2"
+        >
           <div
             className={`grid h-full gap-2 ${options.length <= 2 ? "mx-auto max-w-[660px]" : ""}`}
             style={{
@@ -171,7 +187,7 @@ export function PickerApp() {
           </div>
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border/50 px-4 py-2 text-[10.5px] text-text-muted">
+        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border/50 px-4 py-2 text-[10.5px] text-text-muted">
           <span className="truncate">原文始终可用；模板独立处理，不会串联。</span>
           <span className="shrink-0">
             {busy ? (
@@ -258,11 +274,11 @@ function PickerCard({
         disabled={!selectable}
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
         onClick={onSelect}
-        className={`flex h-full w-full min-w-0 flex-col rounded-xl border p-3 text-left transition ${
+        className={`flex h-full w-full min-w-0 flex-col rounded-xl border p-3 text-left transition duration-100 ${
           option.kind === "original" ? "border-accent/45 bg-accent-soft/30" : "border-border/70"
         } ${
           selectable
-            ? "cursor-pointer hover:-translate-y-0.5 hover:border-border-hover hover:bg-fill-subtle/60"
+            ? "cursor-pointer hover:-translate-y-0.5 hover:border-accent hover:bg-accent-soft/40 hover:shadow-[0_0_0_1px_var(--color-accent-dim),0_8px_20px_-12px_var(--color-accent-glow)]"
             : "cursor-default opacity-80"
         } ${busy ? "pointer-events-none opacity-60" : ""}`}
       >

@@ -12,6 +12,7 @@ import {
 } from "@/settings/bridge";
 import { Badge } from "@/settings/components/Badge";
 import { Button } from "@/settings/components/Button";
+import { HuggingFaceImport } from "@/settings/components/HuggingFaceImport";
 import { Modal } from "@/settings/components/Modal";
 import { ModelCard, type ModelCardProps, renderControl } from "@/settings/components/ModelCard";
 import { SegmentedControl } from "@/settings/components/SegmentedControl";
@@ -304,6 +305,12 @@ export function AudioModelPage() {
 
       {tab === "offline" && (
         <>
+          <HuggingFaceImport
+            onImported={async () => {
+              await refreshRegistry();
+              await refreshDownloaded();
+            }}
+          />
           {offlineAsrModels.length === 0 && (
             <p className="text-sm text-text-muted">暂无可用本地模型</p>
           )}

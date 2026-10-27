@@ -65,6 +65,8 @@ export interface ModelDownloadProgress {
   model_id: string;
   status: string;
   progress?: number;
+  /** Human-readable stage detail (used by Hugging Face imports). */
+  message?: string;
 }
 
 // ---- Data methods ----
@@ -348,6 +350,27 @@ export function onModelDownloadProgress(listener: (p: ModelDownloadProgress) => 
 
 export async function deleteModel(modelId: string): Promise<void> {
   return invoke("delete_model", { modelId });
+}
+
+/** Result of importing an ASR model from a Hugging Face repository. */
+export interface HfImportResult {
+  model_id: string;
+  name: string;
+  already_imported: boolean;
+}
+
+/**
+ * Download, register and prepare an ASR model from a public Hugging Face repo.
+ * Only repositories that publish the sherpa-ONNX file set can be imported; the
+ * backend rejects anything else with an explanatory message.
+ */
+export async function importHfModel(repoId: string): Promise<HfImportResult> {
+  return invoke("import_hf_model", { repoId });
+}
+
+/** Ask the running Hugging Face import to stop after the current chunk. */
+export async function cancelHfModelImport(): Promise<void> {
+  return invoke("cancel_hf_model_import");
 }
 
 // ---- Hotword management ----

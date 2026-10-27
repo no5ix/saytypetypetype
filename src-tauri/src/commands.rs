@@ -3,6 +3,7 @@ use crate::app_state::HotkeyMode;
 use crate::config::{AsrDefaults, PromptItem};
 use crate::hotword::HotwordData;
 use crate::model;
+use crate::model_import;
 use tauri::{utils::Theme, AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
@@ -807,8 +808,44 @@ pub async fn download_model(app: AppHandle, model_id: String) -> Result<serde_js
         .resource_dir()
         .map_err(|e| format!("Failed to resolve resource dir: {}", e))?;
     let registry = model::load_registry(&data_dir, &resource_dir);
-    model::download_model(&app, &data_dir, &registry, &model_id).await?;
+    model::download_model(&app, &data_dir, &resource_dir, &registry, &model_id).await?;
     Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Import an ASR model from a public Hugging Face repository.
+///
+/// Only repositories that already publish the sherpa-ONNX NeMo transducer file
+/// set (encoder/decoder/joiner ONNX + tokens.txt) can be imported; anything else
+/// returns an explanatory error instead of registering an unusable model.
+#[tauri::command]
+pub async fn import_hf_model(app: AppHandle, repo_id: String) -> Result<serde_json::Value, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve data dir: {}", e))?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to resolve resource dir: {}", e))?;
+    let outcome = model_import::import_repo(
+        Some(&app),
+        &data_dir,
+        &resource_dir,
+        &repo_id,
+        &model_import::HfEndpoints::default(),
+    )
+    .await?;
+    Ok(serde_json::json!({
+        "model_id": outcome.entry.id,
+        "name": outcome.entry.name,
+        "already_imported": outcome.already_imported,
+    }))
+}
+
+/// Ask a running import to stop after the current chunk.
+#[tauri::command]
+pub fn cancel_hf_model_import() {
+    model_import::request_cancel();
 }
 
 /// Delete a downloaded model.

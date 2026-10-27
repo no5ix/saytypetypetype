@@ -296,33 +296,6 @@ pub(crate) async fn show_output_error(
     schedule_retry_overlay_hide(app.clone(), Arc::clone(inner));
 }
 
-pub(crate) async fn show_success(
-    app: &AppHandle,
-    inner: &Arc<app_state::AppInner>,
-    keep_clipboard: bool,
-) {
-    app_state::set_app_state(app, inner, app_state::AppState::Idle).await;
-    invalidate_feedback(inner);
-    inner.feedback_visible.store(true, Ordering::SeqCst);
-    emit_shortcuts(app, &[]);
-    let _ = app.emit(
-        "overlay:event",
-        serde_json::json!({
-            "type": "hint", "payload": {
-                "text": if keep_clipboard { "已保存到剪切板" } else { "" },
-                "level": "info", "variant": "success"
-            }
-        }),
-    );
-    show(app);
-    let epoch = inner.overlay_epoch.load(Ordering::SeqCst);
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        hide_for_epoch(&app, Some(epoch));
-    });
-}
-
 /// Emit a retryable error hint, tagged with the main hotkey label so the overlay
 /// can show which key (also) triggers the retry. Centralizes every failure path.
 pub(crate) async fn emit_retryable_error_hint(
