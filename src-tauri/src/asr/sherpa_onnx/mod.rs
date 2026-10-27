@@ -1,4 +1,5 @@
 pub mod funasr_nano;
+pub mod nemo_transducer;
 pub mod offline;
 pub mod online;
 pub mod punct;
@@ -15,9 +16,49 @@ use tokio::sync::mpsc;
 
 use self::punct::PunctuationProcessor;
 use self::vad::{VadConfig, VadProcessor};
+use super::model_cache::ModelSlot;
 use super::{AsrEngine, AsrEvent, AsrSession};
 use crate::config::VadParams;
 use crate::model;
+
+// ---------------------------------------------------------------------------
+// Model lifetime
+// ---------------------------------------------------------------------------
+
+/// Recognizers kept alive across recording sessions while voice input is
+/// active. The online/offline slots are keyed by the effective model + params,
+/// so switching models (or hotwords/providers) rebuilds on the next session;
+/// the previous recognizer is dropped first. `unload` is called on app exit and
+/// on ASR configuration/model changes.
+pub struct SherpaModelCache {
+    offline: ModelSlot<Arc<sherpa_onnx::OfflineRecognizer>>,
+    online: ModelSlot<Arc<sherpa_onnx::OnlineRecognizer>>,
+    punctuation: ModelSlot<Arc<PunctuationProcessor>>,
+}
+
+impl Default for SherpaModelCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SherpaModelCache {
+    pub fn new() -> Self {
+        Self {
+            offline: ModelSlot::new("offline-asr"),
+            online: ModelSlot::new("online-asr"),
+            punctuation: ModelSlot::new("punctuation"),
+        }
+    }
+
+    /// Release every loaded recognizer. Called when voice input is explicitly
+    /// stopped (app exit) or the ASR configuration changes.
+    pub fn unload(&self, reason: &str) {
+        self.offline.unload(reason);
+        self.online.unload(reason);
+        self.punctuation.unload(reason);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,6 +67,17 @@ use crate::model;
 pub(crate) const SAMPLE_RATE: i32 = 16000;
 const DEFAULT_STREAMING_CHUNK_SIZE: usize = 3200;
 pub(crate) const AUDIO_QUEUE_CAPACITY: usize = 64;
+
+/// Fingerprint of the active hotword list for recognizer cache keys. Order is
+/// preserved because the hotword buffer is built in list order.
+fn hotword_fingerprint(hotwords: &[String]) -> String {
+    hotwords
+        .iter()
+        .map(|word| word.trim())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
+}
 
 // ---------------------------------------------------------------------------
 // Shared JSON helpers
@@ -165,6 +217,7 @@ pub struct SherpaOnnxEngine {
     model_config: Option<serde_json::Value>,
     punctuation_config: Option<serde_json::Value>,
     stream_simulate: bool,
+    model_cache: Arc<SherpaModelCache>,
 }
 
 pub struct SherpaOnnxEngineOptions {
@@ -176,6 +229,7 @@ pub struct SherpaOnnxEngineOptions {
     pub model_config: Option<serde_json::Value>,
     pub punctuation_config: Option<serde_json::Value>,
     pub stream_simulate: bool,
+    pub model_cache: Arc<SherpaModelCache>,
 }
 
 impl SherpaOnnxEngine {
@@ -189,6 +243,7 @@ impl SherpaOnnxEngine {
             model_config: options.model_config,
             punctuation_config: options.punctuation_config,
             stream_simulate: options.stream_simulate,
+            model_cache: options.model_cache,
         }
     }
 
@@ -253,14 +308,30 @@ impl SherpaOnnxEngine {
         let num_threads = json_u32(&punct_config, "num_threads").unwrap_or(2);
         let provider = json_choice(&punct_config, "provider", &["cpu", "cuda", "coreml"], "cpu");
 
-        match PunctuationProcessor::new(punct_entry, &model_dir, num_threads, &provider) {
-            Ok(p) => {
-                log_asr!(
-                    info,
-                    "Punctuation processor created for model '{}'",
-                    asr_entry.id
-                );
-                Some(Arc::new(p))
+        // Reuse the processor across sessions while the punctuation model and
+        // its effective parameters are unchanged; switching models reloads it.
+        let cache_key = format!(
+            "punct|{}|{}|{}|{}",
+            punct_entry.id, num_threads, provider, punct_config
+        );
+        match self.model_cache.punctuation.get_or_load(&cache_key, || {
+            PunctuationProcessor::new(punct_entry, &model_dir, num_threads, &provider).map(Arc::new)
+        }) {
+            Ok((processor, loaded)) => {
+                if loaded {
+                    log_asr!(
+                        info,
+                        "Punctuation processor created for model '{}'",
+                        asr_entry.id
+                    );
+                } else {
+                    log_asr!(
+                        debug,
+                        "Punctuation processor reused for model '{}'",
+                        asr_entry.id
+                    );
+                }
+                Some(processor)
             }
             Err(e) => {
                 log_asr!(warn, "Failed to create punctuation processor: {}", e);
@@ -342,13 +413,29 @@ impl AsrEngine for SherpaOnnxEngine {
                 log_asr!(warn, "All online hotwords were filtered as OOV");
             }
 
-            let recognizer = online::build_online_recognizer(
-                &model_dir,
-                entry,
+            // The streaming recognizer is reused across sessions while the
+            // model, parameters and hotwords are unchanged.
+            let cache_key = format!(
+                "online|{}|{}|{}|{}",
+                entry.id,
                 asr_num_threads,
-                &model_config,
-                hotwords_buf,
-            )?;
+                model_config,
+                hotword_fingerprint(hotwords)
+            );
+            let recognizer = self
+                .model_cache
+                .online
+                .get_or_load(&cache_key, || {
+                    online::build_online_recognizer(
+                        &model_dir,
+                        entry,
+                        asr_num_threads,
+                        &model_config,
+                        hotwords_buf,
+                    )
+                    .map(Arc::new)
+                })?
+                .0;
 
             let stream = recognizer.create_stream();
 
@@ -370,41 +457,62 @@ impl AsrEngine for SherpaOnnxEngine {
             // ── Simulated streaming (offline model with interim decoding) ──
             let arch = entry.architecture.as_deref().unwrap_or("");
 
-            let recognizer = match arch {
-                "sense_voice" => sense_voice::build_sense_voice_recognizer(
-                    &model_dir,
-                    entry,
-                    asr_num_threads,
-                    &model_config,
-                )?,
-                "funasr_nano" => funasr_nano::build_funasr_nano_recognizer(
-                    &model_dir,
-                    entry,
-                    asr_num_threads,
-                    &model_config,
-                    None, // hotwords are injected via model config in the builder
-                )?,
-                "qwen3_asr" => {
-                    let hotwords_str = if entry.capabilities.hotwords && !hotwords.is_empty() {
-                        funasr_nano::build_funasr_hotwords(hotwords)
-                    } else {
-                        None
-                    };
-                    qwen3_asr::build_qwen3_asr_recognizer(
-                        &model_dir,
-                        entry,
-                        asr_num_threads,
-                        &model_config,
-                        hotwords_str.as_deref(),
-                    )?
-                }
-                other => {
-                    return Err(format!(
-                        "非流式模型 {} 的 architecture '{}' 不支持",
-                        entry.id, other
-                    ));
-                }
-            };
+            // Keyed by branch because the simulated path intentionally builds
+            // FunASR-Nano without stream-level hotwords.
+            let cache_key = format!(
+                "simulated|{}|{}|{}|{}",
+                entry.id,
+                asr_num_threads,
+                model_config,
+                hotword_fingerprint(hotwords)
+            );
+            let recognizer = self
+                .model_cache
+                .offline
+                .get_or_load(&cache_key, || {
+                    match arch {
+                        "sense_voice" => sense_voice::build_sense_voice_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                        ),
+                        "nemo_transducer" => nemo_transducer::build_nemo_transducer_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                        ),
+                        "funasr_nano" => funasr_nano::build_funasr_nano_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                            None, // hotwords are injected via model config in the builder
+                        ),
+                        "qwen3_asr" => {
+                            let hotwords_str =
+                                if entry.capabilities.hotwords && !hotwords.is_empty() {
+                                    funasr_nano::build_funasr_hotwords(hotwords)
+                                } else {
+                                    None
+                                };
+                            qwen3_asr::build_qwen3_asr_recognizer(
+                                &model_dir,
+                                entry,
+                                asr_num_threads,
+                                &model_config,
+                                hotwords_str.as_deref(),
+                            )
+                        }
+                        other => Err(format!(
+                            "非流式模型 {} 的 architecture '{}' 不支持",
+                            entry.id, other
+                        )),
+                    }
+                    .map(Arc::new)
+                })?
+                .0;
 
             // Create VAD for simulated streaming
             let vad_dir = model::model_path(&self.data_dir, &vad_entry.id);
@@ -431,34 +539,52 @@ impl AsrEngine for SherpaOnnxEngine {
                 None
             };
 
-            let recognizer = match arch {
-                "sense_voice" => sense_voice::build_sense_voice_recognizer(
-                    &model_dir,
-                    entry,
-                    asr_num_threads,
-                    &model_config,
-                )?,
-                "funasr_nano" => funasr_nano::build_funasr_nano_recognizer(
-                    &model_dir,
-                    entry,
-                    asr_num_threads,
-                    &model_config,
-                    funasr_hotwords.as_deref(),
-                )?,
-                "qwen3_asr" => qwen3_asr::build_qwen3_asr_recognizer(
-                    &model_dir,
-                    entry,
-                    asr_num_threads,
-                    &model_config,
-                    funasr_hotwords.as_deref(),
-                )?,
-                other => {
-                    return Err(format!(
-                        "非流式模型 {} 的 architecture '{}' 不支持",
-                        entry.id, other
-                    ));
-                }
-            };
+            let cache_key = format!(
+                "offline|{}|{}|{}|{}",
+                entry.id,
+                asr_num_threads,
+                model_config,
+                funasr_hotwords.as_deref().unwrap_or("")
+            );
+            let recognizer = self
+                .model_cache
+                .offline
+                .get_or_load(&cache_key, || {
+                    match arch {
+                        "sense_voice" => sense_voice::build_sense_voice_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                        ),
+                        "nemo_transducer" => nemo_transducer::build_nemo_transducer_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                        ),
+                        "funasr_nano" => funasr_nano::build_funasr_nano_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                            funasr_hotwords.as_deref(),
+                        ),
+                        "qwen3_asr" => qwen3_asr::build_qwen3_asr_recognizer(
+                            &model_dir,
+                            entry,
+                            asr_num_threads,
+                            &model_config,
+                            funasr_hotwords.as_deref(),
+                        ),
+                        other => Err(format!(
+                            "非流式模型 {} 的 architecture '{}' 不支持",
+                            entry.id, other
+                        )),
+                    }
+                    .map(Arc::new)
+                })?
+                .0;
 
             // Offline models: hotwords handled in model config (FunASR-Nano, Qwen3 ASR)
             // or not supported (SenseVoice). Stream-level hotword injection

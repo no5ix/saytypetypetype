@@ -174,7 +174,7 @@ fn process_offline_segments(
 }
 
 fn run_offline_worker(
-    recognizer: OfflineRecognizer,
+    recognizer: Arc<OfflineRecognizer>,
     mut vad: VadProcessor,
     use_hotwords: bool,
     hotwords_str: String,
@@ -216,7 +216,7 @@ fn run_offline_worker(
 
 /// Spawn an offline worker thread and return the session + command sender.
 pub(crate) fn spawn_offline_worker(
-    recognizer: OfflineRecognizer,
+    recognizer: Arc<OfflineRecognizer>,
     vad: VadProcessor,
     use_hotwords: bool,
     hotwords_str: String,

@@ -646,6 +646,52 @@ mod tests {
     }
 
     #[test]
+    fn history_stores_the_original_transcript_after_a_template_was_used() {
+        // The finishing pipeline passes the original ASR text as the history
+        // string while pasting the selected/processed text. The selected text
+        // must not leak into history, and no polished copy is persisted.
+        let (mut svc, _dir) = new_stats_service();
+        svc.record_session_with_audio(
+            "原始 ASR 转写",
+            None,
+            None,
+            PolishRecord {
+                prompt_id: Some("prompt-general".to_string()),
+                raw_text: None,
+            },
+        );
+
+        let entry = svc.get_history(365).remove(0);
+        assert_eq!(entry.text, "原始 ASR 转写");
+        assert_eq!(entry.prompt_id.as_deref(), Some("prompt-general"));
+        assert!(entry.raw_text.is_none());
+    }
+
+    #[test]
+    fn consecutive_template_sessions_keep_their_own_original_text() {
+        let (mut svc, _dir) = new_stats_service();
+        for (text, prompt) in [
+            ("第一段原文", "prompt-general"),
+            ("第二段原文", "prompt-translate"),
+        ] {
+            svc.record_session_with_audio(
+                text,
+                None,
+                None,
+                PolishRecord {
+                    prompt_id: Some(prompt.to_string()),
+                    raw_text: None,
+                },
+            );
+        }
+
+        let history = svc.get_history(365);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].text, "第二段原文");
+        assert_eq!(history[1].text, "第一段原文");
+    }
+
+    #[test]
     fn history_entries_written_before_polish_provenance_still_load() {
         // Entries on disk from earlier versions have neither field; serde
         // defaults must keep them readable instead of dropping the day's file.

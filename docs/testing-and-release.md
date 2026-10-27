@@ -95,10 +95,51 @@ pnpm test:llm         # LLM integration tests
 ### Development Build
 
 ```bash
-pnpm dev              # Full Tauri app with hot-reload
+pnpm dev              # Full Tauri app with hot-reload (development identity)
 pnpm dev:web          # Vite dev server only (frontend hot-reload on port 1420)
 pnpm build:web        # Production frontend build (Vite → web/dist)
+pnpm build:dev        # Unsigned dev .app bundle (development identity)
 ```
+
+#### Development App Identity
+
+`pnpm dev` / `pnpm build:dev` merge `src-tauri/tauri.dev.conf.json` over
+`src-tauri/tauri.conf.json`, so the development app can be installed next to the
+production app:
+
+| Setting | Production | Development |
+| --- | --- | --- |
+| `productName` | `VoicePaste` | `VoicePaste Dev` |
+| `identifier` | `com.yolanda.voicepaste` | `com.yolanda.voicepaste.dev` |
+| updater artifacts | enabled | disabled |
+| app data | `~/Library/Application Support/com.yolanda.voicepaste` | `~/Library/Application Support/com.yolanda.voicepaste.dev` |
+
+Tauri derives `app_data_dir()` (config, history, logs, downloaded models) from the
+bundle identifier, so the two builds never read or write each other's data. Model
+caches are intentionally **not** shared: each identity downloads its own models.
+
+`build_identity.rs` marks the `.dev` identifier as development; the updater
+commands refuse to run there, so a dev build can never install a production
+release over itself. macOS treats the two bundles as separate apps — Microphone
+and Accessibility must be granted to `VoicePaste Dev` separately. Never run
+`tccutil reset` as part of a build, and never copy the dev bundle over
+`/Applications/VoicePaste.app`.
+
+The unsigned build path is
+`src-tauri/target/release/bundle/macos/VoicePaste Dev.app`.
+
+### Local ASR Models
+
+Model weights are never committed; `registry.json` entries are downloaded at
+runtime into the app data directory and cached there. The Parakeet entries use
+sherpa-onnx's `nemo_transducer` family (plain ONNX encoder/decoder/joiner), so no
+NVIDIA toolkit, CUDA, or Python runtime is required.
+
+Parakeet TDT 0.6B v3 is © NVIDIA, licensed CC-BY-4.0; it is downloaded from the
+official k2-fsa/sherpa-onnx export of `nvidia/parakeet-tdt-0.6b-v3`. Attribution
+is kept in the registry name/description. TDT v2 was evaluated and intentionally
+not added: on the target machine it matched v3's speed while covering English
+only.
 
 ### Production Build
 

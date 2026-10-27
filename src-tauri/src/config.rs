@@ -236,6 +236,11 @@ pub struct AppSettings {
     pub overlay_style: String,
     #[serde(default)]
     pub sound: Option<SoundConfig>,
+    /// When true, each finished recording shows a floating picker with the
+    /// original transcript and every configured template instead of pasting
+    /// automatically. Default false preserves the existing workflow.
+    #[serde(default)]
+    pub multi_version_picker: bool,
     /// When true, check for beta (prerelease) updates instead of stable only.
     #[serde(default)]
     pub beta_updates: bool,
@@ -928,6 +933,7 @@ impl Default for AppConfig {
                 theme: default_theme(),
                 overlay_style: default_overlay_style(),
                 sound: None,
+                multi_version_picker: false,
                 beta_updates: false,
             },
             audio: default_audio_settings(),
@@ -1773,6 +1779,7 @@ mod elevenlabs_tests {
             data.path().into(),
             resources.path().into(),
             &[],
+            std::sync::Arc::new(crate::asr::SherpaModelCache::new()),
         )
         .await
         .err()

@@ -1,0 +1,76 @@
+/* Floating picker window: transparent shell, near-opaque glass panel. */
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Readability over arbitrary app content behind the floating window.
+ *
+ * The shared theme cards are intentionally translucent for in-app use, but the
+ * picker can sit on top of any document. These local overrides make the panel
+ * and cards nearly opaque while keeping a restrained frosted-glass edge, and
+ * raise the contrast of text, shortcuts, loading skeletons and errors in both
+ * themes. Only the picker window loads this stylesheet.
+ */
+.picker-root {
+  --color-surface-card: rgba(31, 31, 29, 0.97);
+  --color-border: rgba(255, 255, 255, 0.16);
+  --color-border-hover: rgba(255, 255, 255, 0.3);
+  --color-text: #f5f4ef;
+  --color-text-dim: #cfcdc6;
+  --color-text-muted: #a3a29b;
+  --color-fill-subtle: rgba(255, 255, 255, 0.09);
+  --color-fill-hover: rgba(255, 255, 255, 0.15);
+  --color-error: #ff9a94;
+}
+
+[data-theme="light"] .picker-root {
+  --color-surface-card: rgba(253, 252, 249, 0.98);
+  --color-border: rgba(18, 18, 16, 0.15);
+  --color-border-hover: rgba(18, 18, 16, 0.32);
+  --color-text: #161614;
+  --color-text-dim: #45443f;
+  --color-text-muted: #66655f;
+  --color-fill-subtle: rgba(0, 0, 0, 0.05);
+  --color-fill-hover: rgba(0, 0, 0, 0.09);
+  --color-error: #b3261e;
+}
+
+.picker-surface {
+  background: var(--color-surface-card);
+  border-color: var(--color-border);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="light"] .picker-surface {
+  box-shadow:
+    0 18px 40px rgba(20, 20, 15, 0.18),
+    0 2px 8px rgba(20, 20, 15, 0.1);
+}
+
+.picker-panel {
+  animation: picker-in 150ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-panel {
+    animation: none;
+  }
+}

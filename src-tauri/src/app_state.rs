@@ -26,6 +26,9 @@ pub struct PendingPolish {
     pub raw_text: String,
     /// Prompt template the failed polish used, so a retry uses the same one.
     pub prompt_id: String,
+    /// Recording epoch that owns the lowered system volume. Kept with the
+    /// parked text so a late resolution cannot restore a newer session.
+    pub volume_session: u64,
 }
 
 /// Interruption for an in-flight polish retry, triggered by ESC/Enter while
@@ -86,6 +89,11 @@ pub struct AppInner {
     /// Enter pastes the raw text immediately, and a timer delivers it
     /// automatically if the user does nothing.
     pub pending_polish: Mutex<Option<PendingPolish>>,
+    /// Serializes the deferred-polish resolution paths (auto-deliver timer,
+    /// Enter/ESC, retry, and a new session settling an old parked text) so only
+    /// one of them can own the parked text and run its volume restore plus
+    /// overlay dismissal to completion.
+    pub polish_delivery_lock: Mutex<()>,
     /// Generation counter for `pending_polish`. The auto-deliver timer captures
     /// the epoch it was armed with and stands down if a retry or ESC bumped it.
     pub polish_epoch: std::sync::atomic::AtomicU64,
@@ -99,6 +107,23 @@ pub struct AppInner {
     pub polish_retry_cmd_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<PolishRetryCommand>>>,
     /// Shared sound detector, reset between recording sessions.
     pub wave_activity: Mutex<crate::overlay::shared::WaveActivity>,
+    /// Lowers the macOS output volume for the duration of a recording session
+    /// and restores the exact state captured at the start. Shared across the
+    /// lifecycle, deferred-polish decision window, and app exit cleanup.
+    pub volume_guard: std::sync::Arc<crate::system_volume::VolumeGuard>,
+    /// Display/application captured when the current session started. The
+    /// indicator and the version picker both use it, and it is re-captured on
+    /// every start so moving the target app between screens is followed.
+    pub session_target: Mutex<Option<crate::display::TargetDisplay>>,
+    /// Multi-version picker state for the active or most recent session. Results
+    /// from older sessions are rejected inside the store.
+    pub picker: crate::picker::model::PickerStore,
+    /// Recognizers kept alive across recordings while voice input is active.
+    /// Unloaded on app exit and whenever the ASR configuration changes.
+    pub asr_models: Arc<crate::asr::SherpaModelCache>,
+    /// When the current stop was requested. Used only for latency diagnostics;
+    /// never contains audio or transcript content.
+    pub stop_started_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 pub type AppHandle = Arc<AppInner>;
@@ -133,10 +158,16 @@ pub fn create_app_state(
         accumulated_text: Mutex::new(String::new()),
         native_audio: Mutex::new(None),
         pending_polish: Mutex::new(None),
+        polish_delivery_lock: Mutex::new(()),
         polish_epoch: std::sync::atomic::AtomicU64::new(0),
         polish_retry_active: std::sync::atomic::AtomicBool::new(false),
         polish_retry_cmd_tx: Mutex::new(None),
         wave_activity: Mutex::new(crate::overlay::shared::WaveActivity::default()),
+        volume_guard: crate::system_volume::VolumeGuard::new_default(),
+        session_target: Mutex::new(None),
+        picker: crate::picker::model::PickerStore::default(),
+        asr_models: Arc::new(crate::asr::SherpaModelCache::new()),
+        stop_started_at: std::sync::Mutex::new(None),
     })
 }
 

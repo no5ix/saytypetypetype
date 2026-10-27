@@ -105,6 +105,21 @@ fn install_suppress_handler(config: &HotkeyConfig) {
             // FlagsChanged events are not swallowed by keytap.
             return key != Key::Escape;
         }
+        if let Some(picker) = cfg.picker.as_ref() {
+            // The picker is modal for its own keys: option shortcuts, ESC and
+            // Enter must not leak into the target application. Ordinary typing
+            // passes through so a stuck picker can never lock the keyboard.
+            if matches!(key, Key::Escape | Key::Enter | Key::NumpadEnter) {
+                return true;
+            }
+            if picker
+                .bindings
+                .iter()
+                .any(|binding| binding.keys.contains(&key))
+            {
+                return true;
+            }
+        }
         if !cfg.matcher.should_swallow(key, &cfg.bindings, &[]) {
             return false;
         }
@@ -304,6 +319,25 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                     tauri::async_runtime::spawn(async move {
                         crate::recording::on_enter(handle).await;
                     });
+                }
+
+                // While the picker is open it owns the keyboard: recording
+                // shortcuts must not start/stop a session, and the matcher must
+                // not accumulate state behind the modal.
+                let picker_active = config.read().unwrap().picker.is_some();
+                if picker_active {
+                    let action = {
+                        let mut cfg = config.write().unwrap();
+                        cfg.matcher.cancel_pending();
+                        super::process_picker_event(&mut cfg, event_kind)
+                    };
+                    if let Some((session_id, option_id)) = action {
+                        let handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::picker::select(handle, session_id, option_id).await;
+                        });
+                    }
+                    continue;
                 }
 
                 // Track all ordinary keys, including ones outside every binding,

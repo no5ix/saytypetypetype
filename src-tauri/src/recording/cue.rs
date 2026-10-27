@@ -74,9 +74,19 @@ fn resolve_configured_sound_path(
 /// Playing in-process (instead of spawning `afplay`/PowerShell or routing through
 /// the renderer's AudioContext) keeps the cue full-volume, immune to the overlay
 /// WebView being torn down mid-playback, and free of decode/keep-alive jank.
+///
+/// Returns `None` when sounds are disabled or playback could not start. A
+/// returned waiter lets the start path keep the system volume at its original
+/// level until the cue has actually finished.
+pub(crate) fn emit_cue_tracked(
+    app: &AppHandle,
+    app_inner: &Arc<AppInner>,
+    name: &str,
+) -> Option<crate::sound::PlaybackWaiter> {
+    let file_path = resolve_configured_sound_path(app, app_inner, name)?;
+    crate::sound::play_audio_file(&file_path)
+}
+
 pub(crate) fn emit_cue(app: &AppHandle, app_inner: &Arc<AppInner>, name: &str) {
-    let Some(file_path) = resolve_configured_sound_path(app, app_inner, name) else {
-        return;
-    };
-    crate::sound::play_audio_file(&file_path);
+    let _ = emit_cue_tracked(app, app_inner, name);
 }

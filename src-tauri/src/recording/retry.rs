@@ -24,6 +24,9 @@ pub(crate) async fn retry_history_transcription(
     ts: String,
 ) -> Result<serde_json::Value, String> {
     let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
+    // A retry replays a saved recording: no microphone stop time applies, so it
+    // must not reuse the previous session's latency mark in diagnostics.
+    *app_inner.stop_started_at.lock().unwrap() = None;
     let retry_epoch = app_inner
         .session_epoch
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -108,7 +111,7 @@ async fn retry_history_transcription_inner(
     let config = app_inner.config_manager.load_config()?;
     let hotwords = app_inner.hotword_manager.active_words();
     let (session, event_rx, _) =
-        match session::create_active_session(&app_handle, &config, &hotwords).await {
+        match session::create_active_session(&app_handle, &app_inner, &config, &hotwords).await {
             Ok(result) => result,
             Err(error) => {
                 if !is_current_epoch(&app_inner, retry_epoch) {
@@ -183,6 +186,7 @@ async fn retry_history_transcription_inner(
     }
     *app_inner.current_failure_ts.lock().await = None;
     if outcome != finalize::FinalizeOutcome::Deferred
+        && outcome != finalize::FinalizeOutcome::Picker
         && !app_inner
             .feedback_visible
             .load(std::sync::atomic::Ordering::SeqCst)

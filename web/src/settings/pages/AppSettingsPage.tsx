@@ -170,6 +170,20 @@ export function AppSettingsPage() {
                 />
               }
             />
+            {isMac && (
+              <SectionItem
+                title="多版本转写选择"
+                tooltip={
+                  "识别完成后弹出选择面板：原文 + 每个处理模板的结果\n使用对应快捷键或点击卡片粘贴，Esc 取消\n关闭时保持原有的自动粘贴流程（需 macOS）"
+                }
+                action={
+                  <Toggle
+                    checked={app.multi_version_picker === true}
+                    onChange={(v) => setAppBool("multi_version_picker", v)}
+                  />
+                }
+              />
+            )}
             <SectionItem
               title="保留剪贴板"
               tooltip="粘贴后保留识别文字在剪贴板；关闭则恢复原剪贴板内容"

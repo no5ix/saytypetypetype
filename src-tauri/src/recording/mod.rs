@@ -24,6 +24,7 @@ use crate::app_state::{self, ActivePromptId, RecordingState};
 use crate::hotkey;
 
 pub(crate) use capture::NativeAudioCapture;
+pub(crate) use finalize::deliver_text_result;
 pub(crate) use polish::repolish_history_entry;
 pub(crate) use polish::retry_pending_polish;
 pub(crate) use regenerate::regenerate_history_transcription;
@@ -38,6 +39,16 @@ pub(crate) async fn on_recording_start(
     is_main: bool,
     mode: hotkey::HotkeyMode,
 ) {
+    // Defensive: the listener already routes keys away from the matcher while
+    // the picker is open, but a queued action must never start a session behind
+    // the modal picker.
+    if let Some(hc) = app_handle.try_state::<hotkey::HotkeyConfig>() {
+        if hotkey::picker_session_id(&hc).is_some() {
+            log_rec!(info, "Picker is open; ignoring recording start");
+            reset_matcher_recording(&app_handle);
+            return;
+        }
+    }
     {
         let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
         // A polish retry is in flight: ignore the press entirely. ESC/Enter are
@@ -117,6 +128,13 @@ pub(crate) async fn on_recording_stop(app_handle: AppHandle, prompt_id: Option<S
             return;
         }
     }
+    if app_handle
+        .try_state::<hotkey::HotkeyConfig>()
+        .is_some_and(|hc| hotkey::picker_session_id(&hc).is_some())
+    {
+        log_rec!(info, "Picker is open; ignoring recording stop");
+        return;
+    }
     if let Some(id) = prompt_id.as_deref() {
         let inner = app_handle.state::<Arc<app_state::AppInner>>();
         if let Err(error) = inner.config_manager.remember_polish_prompt(id) {
@@ -133,6 +151,15 @@ pub(crate) async fn on_recording_stop(app_handle: AppHandle, prompt_id: Option<S
 /// an active recording, a polish decision window or retry, an in-flight ASR
 /// retry, or a shown retryable failure.
 pub(crate) async fn on_escape(app_handle: AppHandle) {
+    // The picker is modal: ESC dismisses it and pastes nothing. Checked before
+    // every other teardown path because the app may look idle/finishing.
+    if let Some(session_id) = app_handle
+        .try_state::<hotkey::HotkeyConfig>()
+        .and_then(|hc| hotkey::picker_session_id(&hc))
+    {
+        crate::picker::cancel(app_handle, Some(session_id)).await;
+        return;
+    }
     if is_recording(&app_handle) {
         lifecycle::cancel_recording(app_handle).await;
         return;
@@ -185,6 +212,13 @@ pub(crate) async fn on_enter(app_handle: AppHandle) {
     if is_recording(&app_handle) {
         return;
     }
+    // Enter belongs to no picker option; ignore it while the picker is open.
+    if app_handle
+        .try_state::<hotkey::HotkeyConfig>()
+        .is_some_and(|hc| hotkey::picker_session_id(&hc).is_some())
+    {
+        return;
+    }
     let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
 
     if polish::has_pending_polish(&app_inner).await {
@@ -227,6 +261,35 @@ pub(super) fn is_recording(app: &AppHandle) -> bool {
     app.try_state::<RecordingState>()
         .map(|state| *state.0.lock().unwrap())
         .unwrap_or(false)
+}
+
+/// Mark `session` as the owner of the system-volume snapshot before the start
+/// cue plays. Any stale snapshot from a missed cleanup is restored first.
+pub(super) async fn begin_output_volume_session(
+    app_inner: &Arc<app_state::AppInner>,
+    session: u64,
+) {
+    app_inner.volume_guard.begin(session).await;
+}
+
+/// Lower the macOS output volume for a transcription session, but only after
+/// the start cue has finished. Best-effort: failures are logged by the guard and
+/// never abort the recording. A dim arriving after the session ended is ignored.
+pub(super) async fn lower_output_volume_for(app_inner: &Arc<app_state::AppInner>, session: u64) {
+    app_inner.volume_guard.dim_session(session).await;
+}
+
+/// Restore the output-volume snapshot captured for this session. Idempotent and
+/// session-scoped: duplicate terminal paths cannot restore twice, and a late
+/// cleanup from an older recording cannot overwrite a newer session.
+pub(super) async fn restore_output_volume_for(app_inner: &Arc<app_state::AppInner>, session: u64) {
+    app_inner.volume_guard.restore_session(session).await;
+}
+
+/// Restore whatever snapshot exists, regardless of session. Only for app exit,
+/// where no newer session can start.
+pub(super) async fn restore_output_volume(app_inner: &Arc<app_state::AppInner>) {
+    app_inner.volume_guard.restore().await;
 }
 
 /// True while `my_epoch` is still the current recording session. A background

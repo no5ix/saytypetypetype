@@ -28,7 +28,22 @@ pub async fn check_for_update(
     app: tauri::AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
     inner: tauri::State<'_, AppState>,
+    identity: tauri::State<'_, crate::build_identity::BuildIdentity>,
 ) -> Result<UpdateInfo, String> {
+    // Development builds use their own bundle identifier and are never
+    // installed in place of the production app, so they must not install a
+    // production release over themselves.
+    if identity.is_development {
+        log_update!(
+            info,
+            "Automatic updates are disabled for development builds ({})",
+            identity.identifier
+        );
+        return Err(
+            "开发版本不检查自动更新，请使用正式版本 (com.yolanda.voicepaste) 更新".to_string(),
+        );
+    }
+
     let config = inner
         .config_manager
         .load_config()
@@ -89,7 +104,12 @@ pub async fn check_for_update(
 pub async fn download_and_install_update(
     app: tauri::AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
+    identity: tauri::State<'_, crate::build_identity::BuildIdentity>,
 ) -> Result<(), String> {
+    if identity.is_development {
+        return Err("开发版本不支持自动更新，请使用正式版本 (com.yolanda.voicepaste)".to_string());
+    }
+
     let update = pending
         .0
         .lock()

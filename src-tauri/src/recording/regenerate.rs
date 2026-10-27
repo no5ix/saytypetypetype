@@ -27,6 +27,9 @@ pub(crate) async fn regenerate_history_transcription(
     ts: String,
 ) -> Result<serde_json::Value, String> {
     let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
+    // Silent regeneration has no microphone session; keep timing diagnostics
+    // from attributing it to an earlier stop.
+    *app_inner.stop_started_at.lock().unwrap() = None;
 
     let entry = {
         let stats = app_inner.stats.lock().await;
@@ -51,7 +54,7 @@ pub(crate) async fn regenerate_history_transcription(
     // into the overlay: regeneration is silent. `commit_and_await_final` resolves
     // through the session's own commit channel, independent of this receiver.
     let (session, _event_rx, _) =
-        session::create_active_session(&app_handle, &config, &hotwords).await?;
+        session::create_active_session(&app_handle, &app_inner, &config, &hotwords).await?;
     let session: Arc<dyn crate::asr::AsrSession> = Arc::from(session);
 
     for chunk in samples.chunks(REGEN_CHUNK_SIZE) {

@@ -141,44 +141,31 @@ pub(crate) fn setup_overlay_window(app: &App) {
     }
 }
 
-/// Position the overlay at bottom-center of the primary screen.
-///
-/// Called from RunEvent::Ready (to avoid macOS window server timing warnings) and
-/// again every time the overlay is about to be shown. Re-running it on each show is
-/// what lets the overlay follow display changes: when an external monitor is plugged
-/// in or unplugged the primary monitor (and its work area) changes, but the window
-/// keeps its old frame until repositioned — which previously required an app restart.
+/// Position the overlay at bottom-center of the display containing the active
+/// target application. Called at startup and on every show. Re-resolving on
+/// each show is what lets the overlay follow the user across displays.
 pub(crate) fn position_overlay(app_handle: &AppHandle) {
+    let target = crate::display::resolve_target_display();
+    position_overlay_on(app_handle, &target);
+}
+
+/// Position the overlay on an already-resolved session target.
+pub(crate) fn position_overlay_on(app_handle: &AppHandle, target: &crate::display::TargetDisplay) {
     if let Some(overlay) = app_handle.get_window("overlay") {
         // Set window properties here (RunEvent::Ready) rather than during setup()
         // to avoid macOS window server timing issues.
         let _ = overlay.set_ignore_cursor_events(true);
         let _ = overlay.set_visible_on_all_workspaces(true);
 
-        // Use the PRIMARY monitor's WORK AREA in LOGICAL units. The previous code
-        // used physical pixels, which on a Retina (2x) display shrank the window to
-        // half size and mispositioned it, and it measured from the full screen
-        // height instead of the work area (ignoring the Dock / menu bar).
-        if let Ok(Some(monitor)) = overlay.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let work_area = monitor.work_area();
-            let wa_x = work_area.position.x as f64 / scale;
-            let wa_y = work_area.position.y as f64 / scale;
-            let wa_w = work_area.size.width as f64 / scale;
-            let wa_h = work_area.size.height as f64 / scale;
+        // Use the target display's WORK AREA in LOGICAL points. Logical units
+        // keep Retina displays at native size; the work area excludes the menu
+        // bar and Dock. Coordinates are top-left global, so secondary displays
+        // left of or above the primary (negative x/y) work unchanged.
+        let work_area = target.display.work_area;
+        let (x, y) = crate::display::bottom_center_position(work_area, 720.0, 300.0, 48.0);
 
-            let overlay_width = 720.0f64;
-            let overlay_height = 300.0f64;
-            let x = wa_x + (wa_w - overlay_width) / 2.0;
-            let y = wa_y + wa_h - overlay_height - 48.0;
-
-            let _ = overlay.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-                overlay_width,
-                overlay_height,
-            )));
-            let _ =
-                overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
-        }
+        let _ = overlay.set_size(tauri::Size::Logical(tauri::LogicalSize::new(720.0, 300.0)));
+        let _ = overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
     }
 }
 

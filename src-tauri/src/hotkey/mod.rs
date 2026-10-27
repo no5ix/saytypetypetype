@@ -16,6 +16,7 @@ mod validation;
 pub use validation::{compile_bindings, validate_change, validate_target};
 
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::Sender as CrossbeamSender;
@@ -28,6 +29,32 @@ pub use listener::{ensure_hotkey_active, reset_recording};
 pub use matcher::MatcherState;
 pub use parse::parse_hotkey_string;
 pub(crate) use recorder::{is_valid_main_first_key, record_combination};
+
+// ---------------------------------------------------------------------------
+// Picker modal keys
+// ---------------------------------------------------------------------------
+
+/// One picker option's shortcut. Reuses the same key sets as the recording
+/// bindings, so left/right modifier distinction and shortcut conflicts follow
+/// the existing system instead of a second configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerKeyBinding {
+    pub option_id: String,
+    pub keys: BTreeSet<Key>,
+}
+
+/// Picker key state. While set, the recording matcher is bypassed entirely:
+/// keys choose an option or cancel, and cannot start/stop a recording.
+#[derive(Debug, Clone)]
+pub struct PickerKeyState {
+    pub session_id: u64,
+    pub bindings: Vec<PickerKeyBinding>,
+    /// Keys held down since the picker opened.
+    pub held: HashSet<Key>,
+    /// `false` until the keys held at open time are released, so the chord that
+    /// stopped the recording cannot immediately select an option.
+    pub armed: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +121,9 @@ pub struct HotkeyConfigInner {
     /// The hotkey state machine. Held under the same lock so lib.rs can reset
     /// it when a recording is cancelled or a start is diverted/failed.
     pub matcher: MatcherState,
+    /// Active multi-version picker shortcuts, if the picker is open. While set,
+    /// the listener routes keys here instead of to `matcher`.
+    pub picker: Option<PickerKeyState>,
 }
 
 /// Thread-safe handle to the hotkey configuration.
@@ -121,6 +151,7 @@ fn create_config(bindings: Vec<HotkeyBinding>) -> HotkeyConfig {
         recording: false,
         record_tx: None,
         matcher: MatcherState::new(),
+        picker: None,
     }))
 }
 
@@ -207,6 +238,86 @@ pub fn set_enter_enabled(config: &HotkeyConfig, enabled: bool) {
     sync_suppressed_keys(config);
 }
 
+// ---------------------------------------------------------------------------
+// Picker modal routing
+// ---------------------------------------------------------------------------
+
+/// Install the option shortcuts for an open picker. Keys already held (the
+/// chord that stopped the recording) are recorded so releasing them arms
+/// selection instead of instantly choosing the first matching option.
+pub fn set_picker_bindings(
+    config: &HotkeyConfig,
+    session_id: u64,
+    bindings: Vec<PickerKeyBinding>,
+) {
+    let mut cfg = config.write().unwrap();
+    cfg.matcher.reset_recording();
+    let held: HashSet<Key> = physical::modifier_states()
+        .into_iter()
+        .filter_map(|(key, pressed)| pressed.then_some(key))
+        .collect();
+    let armed = held.is_empty();
+    cfg.picker = Some(PickerKeyState {
+        session_id,
+        bindings,
+        held,
+        armed,
+    });
+    // ESC dismisses the picker even though the app is idle-looking while it is
+    // open; keep the global shortcut live.
+    cfg.escape_enabled = true;
+    drop(cfg);
+    sync_suppressed_keys(config);
+}
+
+/// Remove picker key routing (selection started, delivered, or cancelled).
+pub fn clear_picker_bindings(config: &HotkeyConfig) {
+    config.write().unwrap().picker = None;
+}
+
+/// The picker session currently owning the keyboard, if any.
+pub fn picker_session_id(config: &HotkeyConfig) -> Option<u64> {
+    config
+        .read()
+        .unwrap()
+        .picker
+        .as_ref()
+        .map(|picker| picker.session_id)
+}
+
+/// Feed one raw event to the picker key state. Returns the option to deliver
+/// when a full configured chord was pressed. The caller must hold the write
+/// lock; the listener drives this instead of the recording matcher.
+pub(super) fn process_picker_event(
+    cfg: &mut HotkeyConfigInner,
+    kind: keytap::EventKind,
+) -> Option<(u64, String)> {
+    let picker = cfg.picker.as_mut()?;
+    match kind {
+        keytap::EventKind::KeyRepeat(_) => None,
+        keytap::EventKind::KeyDown(key) => {
+            if !picker.held.insert(key) {
+                return None;
+            }
+            if !picker.armed {
+                return None;
+            }
+            let matched = picker.bindings.iter().find(|binding| {
+                binding.keys.len() == picker.held.len()
+                    && binding.keys.iter().all(|k| picker.held.contains(k))
+            });
+            matched.map(|binding| (picker.session_id, binding.option_id.clone()))
+        }
+        keytap::EventKind::KeyUp(key) => {
+            picker.held.remove(&key);
+            if picker.held.is_empty() {
+                picker.armed = true;
+            }
+            None
+        }
+    }
+}
+
 /// Mirror the ESC/Enter gates into keytap's suppressed-key set so those keys
 /// never reach the foreground app while they are bound as decision keys —
 /// pressing Enter to paste the raw text must not also submit the user's chat
@@ -226,4 +337,104 @@ fn sync_suppressed_keys(config: &HotkeyConfig) {
         keys.push(keytap::Key::NumpadEnter);
     }
     keytap::set_suppressed_keys(&keys);
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use keytap::EventKind;
+
+    fn state(bindings: Vec<PickerKeyBinding>, armed: bool) -> HotkeyConfigInner {
+        HotkeyConfigInner {
+            bindings: Vec::new(),
+            escape_enabled: true,
+            enter_enabled: false,
+            tap_active: false,
+            recording: false,
+            record_tx: None,
+            matcher: MatcherState::new(),
+            picker: Some(PickerKeyState {
+                session_id: 7,
+                bindings,
+                held: HashSet::new(),
+                armed,
+            }),
+        }
+    }
+
+    fn binding(option: &str, keys: &[keytap::Key]) -> PickerKeyBinding {
+        PickerKeyBinding {
+            option_id: option.to_string(),
+            keys: keys.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn holding_the_stop_chord_does_not_immediately_select() {
+        // Not armed: the key that stopped the recording is still down. Releasing
+        // it arms the picker; pressing it again then selects the original.
+        let mut cfg = state(
+            vec![binding("__original__", &[keytap::Key::ShiftRight])],
+            false,
+        );
+        cfg.picker
+            .as_mut()
+            .unwrap()
+            .held
+            .insert(keytap::Key::ShiftRight);
+        assert!(
+            process_picker_event(&mut cfg, EventKind::KeyUp(keytap::Key::ShiftRight)).is_none()
+        );
+        assert!(cfg.picker.as_ref().unwrap().armed);
+        assert_eq!(
+            process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::ShiftRight)),
+            Some((7, "__original__".to_string()))
+        );
+    }
+
+    #[test]
+    fn right_command_release_arms_then_selects_the_original() {
+        let mut cfg = state(
+            vec![binding("__original__", &[keytap::Key::MetaRight])],
+            false,
+        );
+        cfg.picker
+            .as_mut()
+            .unwrap()
+            .held
+            .insert(keytap::Key::MetaRight);
+        // The Right Command press that stopped the recording is still held.
+        assert!(process_picker_event(&mut cfg, EventKind::KeyUp(keytap::Key::MetaRight)).is_none());
+        assert!(cfg.picker.as_ref().unwrap().armed);
+        // Pressing Right Command again chooses the original transcript.
+        assert_eq!(
+            process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::MetaRight)),
+            Some((7, "__original__".to_string()))
+        );
+    }
+
+    #[test]
+    fn extra_keys_block_a_partial_chord_match() {
+        let mut cfg = state(
+            vec![binding(
+                "prompt:translate",
+                &[keytap::Key::ShiftLeft, keytap::Key::T],
+            )],
+            true,
+        );
+        process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::ShiftLeft));
+        process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::A));
+        assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::T)).is_none());
+    }
+
+    #[test]
+    fn key_repeat_cannot_deliver_twice() {
+        let mut cfg = state(vec![binding("prompt:translate", &[keytap::Key::T])], true);
+        assert_eq!(
+            process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::T)),
+            Some((7, "prompt:translate".to_string()))
+        );
+        assert!(process_picker_event(&mut cfg, EventKind::KeyRepeat(keytap::Key::T)).is_none());
+        assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::T)).is_none());
+    }
 }

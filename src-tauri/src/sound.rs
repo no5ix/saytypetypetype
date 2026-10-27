@@ -8,36 +8,122 @@
 //! decodes via symphonia (mp3 out of the box) and handles resampling internally,
 //! so no sample-rate matching is needed.
 
-/// Play an audio file on a background thread. The thread blocks on
-/// `sleep_until_end` so the `OutputStream` stays alive for the whole sound.
-/// Errors are logged only — rodio + symphonia is stable enough that no fallback
-/// (afplay/PowerShell) is warranted. Empty path is a no-op.
-pub(crate) fn play_audio_file(file_path: &str) {
-    if file_path.is_empty() {
-        return;
+use std::time::Duration;
+
+/// Completion signal for a cue started by [`play_audio_file`].
+///
+/// Recording-start dimming must not lower the system volume while the cue is
+/// still audible. rodio exposes playback completion through
+/// `Sink::sleep_until_end`, so the playback thread resolves this once the sound
+/// has finished, failed, or been superseded. Waiting is always bounded by the
+/// caller so a pathological file can never stall the recording workflow.
+pub(crate) struct PlaybackWaiter {
+    done: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl PlaybackWaiter {
+    /// Wait for playback to end, at most `timeout`. A timeout means the cue is
+    /// still playing (or the thread is stuck); the caller proceeds anyway.
+    pub(crate) async fn wait(self, timeout: Duration) {
+        let _ = tokio::time::timeout(timeout, self.done).await;
     }
+}
+
+/// The cue currently playing, if any. Cues are single-instance: starting a new
+/// one stops the previous sound so two shortcuts in quick succession can never
+/// overlap. Only the rodio `Sink` is stored (it is `Send`); the `OutputStream`
+/// has to stay on its playback thread.
+fn cue_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<rodio::Sink>>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<rodio::Sink>>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Generation counter for cue requests: a superseded cue must not re-register
+/// itself in the slot after a newer cue has already started.
+fn cue_generation() -> &'static std::sync::atomic::AtomicU64 {
+    static GENERATION: std::sync::OnceLock<std::sync::atomic::AtomicU64> =
+        std::sync::OnceLock::new();
+    GENERATION.get_or_init(|| std::sync::atomic::AtomicU64::new(0))
+}
+
+fn stop_cue() {
+    let playing = cue_slot().lock().ok().and_then(|mut slot| slot.take());
+    if let Some(sink) = playing {
+        sink.stop();
+    }
+}
+
+/// Play a cue on a background thread. The thread blocks on `sleep_until_end` so
+/// the `OutputStream` stays alive for the whole sound, then resolves the
+/// returned waiter. Errors are logged only — rodio + symphonia is stable enough
+/// that no fallback (afplay/PowerShell) is warranted. Empty path is a no-op.
+pub(crate) fn play_audio_file(file_path: &str) -> Option<PlaybackWaiter> {
+    if file_path.is_empty() {
+        return None;
+    }
+
+    let generation = cue_generation().fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    stop_cue();
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let path = file_path.to_string();
     if let Err(error) = std::thread::Builder::new()
         .name("voicepaste-sound".to_string())
         .spawn(move || {
-            if let Err(error) = play(&path) {
+            if let Err(error) = play_cue(&path, generation) {
                 log_app!(warn, "Audio playback failed ({}): {}", path, error);
             }
+            // Resolve on every path (played, failed, or superseded) so the
+            // caller's bounded wait never has to guess.
+            let _ = done_tx.send(());
         })
     {
         log_app!(warn, "Failed to spawn audio thread: {}", error);
+        return None;
     }
+
+    Some(PlaybackWaiter { done: done_rx })
 }
 
-fn play(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn play_cue(path: &str, my_generation: u64) -> Result<(), Box<dyn std::error::Error>> {
     use std::fs::File;
     use std::io::BufReader;
+    use std::sync::atomic::Ordering::SeqCst;
+
     // Keep `_stream` alive for the whole call: dropping it stops playback.
     let (_stream, handle) = rodio::OutputStream::try_default()?;
-    let sink = rodio::Sink::try_new(&handle)?;
-    let file = File::open(path)?;
-    sink.append(rodio::Decoder::new(BufReader::new(file))?);
+    let sink = std::sync::Arc::new(rodio::Sink::try_new(&handle)?);
+    // Decode setup happens outside the slot lock so a bad file cannot hold it.
+    let decoder = rodio::Decoder::new(BufReader::new(File::open(path)?))?;
+
+    {
+        let mut slot = cue_slot()
+            .lock()
+            .map_err(|_| "cue slot poisoned".to_string())?;
+        if cue_generation().load(SeqCst) != my_generation {
+            // A newer cue superseded this one while it was starting up.
+            return Ok(());
+        }
+        if let Some(old) = slot.take() {
+            old.stop();
+        }
+        *slot = Some(std::sync::Arc::clone(&sink));
+        // Append inside the lock so `stop_cue` cannot see the sink before the
+        // audio is queued.
+        sink.append(decoder);
+    }
     sink.sleep_until_end();
+
+    // Release the slot only if it still holds this sink.
+    if let Ok(mut slot) = cue_slot().lock() {
+        let is_current = slot
+            .as_ref()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &sink));
+        if is_current {
+            *slot = None;
+        }
+    }
     Ok(())
 }
 

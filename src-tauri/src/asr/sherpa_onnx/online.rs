@@ -336,7 +336,7 @@ fn finish_online_stream(
 }
 
 fn run_online_worker(
-    recognizer: OnlineRecognizer,
+    recognizer: Arc<OnlineRecognizer>,
     stream: OnlineStream,
     mut vad: VadProcessor,
     chunk_size: usize,
@@ -427,7 +427,7 @@ fn run_online_worker(
 
 /// Spawn an online worker thread and return the session + command sender.
 pub(crate) fn spawn_online_worker(
-    recognizer: OnlineRecognizer,
+    recognizer: Arc<OnlineRecognizer>,
     stream: OnlineStream,
     vad: VadProcessor,
     chunk_size: usize,

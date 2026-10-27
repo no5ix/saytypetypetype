@@ -14,7 +14,15 @@ use super::finalize;
 use super::history;
 use super::session;
 use super::wav;
-use super::{is_current_epoch, reset_matcher_recording};
+use super::{
+    begin_output_volume_session, is_current_epoch, lower_output_volume_for,
+    reset_matcher_recording, restore_output_volume, restore_output_volume_for,
+};
+
+/// Upper bound on waiting for the start cue before dimming. The bundled cue is
+/// ~0.5 s; this only guards against a corrupt or unusually long custom file so
+/// the volume workflow can never stall indefinitely.
+const START_CUE_VOLUME_WAIT: Duration = Duration::from_millis(2500);
 
 /// Start recording from idle state. Used by both toggle and hold modes.
 pub(super) async fn start_recording(app_handle: AppHandle) {
@@ -23,6 +31,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
 
     // Mark as recording
     *recording_state.0.lock().unwrap() = true;
+    *app_inner.stop_started_at.lock().unwrap() = None;
 
     // 1. Load config
     let config = match app_inner.config_manager.load_config() {
@@ -46,7 +55,8 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
 
     // Settle any parked polish before recording again. Otherwise its auto-paste
     // timer would fire mid-recording and drop the previous transcript into
-    // whatever now has focus.
+    // whatever now has focus. This also restores the previous session's volume
+    // before the new session snapshots the current state.
     super::polish::deliver_raw(&app_handle, &app_inner, "superseded by a new recording").await;
 
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
@@ -55,9 +65,16 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     *app_inner.current_retry_of.lock().await = None;
     *app_inner.current_failure_ts.lock().await = None;
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
+
+    // Resolve which display holds the application that will receive the text.
+    // Captured once per session so the indicator (and later the picker) follow
+    // the target app across displays instead of always using the primary one.
+    let target = crate::display::resolve_target_display_on_main(&app_handle).await;
+    *app_inner.session_target.lock().await = Some(target.clone());
+
     // Re-position before showing so the overlay follows the current display layout
-    // (e.g. after an external monitor was connected/disconnected).
-    overlay::position_overlay(&app_handle);
+    // and the target application.
+    overlay::position_overlay_on(&app_handle, &target);
     overlay::show(&app_handle);
 
     // 2. Warm up microphone capture (native cpal on macOS + Windows). The capture
@@ -66,6 +83,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     set_app_state(&app_handle, &app_inner, app_state::AppState::Connecting).await;
     if let Err(e) = capture::start_capture(app_handle.clone(), Arc::clone(&app_inner)).await {
         *recording_state.0.lock().unwrap() = false;
+        restore_output_volume(&app_inner).await;
         set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
         log_rec!(warn, "Native audio warmup failed: {}", e);
         reset_matcher_recording(&app_handle);
@@ -77,6 +95,7 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     if !*recording_state.0.lock().unwrap() {
         log_rec!(warn, "Cancelled during warmup, aborting start");
         capture::stop_capture(&app_inner).await;
+        restore_output_volume(&app_inner).await;
         set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
         overlay::hide(&app_handle);
         return;
@@ -109,8 +128,42 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     let (connect_tx, connect_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     *app_inner.connect_rx.lock().await = Some(connect_rx);
 
-    cue::emit_cue(&app_handle, &app_inner, "start");
+    // Claim the system-volume snapshot BEFORE the cue. The dim itself is
+    // deferred until the cue has finished so the start sound plays at the
+    // user's real volume; if the user stops during the cue, cleanup clears the
+    // session and the deferred dim becomes a no-op instead of muting the
+    // already-finished workflow.
+    begin_output_volume_session(&app_inner, my_epoch).await;
+    // ESC can land while the volume session is being claimed. A cancelled start
+    // must release that claim itself, otherwise its deferred dim would run with
+    // no terminal path left to restore the volume.
+    if !*recording_state.0.lock().unwrap() {
+        log_rec!(info, "Cancelled during volume session start; aborting");
+        capture::stop_capture(&app_inner).await;
+        restore_output_volume_for(&app_inner, my_epoch).await;
+        overlay::hide(&app_handle);
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        return;
+    }
+    // A newer session superseded this start; it owns the state and volume now.
+    if !is_current_epoch(&app_inner, my_epoch) {
+        return;
+    }
+    let start_cue = cue::emit_cue_tracked(&app_handle, &app_inner, "start");
     set_app_state(&app_handle, &app_inner, app_state::AppState::Recording).await;
+    // The same cancel can land while the cue/state transition is applied, after
+    // which no stop hotkey will finalize this session. Settle it cleanly.
+    if !*recording_state.0.lock().unwrap() {
+        log_rec!(info, "Cancelled during recording start; aborting");
+        capture::stop_capture(&app_inner).await;
+        restore_output_volume_for(&app_inner, my_epoch).await;
+        overlay::hide(&app_handle);
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        return;
+    }
+    if !is_current_epoch(&app_inner, my_epoch) {
+        return;
+    }
 
     overlay::begin_recording_hints(&app_handle, &app_inner).await;
 
@@ -118,6 +171,18 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     let connect_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         session::connect_and_attach(connect_handle, config, hotwords, my_epoch, connect_tx).await;
+    });
+
+    // 6. Lower the output volume only after the cue is no longer audible. The
+    //    wait is bounded and the guard ignores a dim whose session has already
+    //    ended, so a rapid stop can never leave the system volume lowered.
+    let dim_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(cue) = start_cue {
+            cue.wait(START_CUE_VOLUME_WAIT).await;
+        }
+        let app_inner = dim_handle.state::<Arc<app_state::AppInner>>();
+        lower_output_volume_for(&app_inner, my_epoch).await;
     });
 }
 
@@ -134,6 +199,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
         }
         *recording = false;
     }
+    *app_inner.stop_started_at.lock().unwrap() = Some(std::time::Instant::now());
     let my_epoch = app_inner
         .session_epoch
         .load(std::sync::atomic::Ordering::SeqCst);
@@ -181,11 +247,14 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
                         info,
                         "Stop with no speech signal; cancelling in-flight connect"
                     );
+                    app_inner.pending_audio.lock().await.clear();
+                    history::discard_recording_artifacts(&app_inner).await;
+                    restore_output_volume_for(&app_inner, my_epoch).await;
+                    // Cancel any in-flight connect only after the session's
+                    // volume cleanup, so the scoped restore still matches.
                     app_inner
                         .session_epoch
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    app_inner.pending_audio.lock().await.clear();
-                    history::discard_recording_artifacts(&app_inner).await;
                     overlay::hide(&app_handle);
                     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
                     return;
@@ -235,6 +304,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             app_inner.pending_audio.lock().await.clear();
             *app_inner.accumulated_text.lock().await = String::new();
             history::discard_recording_artifacts(&app_inner).await;
+            restore_output_volume_for(&app_inner, my_epoch).await;
             overlay::hide(&app_handle);
             set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
             return;
@@ -267,6 +337,7 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
                 if !is_current_epoch(&app_inner, my_epoch) {
                     return;
                 }
+                restore_output_volume_for(&app_inner, my_epoch).await;
                 overlay::emit_retryable_error_hint(&app_handle, &app_inner, &e).await;
                 set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
                 overlay::schedule_retry_overlay_hide(app_handle.clone(), Arc::clone(&app_inner));
@@ -276,6 +347,16 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
         if !is_current_epoch(&app_inner, my_epoch) {
             session.close();
             return;
+        }
+        // Timing-only diagnostic: stop → final ASR result. This includes any
+        // wait for a still-connecting session, so it is an end-to-end number,
+        // not a pure decode benchmark.
+        if let Some(started) = *app_inner.stop_started_at.lock().unwrap() {
+            log_rec!(
+                info,
+                "ASR final result ready {} ms after stop",
+                started.elapsed().as_millis()
+            );
         }
         log_rec!(
             debug,
@@ -311,6 +392,12 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             *app_inner.accumulated_text.lock().await = String::new();
             return;
         }
+        if outcome == finalize::FinalizeOutcome::Picker {
+            // The picker owns delivery now. Keep the volume lowered and the app
+            // state as-is until the user selects or dismisses it.
+            *app_inner.accumulated_text.lock().await = String::new();
+            return;
+        }
     } else {
         if !is_current_epoch(&app_inner, my_epoch) {
             return;
@@ -330,6 +417,10 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
     // 11. Clear cross-reconnect accumulated text for the next recording.
     *app_inner.accumulated_text.lock().await = String::new();
 
+    // The workflow (ASR, polish, clipboard, paste) is complete; restore before
+    // returning to Idle so a new session cannot race this cleanup.
+    restore_output_volume_for(&app_inner, my_epoch).await;
+
     // Successful output owns its feedback lifetime.
     if !app_inner
         .feedback_visible
@@ -346,6 +437,9 @@ pub(super) async fn abort_retry_or_failure(
     app_handle: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
 ) {
+    let abort_epoch = app_inner
+        .session_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
     app_inner
         .session_epoch
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -358,6 +452,7 @@ pub(super) async fn abort_retry_or_failure(
     *app_inner.current_failure_ts.lock().await = None;
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.accumulated_text.lock().await = String::new();
+    restore_output_volume_for(app_inner, abort_epoch).await;
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     overlay::hide(app_handle);
     // set_app_state(Idle) also re-syncs (disables) the ESC shortcut.
@@ -378,6 +473,11 @@ pub(super) async fn cancel_recording(app_handle: AppHandle) {
 
     *recording_state.0.lock().unwrap() = false;
     log_rec!(debug, "Cancel requested");
+
+    // Remember which session owns the volume snapshot before bumping the epoch.
+    let cancel_epoch = app_inner
+        .session_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
 
     // Bump the epoch so any in-flight background connect task discards its
     // result, and drop any audio buffered before the session was ready.
@@ -403,6 +503,7 @@ pub(super) async fn cancel_recording(app_handle: AppHandle) {
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.accumulated_text.lock().await = String::new();
 
+    restore_output_volume_for(&app_inner, cancel_epoch).await;
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     overlay::hide(&app_handle);
     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;

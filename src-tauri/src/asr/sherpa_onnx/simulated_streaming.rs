@@ -213,7 +213,7 @@ fn process_segments(
 /// audio for interim decodes every ~200 ms while speech is active,
 /// producing partial results that mimic streaming ASR.
 fn run_simulated_streaming_worker(
-    recognizer: OfflineRecognizer,
+    recognizer: Arc<OfflineRecognizer>,
     mut vad: VadProcessor,
     event_tx: mpsc::UnboundedSender<AsrEvent>,
     rx: std_mpsc::Receiver<WorkerCommand>,
@@ -294,7 +294,7 @@ fn run_simulated_streaming_worker(
 
 /// Spawn a simulated streaming worker thread and return the session + command sender.
 pub(crate) fn spawn_simulated_streaming_worker(
-    recognizer: OfflineRecognizer,
+    recognizer: Arc<OfflineRecognizer>,
     vad: VadProcessor,
     event_tx: mpsc::UnboundedSender<AsrEvent>,
     punct_processor: Option<Arc<PunctuationProcessor>>,

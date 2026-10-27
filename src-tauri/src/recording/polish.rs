@@ -26,8 +26,8 @@ use crate::app_state::{self, set_app_state, PendingPolish, PolishRetryCommand};
 use crate::llm::PolishError;
 use crate::overlay;
 
-use super::emit_hint;
 use super::finalize;
+use super::{emit_hint, restore_output_volume_for};
 
 /// How long the user has to retry before the raw text is pasted automatically.
 const POLISH_DECISION_WINDOW: Duration = Duration::from_secs(5);
@@ -48,9 +48,13 @@ pub(super) async fn arm_pending_polish(
     );
 
     let epoch = app_inner.polish_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+    let volume_session = app_inner
+        .session_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
     *app_inner.pending_polish.lock().await = Some(PendingPolish {
         raw_text,
         prompt_id: prompt_id.to_string(),
+        volume_session,
     });
 
     // Settle to Idle first: that is the state the hotkey and ESC routing look
@@ -90,6 +94,9 @@ async fn take_pending(app_inner: &Arc<app_state::AppInner>) -> Option<PendingPol
 /// ESC on the decision window: discard the parked text. Nothing is pasted and
 /// nothing is written to history — the user explicitly cancelled.
 pub(crate) async fn cancel_pending(app_handle: &AppHandle, app_inner: &Arc<app_state::AppInner>) {
+    // Serialize with delivery/retry: the snapshot restore below must finish
+    // before a new session is allowed to take its own snapshot.
+    let _delivery = app_inner.polish_delivery_lock.lock().await;
     let Some(pending) = take_pending(app_inner).await else {
         return;
     };
@@ -98,6 +105,7 @@ pub(crate) async fn cancel_pending(app_handle: &AppHandle, app_inner: &Arc<app_s
         "Discarding pending polish ({} chars) via ESC",
         pending.raw_text.chars().count()
     );
+    restore_output_volume_for(app_inner, pending.volume_session).await;
     overlay::hide(app_handle);
     dismiss_overlay(app_handle, app_inner).await;
 }
@@ -127,6 +135,10 @@ pub(crate) async fn deliver_raw(
     app_inner: &Arc<app_state::AppInner>,
     reason: &str,
 ) {
+    // Serialize with the other deferred-polish resolutions: only one path may
+    // own the parked text and its restore. The volume guard separately
+    // serializes that restore against a new session's snapshot.
+    let _delivery = app_inner.polish_delivery_lock.lock().await;
     let Some(pending) = take_pending(app_inner).await else {
         return;
     };
@@ -147,10 +159,14 @@ pub(crate) async fn deliver_raw(
         app_handle,
         app_inner,
         &pending.raw_text,
+        &pending.raw_text,
         config.as_ref(),
         polish,
+        pending.volume_session,
     )
     .await;
+    // The deferred workflow has now fully settled; restore its saved volume.
+    restore_output_volume_for(app_inner, pending.volume_session).await;
     dismiss_overlay(app_handle, app_inner).await;
 }
 
@@ -215,6 +231,11 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
         Step::Outcome(crate::llm::PolishOutcome::NotPolished)
     };
 
+    // Acquire only for the resolution tail, not the LLM request: a new session
+    // is refused while `polish_retry_active` is set, and the lock keeps the
+    // restore atomic with that flag clearing. Holding it across the network call
+    // would also make a queued caller replay a freshly re-armed pending text.
+    let _delivery = app_inner.polish_delivery_lock.lock().await;
     match step {
         Step::Interrupted(PolishRetryCommand::Cancel) => {
             log_rec!(
@@ -222,6 +243,7 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
                 "Polish retry aborted with ESC; discarding text ({} chars)",
                 pending.raw_text.chars().count()
             );
+            restore_output_volume_for(&app_inner, pending.volume_session).await;
             dismiss_overlay(&app_handle, &app_inner).await;
         }
         Step::Interrupted(PolishRetryCommand::DeliverRaw) => {
@@ -236,10 +258,13 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
                 &app_handle,
                 &app_inner,
                 &pending.raw_text,
+                &pending.raw_text,
                 config.as_ref(),
                 polish,
+                pending.volume_session,
             )
             .await;
+            restore_output_volume_for(&app_inner, pending.volume_session).await;
             dismiss_overlay(&app_handle, &app_inner).await;
         }
         Step::Outcome(crate::llm::PolishOutcome::Polished(text)) => {
@@ -250,9 +275,19 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
             );
             let polish = crate::stats::PolishRecord {
                 prompt_id: Some(pending.prompt_id.clone()),
-                raw_text: Some(pending.raw_text.clone()),
+                raw_text: None,
             };
-            finalize::deliver_text(&app_handle, &app_inner, &text, config.as_ref(), polish).await;
+            finalize::deliver_text(
+                &app_handle,
+                &app_inner,
+                &text,
+                &pending.raw_text,
+                config.as_ref(),
+                polish,
+                pending.volume_session,
+            )
+            .await;
+            restore_output_volume_for(&app_inner, pending.volume_session).await;
             dismiss_overlay(&app_handle, &app_inner).await;
         }
         Step::Outcome(crate::llm::PolishOutcome::NotPolished) => {
@@ -264,10 +299,13 @@ pub(crate) async fn retry_pending_polish(app_handle: AppHandle) -> bool {
                 &app_handle,
                 &app_inner,
                 &pending.raw_text,
+                &pending.raw_text,
                 config.as_ref(),
                 polish,
+                pending.volume_session,
             )
             .await;
+            restore_output_volume_for(&app_inner, pending.volume_session).await;
             dismiss_overlay(&app_handle, &app_inner).await;
         }
         Step::Outcome(crate::llm::PolishOutcome::Failed(error)) => {

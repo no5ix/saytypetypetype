@@ -118,6 +118,32 @@ pub async fn get_audio_config_defaults() -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Failed to serialize audio defaults: {}", e))
 }
 
+/// Current picker state for the floating window (initial load and reconnect).
+#[tauri::command]
+pub async fn get_picker_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    serde_json::to_value(crate::picker::current_view(&state))
+        .map_err(|e| format!("Failed to serialize picker state: {}", e))
+}
+
+/// Deliver the picked version. The backend reserves the option so a shortcut
+/// and a click racing each other paste at most once.
+#[tauri::command]
+pub async fn select_picker_option(
+    app: AppHandle,
+    session_id: u64,
+    option_id: String,
+) -> Result<(), String> {
+    crate::picker::select(app, session_id, option_id).await;
+    Ok(())
+}
+
+/// Dismiss the picker without pasting. Escape uses the same backend path.
+#[tauri::command]
+pub async fn cancel_picker(app: AppHandle, session_id: Option<u64>) -> Result<(), String> {
+    crate::picker::cancel(app, session_id).await;
+    Ok(())
+}
+
 /// Get settings data for the settings window.
 #[tauri::command]
 pub async fn get_settings_data(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -172,6 +198,7 @@ pub async fn save_config_object(
     state: State<'_, AppState>,
     config_object: serde_norway::Value,
 ) -> Result<serde_json::Value, String> {
+    let previous_audio = state.config_manager.load_config().ok().map(|c| c.audio);
     state.config_manager.save_config(&config_object)?;
 
     // Sync hotkey mode from saved config
@@ -184,6 +211,13 @@ pub async fn save_config_object(
 
     // Re-register shortcuts with the new hotkey from the config object
     crate::hotkey::reload_hotkey_bindings(&app);
+
+    // A changed ASR model/parameter set invalidates the warm recognizer cache.
+    // The active session keeps its own handle, so this only affects the next
+    // recording. An unchanged save leaves the cache warm.
+    if previous_audio.as_ref() != Some(&updated_config.audio) {
+        state.asr_models.unload("ASR config changed");
+    }
 
     // Notify the overlay so it can re-apply the glass appearance live.
     let _ = app.emit(
@@ -712,6 +746,9 @@ pub async fn save_hotwords(
     data: HotwordData,
 ) -> Result<serde_json::Value, String> {
     state.hotword_manager.save(&data)?;
+    // Hotwords are part of the recognizer cache key; release the cached model
+    // so the next session rebuilds with the new list.
+    state.asr_models.unload("hotwords changed");
 
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -782,6 +819,11 @@ pub async fn delete_model(app: AppHandle, model_id: String) -> Result<serde_json
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve data dir: {}", e))?;
     model::delete_model(&data_dir, &model_id)?;
+    // The deleted files may back the cached recognizer; drop it so the next
+    // session either reloads or reports the missing model.
+    if let Some(state) = app.try_state::<AppState>() {
+        state.asr_models.unload("model deleted");
+    }
     Ok(serde_json::json!({ "ok": true }))
 }
 

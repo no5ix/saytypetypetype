@@ -505,12 +505,12 @@ mod tests {
     }
 
     #[test]
-    fn embedded_registry_is_version_17() {
+    fn embedded_registry_is_version_18() {
         let registry: ModelRegistry =
             serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
         assert_eq!(
-            registry.version, 17,
-            "EMBEDDED_REGISTRY version should be 17, got {}",
+            registry.version, 18,
+            "EMBEDDED_REGISTRY version should be 18, got {}",
             registry.version
         );
         assert!(
@@ -530,8 +530,8 @@ mod tests {
         let fake_dir = std::path::Path::new("/nonexistent");
         let registry = bundled_registry(fake_dir);
         assert_eq!(
-            registry.version, 17,
-            "bundled_registry should return version 17 from embedded, got {}",
+            registry.version, 18,
+            "bundled_registry should return version 18 from embedded, got {}",
             registry.version
         );
     }
@@ -543,6 +543,48 @@ mod tests {
         // upgrades it via merge_registry's version-gated merge.
         assert_eq!(registry.version, 1);
         assert!(registry.models.iter().any(|m| m.id == "doubao-streaming"));
+    }
+
+    #[test]
+    fn parakeet_entry_is_complete_and_uses_nemo_transducer() {
+        let registry: ModelRegistry =
+            serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
+        let entry = registry
+            .models
+            .iter()
+            .find(|m| m.id == "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
+            .expect("Parakeet TDT v3 entry missing");
+
+        assert_eq!(entry.engine, "sherpa-onnx");
+        assert_eq!(entry.architecture.as_deref(), Some("nemo_transducer"));
+        assert!(entry.download_url.as_deref().unwrap().ends_with(".tar.bz2"));
+        for key in ["encoder", "decoder", "joiner", "tokens"] {
+            assert!(
+                entry.model_files.contains_key(key),
+                "missing model_files key {key}"
+            );
+        }
+        // NeMo transducers emit punctuation themselves and take no hotwords.
+        assert!(!entry.capabilities.streaming);
+        assert!(entry.capabilities.punctuation);
+        assert!(!entry.capabilities.hotwords);
+    }
+
+    #[test]
+    fn existing_asr_models_remain_available_alongside_parakeet() {
+        let registry: ModelRegistry =
+            serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
+        for id in [
+            "sherpa-onnx-qwen3-asr-0.6B-int8",
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8",
+            "sherpa-onnx-funasr-nano-zh-en-ja-int8",
+            "sherpa-onnx-streaming-zipformer-zh-en",
+        ] {
+            assert!(
+                registry.models.iter().any(|m| m.id == id),
+                "{id} must stay selectable as a fallback"
+            );
+        }
     }
 
     #[test]

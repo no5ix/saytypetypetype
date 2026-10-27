@@ -15,6 +15,7 @@ use super::finalize;
 use super::history;
 use super::{
     current_session_text, emit_hint, is_current_epoch, is_recording, reset_matcher_recording,
+    restore_output_volume_for,
 };
 
 /// Maximum number of consecutive ASR reconnect attempts before giving up and
@@ -31,6 +32,7 @@ const RECONNECT_BACKOFF_MS: u64 = 300;
 /// (non-streaming engines produce no partial results).
 pub(super) async fn create_active_session(
     app_handle: &AppHandle,
+    app_inner: &Arc<app_state::AppInner>,
     config: &crate::config::AppConfig,
     hotwords: &[String],
 ) -> Result<
@@ -50,7 +52,36 @@ pub(super) async fn create_active_session(
         .app_data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let registry = crate::model::load_registry(&data_dir, &resource_dir);
-    crate::asr::create_engine_session(config, &registry, data_dir, resource_dir, hotwords).await
+    let started = std::time::Instant::now();
+    let provider = config.audio_provider().to_string();
+    let result = crate::asr::create_engine_session(
+        config,
+        &registry,
+        data_dir,
+        resource_dir,
+        hotwords,
+        Arc::clone(&app_inner.asr_models),
+    )
+    .await;
+    // Timing-only diagnostics: provider, whether the recognizer came from the
+    // warm cache, and the duration. No audio or transcript content is logged.
+    match &result {
+        Ok(_) => log_rec!(
+            info,
+            "ASR session created in {} ms (provider {}, {} hotwords)",
+            started.elapsed().as_millis(),
+            provider,
+            hotwords.iter().filter(|h| !h.trim().is_empty()).count()
+        ),
+        Err(error) => log_rec!(
+            warn,
+            "ASR session creation failed after {} ms (provider {}): {}",
+            started.elapsed().as_millis(),
+            provider,
+            error
+        ),
+    }
+    result
 }
 
 /// Connect the ASR session in the background (one retry), then attach it: flush
@@ -76,7 +107,7 @@ pub(super) async fn connect_and_attach(
     }
 
     // Retry transient setup failures once; permanent ElevenLabs errors need user action.
-    let mut result = create_active_session(&app_handle, &config, &hotwords).await;
+    let mut result = create_active_session(&app_handle, &app_inner, &config, &hotwords).await;
     if result.as_ref().err().is_some_and(|message| {
         config.audio_provider() != crate::config::ELEVENLABS_REALTIME_ID
             || crate::asr::elevenlabs::retryable_start_error(message)
@@ -90,7 +121,7 @@ pub(super) async fn connect_and_attach(
         if let Err(ref e) = result {
             log_rec!(warn, "ASR connect failed, retrying once: {}", e);
         }
-        result = create_active_session(&app_handle, &config, &hotwords).await;
+        result = create_active_session(&app_handle, &app_inner, &config, &hotwords).await;
     }
 
     // A newer session (cancel / restart) superseded us: discard quietly.
@@ -168,6 +199,7 @@ pub(super) async fn connect_and_attach(
             history::record_transcription_failure(&app_handle, &app_inner, &message).await;
             // Emit error hint BEFORE setting idle so the overlay shows it: the
             // frontend's idle handler only clears "info"-level hints.
+            restore_output_volume_for(&app_inner, my_epoch).await;
             overlay::emit_retryable_error_hint(&app_handle, &app_inner, &message).await;
             set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
             // Auto-hide after a delay so the user can read it; guard: still idle.
@@ -366,7 +398,7 @@ async fn try_reconnect_asr(
     };
     let hotwords = app_inner.hotword_manager.active_words();
 
-    match create_active_session(app, &config, &hotwords).await {
+    match create_active_session(app, app_inner, &config, &hotwords).await {
         Ok((session, event_rx, _)) => {
             let session: Arc<dyn crate::asr::AsrSession> = Arc::from(session);
             // Flush audio buffered during the gap, then publish, under the

@@ -493,6 +493,36 @@ mod tests {
         }
     }
     #[test]
+    fn right_command_toggles_between_start_and_stop_only_while_recording() {
+        // Task 5 state contract: idle → start, recording → stop, idle → start.
+        // The picker phase is handled separately by the modal key router, which
+        // is covered in `hotkey::picker_tests`.
+        let b = toggle();
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+
+        event(&mut m, &b, t, 0, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 1, up(Key::MetaRight)),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
+
+        event(&mut m, &b, t, 2, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 3, up(Key::MetaRight)),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
+        assert_eq!(m.recording_mode(), None);
+
+        event(&mut m, &b, t, 4, down(Key::MetaRight));
+        assert_eq!(
+            event(&mut m, &b, t, 5, up(Key::MetaRight)),
+            vec![start(HotkeyMode::Toggle)]
+        );
+    }
+
+    #[test]
     fn longer_toggle_stop_wins_without_firing_short_stop() {
         let mut b = toggle();
         b.push(binding(

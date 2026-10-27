@@ -1,6 +1,6 @@
 {
-  "version": 17,
-  "updated_at": "2026-10-15",
+  "version": 18,
+  "updated_at": "2026-10-27",
   "defaults": {
     "asr": {
       "rate": 16000,
@@ -280,6 +280,35 @@
         "temperature": 1e-6,
         "top_p": 0.8,
         "seed": 42
+      }
+    },
+    {
+      "id": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+      "type": "offline",
+      "category": "asr",
+      "engine": "sherpa-onnx",
+      "name": "Parakeet TDT 0.6B v3（英语等 25 种语言）",
+      "description": "NVIDIA Parakeet TDT 0.6B v3 的 int8 量化 ONNX 版本，英语识别快、自带大小写与标点，额外支持 24 种欧洲语言",
+      "tags": ["英语优先", "25种欧洲语言", "自带标点", "低延时"],
+      "capabilities": {
+        "streaming": false,
+        "hotwords": false,
+        "punctuation": true,
+        "itn": false
+      },
+      "languages": ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "uk"],
+      "architecture": "nemo_transducer",
+      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+      "file_size": 487,
+      "mem_size": 1500,
+      "model_files": {
+        "encoder": "encoder.int8.onnx",
+        "decoder": "decoder.int8.onnx",
+        "joiner": "joiner.int8.onnx",
+        "tokens": "tokens.txt"
+      },
+      "default_config": {
+        "num_threads": 4
       }
     },
     {

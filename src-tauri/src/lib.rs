@@ -2,8 +2,10 @@
 mod logger;
 mod app_state;
 mod asr;
+mod build_identity;
 mod commands;
 mod config;
+mod display;
 mod hotkey;
 mod hotword;
 mod llm;
@@ -11,10 +13,12 @@ mod migration;
 mod model;
 mod overlay;
 mod paste;
+mod picker;
 mod platform;
 mod recording;
 mod sound;
 mod stats;
+mod system_volume;
 #[cfg(test)]
 mod tests;
 mod updater;
@@ -76,6 +80,19 @@ pub fn run() {
             };
             log::set_boxed_logger(Box::new(voice_logger)).expect("Failed to set global logger");
             log::set_max_level(log_level);
+
+            // Build identity (production vs. development bundle). Commands that
+            // only make sense for release builds — the updater — read this
+            // state; the bundle identifier itself also selects the isolated
+            // app-data directory resolved above.
+            let build_identity = build_identity::BuildIdentity::of(app.handle());
+            log_app!(
+                info,
+                "Build identity: {} ({})",
+                build_identity.identifier,
+                build_identity.profile_label()
+            );
+            app.manage(build_identity);
 
             model::ensure_registry(&data_dir, &resource_dir);
 
@@ -150,6 +167,9 @@ pub fn run() {
             commands::get_app_config,
             commands::get_overlay_layout_metrics,
             commands::complete_overlay_hide,
+            commands::get_picker_state,
+            commands::select_picker_option,
+            commands::cancel_picker,
             commands::get_audio_config_defaults,
             commands::get_settings_data,
             commands::save_config_object,
@@ -222,6 +242,17 @@ pub fn run() {
                 if code.is_none() =>
             {
                 api.prevent_exit();
+            }
+            // Final safety net: if the app quits while a session still holds the
+            // output-volume snapshot (e.g. during the deferred-polish window),
+            // put the user's volume back before the process ends.
+            RunEvent::Exit => {
+                if let Some(app_inner) = app.try_state::<std::sync::Arc<AppInner>>() {
+                    app_inner.volume_guard.restore_blocking();
+                    // Explicit deactivation: release the cached recognizers so
+                    // no model memory survives process teardown.
+                    app_inner.asr_models.unload("app exit");
+                }
             }
             _ => {}
         });

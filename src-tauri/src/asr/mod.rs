@@ -1,8 +1,12 @@
 pub mod doubao;
 pub mod elevenlabs;
+pub(crate) mod model_cache;
 pub mod sherpa_onnx;
 
+pub(crate) use sherpa_onnx::SherpaModelCache;
+
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -70,6 +74,7 @@ pub async fn create_engine_session(
     data_dir: PathBuf,
     resource_dir: PathBuf,
     hotwords: &[String],
+    model_cache: Arc<SherpaModelCache>,
 ) -> Result<(Box<dyn AsrSession>, mpsc::UnboundedReceiver<AsrEvent>, bool), String> {
     let engine_model_id = config.audio_provider();
     let entry = registry.models.iter().find(|m| m.id == engine_model_id);
@@ -101,6 +106,7 @@ pub async fn create_engine_session(
                 model_config: config.model_config_json(engine_model_id),
                 punctuation_config,
                 stream_simulate: config.stream_simulate(engine_model_id, registry),
+                model_cache,
             });
             // Non-streaming engines without simulated streaming produce no partials.
             let show_hint =
