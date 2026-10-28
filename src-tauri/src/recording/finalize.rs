@@ -13,7 +13,9 @@ use super::capture;
 use super::cue;
 use super::history;
 use super::polish;
-use super::{emit_hint, reset_matcher_recording, restore_output_volume_for};
+use super::{
+    await_output_volume_settled, emit_hint, reset_matcher_recording, restore_output_volume_for,
+};
 
 /// Whether the finishing pipeline actually delivered text, or parked it awaiting
 /// the user's decision after a failed polish. `Deferred` keeps the overlay up:
@@ -360,6 +362,10 @@ pub(crate) async fn deliver_text_result(
     // surface through `show_output_error`, and the end cue is unchanged.
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
     overlay::hide(app_handle);
+    // The restore runs as a ~1 s glide so it never blocks the paste or the
+    // state reset. The completion cue still honours the old ordering (volume
+    // restored before the cue): wait for the glide, bounded, right here.
+    await_output_volume_settled(app_inner).await;
     cue::emit_cue(app_handle, app_inner, "end");
     Ok(())
 }

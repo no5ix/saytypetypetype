@@ -10,6 +10,8 @@
 //! bounds used by the macOS resolver and Tauri's logical window positions. This
 //! keeps secondary displays at negative x/y working without per-display math.
 
+use std::time::Duration;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rect {
     pub x: f64,
@@ -103,14 +105,20 @@ pub(crate) fn bottom_center_position(
 /// Every piece of picker geometry comes out of this one function so the native
 /// window, the CSS grid and the tests cannot disagree:
 ///
-/// * width  — 120% of the historical per-count width, clamped into the work area;
-/// * height — half of the target display's usable height, grown only when the card
-///   rows genuinely need more, and clamped into the work area.
+/// * width  — 120% of the historical per-count width, clamped into the work area
+///   and capped at [`MAX_WIDTH`] so ultrawide displays keep readable card rows;
+/// * height — three quarters of the target display's usable height, grown only
+///   when the card rows genuinely need more, and clamped into the work area.
 ///
 /// Both axes keep a floor so the panel stays readable on small laptops and can
 /// never exceed the visible area (`clamp_to` prefers the area limit over the
 /// floor). The panel content itself stretches (`grid-auto-rows: minmax(…, 1fr)`),
 /// so the extra space goes to the cards instead of empty gaps.
+///
+/// Everything is expressed in logical points end to end: `NSScreen` frames and
+/// `CGWindowBounds` are already points, and the caller applies the result as a
+/// Tauri `LogicalSize`/`LogicalPosition`. Retina backing scale never enters the
+/// formula, so a session can never size against another monitor's pixels.
 pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, f64) {
     let base_width: f64 = match option_count {
         0 | 1 => 560.0,
@@ -121,7 +129,7 @@ pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, 
     let width = clamp_to(
         base_width * WIDTH_GROWTH,
         MIN_WIDTH,
-        work_area.width - AREA_INSET,
+        (work_area.width - AREA_INSET).min(MAX_WIDTH),
     );
 
     // Columns mirror `web/src/picker/PickerApp.tsx` (one column below 520px, two
@@ -159,8 +167,12 @@ fn clamp_to(value: f64, min: f64, max: f64) -> f64 {
 
 /// Width multiplier over the historical per-count widths.
 const WIDTH_GROWTH: f64 = 1.2;
-/// Target share of the display's usable height.
-const HEIGHT_RATIO: f64 = 0.5;
+/// Hard ceiling on the panel width: the widest historical per-count target
+/// (1120pt for four-plus cards) times [`WIDTH_GROWTH`]. Without it an ultrawide
+/// display would stretch the card grid far past the point where rows stay usable.
+const MAX_WIDTH: f64 = 1344.0;
+/// Target share of the display's usable height (three quarters).
+const HEIGHT_RATIO: f64 = 0.75;
 /// Readability floors.
 const MIN_WIDTH: f64 = 480.0;
 const MIN_HEIGHT: f64 = 360.0;
@@ -238,31 +250,45 @@ pub(crate) fn resolve_target_display() -> TargetDisplay {
     }
 }
 
-/// Resolve the display on the main thread. AppKit screen/workspace lookups are
-/// safest there; the session start path runs on the async runtime.
-pub(crate) async fn resolve_target_display_on_main(app: &tauri::AppHandle) -> TargetDisplay {
+/// Resolve the display on the main thread, reporting capture failure as `None`
+/// and bounding the main-thread round trip. The picker uses this to re-detect
+/// the target display at open time: monitors can be plugged, unplugged or
+/// re-resolved between recording start and picker open, and the panel must be
+/// sized for the screen it is about to appear on, not the one from session
+/// start.
+pub(crate) async fn try_resolve_target_display_on_main(
+    app: &tauri::AppHandle,
+) -> Option<TargetDisplay> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     if app
         .run_on_main_thread(move || {
-            let _ = tx.send(resolve_target_display());
+            let _ = tx.send(capture_target_display());
         })
         .is_err()
     {
-        return resolve_target_display();
+        return capture_target_display();
     }
-    match rx.await {
-        Ok(target) => target,
-        Err(_) => {
-            log_app!(
-                warn,
-                "Display capture was cancelled; using primary fallback"
-            );
+    match tokio::time::timeout(Duration::from_secs(5), rx).await {
+        Ok(Ok(target)) => target,
+        Ok(Err(_)) | Err(_) => {
+            log_app!(warn, "Display capture was cancelled or timed out");
+            None
+        }
+    }
+}
+
+/// Resolve the display on the main thread. AppKit screen/workspace lookups are
+/// safest there; the session start path runs on the async runtime.
+pub(crate) async fn resolve_target_display_on_main(app: &tauri::AppHandle) -> TargetDisplay {
+    try_resolve_target_display_on_main(app)
+        .await
+        .unwrap_or_else(|| {
+            log_app!(warn, "Display capture unavailable; using primary fallback");
             TargetDisplay {
                 display: fallback_display(),
                 target: None,
             }
-        }
-    }
+        })
 }
 
 /// Bring the session's target application back to the front before pasting.
@@ -690,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_height_is_half_the_usable_height() {
+    fn picker_height_is_three_quarters_of_the_usable_height() {
         for usable in [760.0, 1055.0, 1440.0] {
             let work = Rect {
                 x: 0.0,
@@ -699,14 +725,15 @@ mod tests {
                 height: usable,
             };
             let (_, height) = picker_window_size(work, 2);
-            assert_eq!(height, usable * 0.5, "usable height {usable}");
+            assert_eq!(height, usable * HEIGHT_RATIO, "usable height {usable}");
+            assert_eq!(height, usable * 0.75);
         }
         // Below the floor the panel stays a usable size instead of shrinking away.
         let tiny = Rect {
             x: 0.0,
             y: 0.0,
             width: 1920.0,
-            height: 700.0,
+            height: 440.0,
         };
         assert_eq!(picker_window_size(tiny, 2).1, MIN_HEIGHT);
     }
@@ -724,19 +751,26 @@ mod tests {
 
     #[test]
     fn picker_adds_a_row_for_more_than_four_options() {
+        // A 720pt screen puts the three-quarters target at 521pt: two card rows
+        // (444pt content) fit, three rows (608pt) do not.
         let work = Rect {
             x: 0.0,
             y: 25.0,
             width: 1440.0,
-            height: 900.0,
+            height: 695.0,
         };
         let four = picker_window_size(work, 4);
         let eight = picker_window_size(work, 8);
         let nine = picker_window_size(work, 9);
-        assert_eq!(four.1, 450.0, "one row fits inside the half-height target");
         assert_eq!(
-            eight.1, 450.0,
-            "two rows still fit inside the half-height target"
+            four.1,
+            work.height * HEIGHT_RATIO,
+            "one row fits inside the three-quarter-height target"
+        );
+        assert_eq!(
+            eight.1,
+            work.height * HEIGHT_RATIO,
+            "two rows still fit inside the three-quarter-height target"
         );
         assert!(
             nine.1 > eight.1,
@@ -754,32 +788,31 @@ mod tests {
             x: 0.0,
             y: 0.0,
             width: 700.0,
-            height: 1200.0,
+            height: 760.0,
         };
-        let half = work.height * HEIGHT_RATIO;
+        let target = work.height * HEIGHT_RATIO;
         assert_eq!(
             picker_window_size(work, 2).0,
             652.0,
             "clamped to the work area minus the inset"
         );
-        // One and two rows still fit inside the half-height target...
+        // One and two rows still fit inside the three-quarter-height target...
         assert_eq!(
             picker_window_size(work, 2).1,
-            half,
+            target,
             "two cards share one row"
         );
-        assert_eq!(picker_window_size(work, 3).1, half);
-        assert_eq!(picker_window_size(work, 4).1, half, "two rows fit");
+        assert_eq!(picker_window_size(work, 3).1, target);
+        assert_eq!(picker_window_size(work, 4).1, target, "two rows fit");
         // ...three rows in two columns do not, so the panel grows instead of
         // clipping the last row behind the footer.
         let five = picker_window_size(work, 5).1;
         assert_eq!(five, CHROME_HEIGHT + 3.0 * ROW_HEIGHT);
-        assert!(five > half, "five cards span three rows in two columns");
+        assert!(five > target, "five cards span three rows in two columns");
         assert!(five <= work.height - AREA_INSET);
 
         // Below 520pt the grid collapses to a single column, so every extra card
-        // adds a row. A short display keeps the half-height target small enough for
-        // that row growth to be the binding constraint.
+        // adds a row, and a fourth card hits the work-area clamp.
         let narrow = Rect {
             x: 0.0,
             y: 0.0,
@@ -793,10 +826,12 @@ mod tests {
         let one = picker_window_size(narrow, 1).1;
         let two = picker_window_size(narrow, 2).1;
         let three = picker_window_size(narrow, 3).1;
+        let four = picker_window_size(narrow, 4).1;
         assert_eq!(one, narrow.height * HEIGHT_RATIO);
-        assert_eq!(two, CHROME_HEIGHT + 2.0 * ROW_HEIGHT);
+        assert_eq!(two, one, "two cards still fit inside the height target");
         assert_eq!(three, CHROME_HEIGHT + 3.0 * ROW_HEIGHT);
-        assert!(three > two && two > one, "one column means one row each");
+        assert_eq!(four, narrow.height - AREA_INSET, "clamped to the area");
+        assert!(three > two, "one column means one row each");
     }
 
     #[test]
@@ -836,6 +871,24 @@ mod tests {
             },
             Rect {
                 x: 0.0,
+                y: 25.0,
+                width: 3440.0,
+                height: 1415.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 25.0,
+                width: 1366.0,
+                height: 743.0,
+            },
+            Rect {
+                x: -1600.0,
+                y: -1080.0,
+                width: 1920.0,
+                height: 1055.0,
+            },
+            Rect {
+                x: 0.0,
                 y: 0.0,
                 width: 800.0,
                 height: 480.0,
@@ -866,6 +919,99 @@ mod tests {
                     "count {count} on {work:?} is not centred: {x} + {width}/2"
                 );
             }
+        }
+    }
+
+    /// Ultrawide screens must not stretch the panel past the card-grid ceiling.
+    #[test]
+    fn picker_width_caps_on_ultrawide_displays() {
+        let ultrawide = Rect {
+            x: 0.0,
+            y: 25.0,
+            width: 3440.0,
+            height: 1415.0,
+        };
+        assert_eq!(picker_window_size(ultrawide, 1).0, 560.0 * 1.2);
+        // The four-plus card layout stops at MAX_WIDTH even though the area is
+        // nearly 3.5k points wide.
+        assert_eq!(picker_window_size(ultrawide, 4).0, MAX_WIDTH);
+        assert_eq!(picker_window_size(ultrawide, 12).0, MAX_WIDTH);
+        // And the height is still only three quarters of the usable area.
+        assert_eq!(
+            picker_window_size(ultrawide, 12).1,
+            ultrawide.height * HEIGHT_RATIO
+        );
+    }
+
+    /// Sessions on different monitors re-derive geometry from that monitor's own
+    /// work area: bigger screen → bigger panel, back to the small screen → back
+    /// to the small panel, with no dependence on what the previous session used.
+    #[test]
+    fn picker_resizes_when_sessions_move_between_monitors() {
+        let small = Rect {
+            x: 1920.0,
+            y: 25.0,
+            width: 1366.0,
+            height: 743.0,
+        };
+        let standard = Rect {
+            x: 0.0,
+            y: 25.0,
+            width: 1920.0,
+            height: 1055.0,
+        };
+        let large = Rect {
+            x: -2560.0,
+            y: 25.0,
+            width: 2560.0,
+            height: 1415.0,
+        };
+        let ultrawide = Rect {
+            x: 0.0,
+            y: 25.0,
+            width: 3440.0,
+            height: 1415.0,
+        };
+
+        let geometry = |work: Rect, count: usize| {
+            let (width, height) = picker_window_size(work, count);
+            let (x, y) = bottom_center_position(work, width, height, 24.0);
+            (x, y, width, height)
+        };
+
+        let small_first = geometry(small, 5);
+        let standard_next = geometry(standard, 5);
+        let large_next = geometry(large, 5);
+        let ultrawide_next = geometry(ultrawide, 5);
+
+        // Growing displays grow the panel (bounded by the width ceiling and the
+        // three-quarters height target).
+        assert!(standard_next.3 > small_first.3);
+        assert!(large_next.3 > standard_next.3);
+        assert_eq!(ultrawide_next.3, large_next.3, "same vertical size");
+        assert!(ultrawide_next.2 >= large_next.2, "ultrawide gets width");
+        assert!(ultrawide_next.2 <= MAX_WIDTH);
+
+        // Returning to the small monitor returns to the small panel: the formula
+        // is stateless, so a previous large session cannot leave stale dimensions.
+        assert_eq!(geometry(small, 5), small_first);
+        assert_eq!(geometry(standard, 5), standard_next);
+
+        // Repeated sessions on different displays each land inside their own area.
+        for (work, session) in [
+            (small, small_first),
+            (standard, standard_next),
+            (large, large_next),
+            (ultrawide, ultrawide_next),
+        ] {
+            let (x, y, width, height) = session;
+            assert!(
+                x >= work.x
+                    && y >= work.y
+                    && x + width <= work.x + work.width
+                    && y + height <= work.y + work.height,
+                "stale or oversized panel for {work:?}: {x},{y} {width}x{height}"
+            );
         }
     }
 

@@ -281,9 +281,17 @@ pub(super) async fn lower_output_volume_for(app_inner: &Arc<app_state::AppInner>
 
 /// Restore the output-volume snapshot captured for this session. Idempotent and
 /// session-scoped: duplicate terminal paths cannot restore twice, and a late
-/// cleanup from an older recording cannot overwrite a newer session.
+/// cleanup from an older recording cannot overwrite a newer session. Returns as
+/// soon as the restore is scheduled; the glide itself is detached.
 pub(super) async fn restore_output_volume_for(app_inner: &Arc<app_state::AppInner>, session: u64) {
     app_inner.volume_guard.restore_session(session).await;
+}
+
+/// Wait until any in-flight volume glide has finished. Called just before the
+/// end cue so the completion sound plays at the user's restored volume while
+/// everything else (pastes, history, UI state) never waits on the ramp.
+pub(super) async fn await_output_volume_settled(app_inner: &Arc<app_state::AppInner>) {
+    app_inner.volume_guard.wait_for_ramp().await;
 }
 
 /// Restore whatever snapshot exists, regardless of session. Only for app exit,

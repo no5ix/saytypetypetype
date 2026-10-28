@@ -86,7 +86,31 @@ pub(crate) async fn open_session(
     // Drop any previous session (its late results are rejected by generation).
     let _ = inner.picker.take();
 
-    let target = inner.session_target.lock().await.clone();
+    // Re-detect the target display now, at open time. The snapshot captured at
+    // recording start can be stale: the user may have moved the target window to
+    // another monitor, or screens may have been plugged/unplugged or re-resolved
+    // while dictation ran. Reusing it sized the picker against the old screen's
+    // work area (tiny on a big display, oversized on a small one).
+    let target = match display::try_resolve_target_display_on_main(app).await {
+        Some(fresh) => {
+            let mut session = inner.session_target.lock().await;
+            if let Some(previous) = session.as_ref() {
+                if previous.display.frame != fresh.display.frame {
+                    log_rec!(
+                        info,
+                        "Target display moved from {:?} to {:?}; re-sizing picker",
+                        previous.display.frame,
+                        fresh.display.frame
+                    );
+                }
+            }
+            *session = Some(fresh.clone());
+            Some(fresh)
+        }
+        // Capture failed: keep whatever the recording start resolved rather
+        // than degrading to the synthetic fallback while a real target exists.
+        None => inner.session_target.lock().await.clone(),
+    };
     let specs: Vec<PickerOptionSpec> = prompts
         .iter()
         .enumerate()
