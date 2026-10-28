@@ -126,6 +126,28 @@ pub async fn get_picker_state(state: State<'_, AppState>) -> Result<serde_json::
         .map_err(|e| format!("Failed to serialize picker state: {}", e))
 }
 
+/// The picker renderer reports its real viewport; forwarded to the recording
+/// log so native geometry and measured layout can be compared per session.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn report_picker_layout(
+    session_id: u64,
+    viewport_width: f64,
+    viewport_height: f64,
+    scale_factor: f64,
+    desired_columns: usize,
+    columns: usize,
+) {
+    crate::picker::report_picker_layout(
+        session_id,
+        viewport_width,
+        viewport_height,
+        scale_factor,
+        desired_columns,
+        columns,
+    );
+}
+
 /// Deliver the picked version. The backend reserves the option so a shortcut
 /// and a click racing each other paste at most once.
 #[tauri::command]

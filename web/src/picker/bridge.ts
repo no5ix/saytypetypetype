@@ -23,12 +23,36 @@ export interface PickerView {
   theme: string;
   targetApp?: string | null;
   /**
-   * Cards per row, computed natively from the target display's work area.
-   * Authoritative: `window.innerWidth` can lag a cross-monitor resize of the
-   * reused picker window, which would otherwise briefly (or persistently)
-   * render the previous monitor's column count.
+   * Cards per row the native layout *asked for*, computed from the target
+   * display's work area with the same policy that sized the panel. The
+   * renderer cross-checks it against its actual viewport — the only direct
+   * measurement of what really fits — and shrinks it when the viewport is
+   * narrower than requested (e.g. AppKit constrained the frame).
    */
   columns?: number;
+}
+
+/**
+ * Report the viewport the renderer actually measures plus the grid it applied,
+ * so the recording log can compare desired layout with real layout per session.
+ * Best-effort diagnostics: failures are silently ignored.
+ */
+export function reportPickerLayout(payload: {
+  sessionId: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  scaleFactor: number;
+  desiredColumns: number;
+  columns: number;
+}): void {
+  invoke("report_picker_layout", {
+    sessionId: payload.sessionId,
+    viewportWidth: payload.viewportWidth,
+    viewportHeight: payload.viewportHeight,
+    scaleFactor: payload.scaleFactor,
+    desiredColumns: payload.desiredColumns,
+    columns: payload.columns,
+  }).catch(() => {});
 }
 
 export function getPickerState(): Promise<PickerView | null> {

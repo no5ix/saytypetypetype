@@ -18,7 +18,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+// Only the non-macOS placement path converts through these window-API units;
+// macOS places the `NSWindow` directly in AppKit points.
+#[cfg(not(target_os = "macos"))]
 use tauri::{LogicalPosition, LogicalSize, Position, Size};
+
+#[cfg(target_os = "macos")]
+use objc2::msg_send;
+#[cfg(target_os = "macos")]
+use objc2::runtime::AnyObject;
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::app_state::{self, AppInner};
 use crate::config::{AppConfig, PromptItem};
@@ -408,25 +418,215 @@ fn picker_key_bindings(
 // Window management
 // ---------------------------------------------------------------------------
 
-/// Create the picker window lazily, or reuse it if it already exists. Runs on
-/// the main thread because webview creation requires it, and reports success so
-/// the caller can fall back to automatic paste if the renderer is unavailable.
+/// Tracks in-flight native geometry applications. `show_window` claims a ticket
+/// before anything else; the placement closure checks its ticket before touching
+/// the window, so a stale async placement can never move, resize, or show a
+/// newer session's picker.
+#[derive(Debug)]
+struct GeometryGuard {
+    ticket: AtomicU64,
+}
+
+impl GeometryGuard {
+    fn begin(&self) -> u64 {
+        self.ticket.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_current(&self, ticket: u64) -> bool {
+        self.ticket.load(Ordering::SeqCst) == ticket
+    }
+}
+
+static GEOMETRY: GeometryGuard = GeometryGuard {
+    ticket: AtomicU64::new(0),
+};
+
+/// Whether an applied frame still differs from the request. 1.5pt absorbs
+/// sub-point rounding; anything larger is a real constraint or scale drift and
+/// is corrected by the retry below.
+#[cfg(target_os = "macos")]
+fn frame_drift(rect: &NSRect, x: f64, y: f64, width: f64, height: f64) -> bool {
+    (rect.origin.x - x).abs() > 1.5
+        || (rect.origin.y - y).abs() > 1.5
+        || (rect.size.width - width).abs() > 1.5
+        || (rect.size.height - height).abs() > 1.5
+}
+
+/// One session's placement request: panel size and origin (x/y in the native
+/// bottom-left space on macOS, top-left logical elsewhere), plus the geometry
+/// ticket and screen name carried for the diagnostics and staleness guard.
+struct Placement {
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+    gen: u64,
+    screen: String,
+}
+
+/// Deterministically place the picker on its target screen and show it.
 ///
-/// Ordering matters across monitors: tao applies `set_size`/`set_position` by
-/// dispatching `setContentSize:`/`setFrameTopLeftPoint:` onto the main dispatch
-/// queue, while `show` would order the window front immediately. Showing first
-/// would flash the *previous* monitor's geometry for a run-loop pass. So the
-/// size and position are queued here, and a follow-up task on the same FIFO
-/// queue performs the `show` and verifies the geometry the window actually has
-/// (points = physical ÷ the window's current backing scale) against the target
-/// work area. Any mismatch is logged — it is the field diagnostic for the
-/// "picker wrong size after moving to another monitor" class of bugs.
+/// All of it happens inside one main-thread task against the live `NSWindow`:
+/// `setFrame:` (bottom-left AppKit points, straight from the screen's raw
+/// `visibleFrame`), immediate read-back, one bounded retry if AppKit
+/// constrained the frame, and only then `orderFrontRegardless`.
+///
+/// The tao window APIs must not be used for this step: wry routes
+/// `set_size`/`set_position` through the main GCD queue while `show` travels
+/// via the event-loop proxy — two queues with no defined order between them.
+/// Reproduced on a real three-display Mac: a reused picker window came to the
+/// front with the *previous* session's size and position (the first session
+/// showed at the builder default), and the queued correction landed after the
+/// window was already visible. Direct `setFrame:` verified to converge before
+/// the window is ordered in, across Retina↔1× transitions, vertically offset
+/// displays, and hide-between-sessions reuse.
+#[cfg(target_os = "macos")]
+fn place_and_show(
+    window: &tauri::WebviewWindow,
+    placement: Placement,
+    tx: tokio::sync::oneshot::Sender<bool>,
+) -> Result<(), String> {
+    window.with_webview(move |pw| unsafe {
+        let Placement {
+            width,
+            height,
+            x,
+            y,
+            gen,
+            screen,
+        } = placement;
+        let win: *mut AnyObject = pw.ns_window().cast();
+        if win.is_null() {
+            log_rec!(warn, "Picker geometry gen={gen}: NSWindow unavailable");
+            let _ = tx.send(false);
+            return;
+        }
+        if !GEOMETRY.is_current(gen) {
+            // A newer session owns the window and will place it itself.
+            let _ = tx.send(true);
+            return;
+        }
+        let rect = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+        let _: () = msg_send![win, setFrame: rect, display: true];
+        let mut got: NSRect = msg_send![win, frame];
+        let mut retries = 0u8;
+        if frame_drift(&got, x, y, width, height) {
+            retries = 1;
+            let _: () = msg_send![win, setFrame: rect, display: true];
+            got = msg_send![win, frame];
+        }
+        let converged = !frame_drift(&got, x, y, width, height);
+        let scale: f64 = msg_send![win, backingScaleFactor];
+        if converged {
+            log_rec!(
+                info,
+                "Picker geometry gen={gen}: screen={screen} requested {:.0}x{:.0}@{:.0},{:.0} actual {:.0}x{:.0}@{:.0},{:.0} (bl points) scale={:.1} retries={}",
+                width,
+                height,
+                x,
+                y,
+                got.size.width,
+                got.size.height,
+                got.origin.x,
+                got.origin.y,
+                scale,
+                retries,
+            );
+        } else {
+            log_rec!(
+                error,
+                "Picker geometry gen={gen} NOT converged: requested {:.0}x{:.0}@{:.0},{:.0} got {:.0}x{:.0}@{:.0},{:.0} (bl points, scale {:.1})",
+                width,
+                height,
+                x,
+                y,
+                got.size.width,
+                got.size.height,
+                got.origin.x,
+                got.origin.y,
+                scale,
+            );
+        }
+        // The geometry above is final before the window can appear; the
+        // viewport follows because the web view is laid out at these bounds.
+        let _: () = msg_send![win, orderFrontRegardless];
+        let _ = tx.send(true);
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Non-macOS fallback: keep the plain window-API sequence. The queue race
+/// documented on [`place_and_show`] is specific to tao/wry on macOS.
+#[cfg(not(target_os = "macos"))]
+fn place_and_show(
+    window: &tauri::WebviewWindow,
+    placement: Placement,
+    tx: tokio::sync::oneshot::Sender<bool>,
+) -> Result<(), String> {
+    let _ = window.set_size(Size::Logical(LogicalSize::new(
+        placement.width,
+        placement.height,
+    )));
+    let _ = window.set_position(Position::Logical(LogicalPosition::new(
+        placement.x,
+        placement.y,
+    )));
+    let _ = window.show();
+    let _ = tx.send(true);
+    Ok(())
+}
+
+/// Create the picker window lazily, or reuse it if it already exists.
+fn get_or_create_window(
+    handle: &AppHandle,
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+) -> Option<tauri::WebviewWindow> {
+    if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
+        return Some(window);
+    }
+    let builder =
+        WebviewWindowBuilder::new(handle, PICKER_LABEL, WebviewUrl::App("picker.html".into()))
+            .title("VoicePaste")
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            // Never become the key window: the global keytap still routes the
+            // shortcuts and the target application keeps focus for delivery.
+            .focusable(false)
+            .accept_first_mouse(true)
+            // Start the first build near the intended geometry: the window API
+            // default would otherwise be the very first frame the panel shows in.
+            .inner_size(width, height)
+            .position(x, y);
+    match builder.build() {
+        Ok(window) => {
+            let _ = window.set_visible_on_all_workspaces(true);
+            Some(window)
+        }
+        Err(error) => {
+            log_rec!(error, "Failed to create picker window: {}", error);
+            None
+        }
+    }
+}
+
+/// Show the picker for a new session: resolve layout against the target
+/// display's work area, then place the native window deterministically before
+/// it becomes visible. Reports success so the caller can fall back to
+/// automatic paste if the renderer is unavailable.
 async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_count: usize) -> bool {
     // Claim the window before anything else: an exit animation from the previous
     // session may still be waiting to hide it, and that hide must not fire after
     // this session has shown the window again.
     EXIT.invalidate();
-    let app = app.clone();
+    let gen = GEOMETRY.begin();
     let handle = app.clone();
     let target = target.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -438,9 +638,12 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
         let layout = display::picker_layout(display.work_area, option_count);
         let (x, y) =
             display::bottom_center_position(display.work_area, layout.width, layout.height, SCREEN_MARGIN);
+        let (bx, by) =
+            display::bottom_center_position_bl(display.work_area_bl, layout.width, SCREEN_MARGIN);
         log_rec!(
             info,
-            "Picker layout: frame={}x{}@{},{}, work={}x{}@{},{}, scale={:.1}, panel={:.0}x{:.0} at {:.0},{:.0}, cards={} cols={} rows={}",
+            "Picker layout gen={gen}: screen={:?} frame={:.0}x{:.0}@{:.0},{:.0} work={:.0}x{:.0}@{:.0},{:.0} scale={:.1}, panel={:.0}x{:.0}@{:.0},{:.0}, cards={} cols={} rows={}",
+            display.name,
             display.frame.width,
             display.frame.height,
             display.frame.x,
@@ -459,90 +662,29 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
             layout.rows,
         );
 
-        let window = if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
-            let _ = window.set_size(Size::Logical(LogicalSize::new(layout.width, layout.height)));
-            let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
-            window
-        } else {
-            let builder = WebviewWindowBuilder::new(
-                &handle,
-                PICKER_LABEL,
-                WebviewUrl::App("picker.html".into()),
-            )
-            .title("VoicePaste")
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .resizable(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .visible(false)
-            // Never become the key window: the global keytap still routes the
-            // shortcuts and the target application keeps focus for delivery.
-            .focusable(false)
-            .accept_first_mouse(true);
-
-            match builder.build() {
-                Ok(window) => {
-                    let _ =
-                        window.set_size(Size::Logical(LogicalSize::new(layout.width, layout.height)));
-                    let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
-                    let _ = window.set_visible_on_all_workspaces(true);
-                    window
-                }
-                Err(error) => {
-                    log_rec!(error, "Failed to create picker window: {}", error);
-                    let _ = tx.send(false);
-                    return;
-                }
+        let window = match get_or_create_window(&handle, layout.width, layout.height, x, y) {
+            Some(window) => window,
+            None => {
+                let _ = tx.send(false);
+                return;
             }
         };
-
-        // Runs after the queued size/position blocks above (same main queue,
-        // FIFO): show, then read back what the window really ended up with.
-        let show_handle = handle.clone();
-        if show_handle.run_on_main_thread(move || {
-            let _ = window.show();
-            let scale = window.scale_factor().unwrap_or(1.0).max(0.5);
-            if let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) {
-                let actual_w = f64::from(size.width) / scale;
-                let actual_h = f64::from(size.height) / scale;
-                let actual_x = f64::from(position.x) / scale;
-                let actual_y = f64::from(position.y) / scale;
-                let fits = actual_x >= display.work_area.x - 1.0
-                    && actual_y >= display.work_area.y - 1.0
-                    && actual_x + actual_w <= display.work_area.x + display.work_area.width + 1.0
-                    && actual_y + actual_h <= display.work_area.y + display.work_area.height + 1.0;
-                if !fits
-                    || (actual_w - layout.width).abs() > 1.0
-                    || (actual_h - layout.height).abs() > 1.0
-                {
-                    log_rec!(
-                        warn,
-                        "Picker geometry drifted: wanted {:.0}x{:.0} at {:.0},{:.0}, got {:.0}x{:.0} at {:.0},{:.0} (window scale {:.1}, work {}x{}@{},{})",
-                        layout.width,
-                        layout.height,
-                        x,
-                        y,
-                        actual_w,
-                        actual_h,
-                        actual_x,
-                        actual_y,
-                        scale,
-                        display.work_area.width,
-                        display.work_area.height,
-                        display.work_area.x,
-                        display.work_area.y,
-                    );
-                }
-            }
-        })
-        .is_err()
-        {
-            // Event loop is gone; nothing can place the window any more.
-            log_rec!(warn, "Could not schedule picker show on the main thread");
+        if let Err(error) = place_and_show(
+            &window,
+            Placement {
+                width: layout.width,
+                height: layout.height,
+                x: bx,
+                y: by,
+                gen,
+                screen: display.name.clone(),
+            },
+            tx,
+        ) {
+            // `tx` was consumed by the failed enqueue, so the caller observes a
+            // cancelled channel and takes the documented fallback path.
+            log_rec!(warn, "Picker geometry gen={gen}: placement unavailable ({error})");
         }
-        let _ = tx.send(true);
     });
 
     if scheduled.is_err() {
@@ -554,8 +696,8 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
     match tokio::time::timeout(Duration::from_secs(5), rx).await {
         Ok(Ok(opened)) => opened,
         _ => {
-            log_rec!(warn, "Picker window creation timed out; falling back");
-            destroy_window(&app);
+            log_rec!(warn, "Picker window placement timed out; falling back");
+            destroy_window(app);
             false
         }
     }
@@ -638,6 +780,38 @@ fn destroy_window(app: &AppHandle) {
 
 fn emit_state(app: &AppHandle, view: &PickerView) {
     let _ = app.emit_to(PICKER_LABEL, "picker:state", view);
+}
+
+/// Diagnostic: the renderer reports the viewport it actually measures plus the
+/// grid it applied. Logged next to the native placement line, one session tells
+/// the whole story: what the work area asked for, what `NSWindow` ended up at,
+/// and what the page really sees — including any column divergence.
+/// (Exposed to the renderer through `commands::report_picker_layout`.)
+pub(crate) fn report_picker_layout(
+    session_id: u64,
+    viewport_width: f64,
+    viewport_height: f64,
+    scale_factor: f64,
+    desired_columns: usize,
+    columns: usize,
+) {
+    if columns == desired_columns {
+        log_rec!(
+            info,
+            "Picker viewport: session {session_id} viewport {:.0}x{:.0} dpr={:.1} columns={columns}",
+            viewport_width,
+            viewport_height,
+            scale_factor,
+        );
+    } else {
+        log_rec!(
+            warn,
+            "Picker viewport columns adjusted: session {session_id} viewport {:.0}x{:.0} dpr={:.1} columns={columns} (native desired {desired_columns})",
+            viewport_width,
+            viewport_height,
+            scale_factor,
+        );
+    }
 }
 
 #[cfg(test)]

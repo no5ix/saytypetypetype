@@ -169,6 +169,7 @@ pub fn run() {
             commands::get_overlay_layout_metrics,
             commands::complete_overlay_hide,
             commands::get_picker_state,
+            commands::report_picker_layout,
             commands::select_picker_option,
             commands::cancel_picker,
             commands::get_audio_config_defaults,

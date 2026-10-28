@@ -48,10 +48,19 @@ impl Rect {
 /// purely in points and never multiply by it. Mixing the two is exactly what
 /// made the picker come out wrong when sessions moved between a Retina display
 /// (2×) and an external monitor (1×).
+///
+/// `work_area_bl` is the *same* visible rect in AppKit's bottom-left global
+/// space, captured straight from `NSScreen.visibleFrame`: the native picker
+/// placement feeds it to `setFrame:` with zero conversion, so the coordinates
+/// AppKit consumes are never the product of a round-trip through our
+/// top-left space.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Display {
+    pub name: String,
     pub frame: Rect,
     pub work_area: Rect,
+    /// Visible frame in AppKit bottom-left global points (native placement space).
+    pub work_area_bl: Rect,
     pub scale_factor: f64,
 }
 
@@ -106,6 +115,32 @@ pub(crate) fn bottom_center_position(
     let x = work_area.x + (work_area.width - width) / 2.0;
     let y = work_area.y + work_area.height - height - margin;
     (x, y)
+}
+
+/// Bottom-center position in AppKit bottom-left coordinates: `(x, y)` is the
+/// window's bottom-left corner, directly consumable by `NSWindow.setFrame:`
+/// against the screen's raw `visibleFrame` — no origin conversion involved.
+/// The window height is deliberately not a parameter: the bottom edge anchors
+/// to `y + height` implicitly, so the margin applies from the screen bottom
+/// without any arithmetic that a wrong primary height could corrupt.
+pub(crate) fn bottom_center_position_bl(work_area_bl: Rect, width: f64, margin: f64) -> (f64, f64) {
+    let x = work_area_bl.x + (work_area_bl.width - width) / 2.0;
+    let y = work_area_bl.y + margin;
+    (x, y)
+}
+
+/// Mirror of [`Rect`] between the two global spaces across a primary of height
+/// `primary_height` (top-left y ↦ bottom-left origin y). Production code never
+/// converts — it consumes each space's native numbers directly — so this
+/// exists for the tests that prove both views describe the same rectangles.
+#[cfg(test)]
+pub(crate) fn mirror_vertical(rect: Rect, primary_height: f64) -> Rect {
+    Rect {
+        x: rect.x,
+        y: primary_height - (rect.y + rect.height),
+        width: rect.width,
+        height: rect.height,
+    }
 }
 
 /// The complete picker layout decision: native window size plus the exact card
@@ -241,13 +276,21 @@ pub(crate) fn fallback_display() -> Display {
         width: 1440.0,
         height: 900.0,
     };
+    let work_area = Rect {
+        y: 25.0,
+        height: 875.0,
+        ..frame
+    };
     Display {
-        frame,
-        work_area: Rect {
-            y: 25.0,
+        name: "fallback".to_string(),
+        work_area_bl: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
             height: 875.0,
-            ..frame
         },
+        frame,
+        work_area,
         scale_factor: 1.0,
     }
 }
@@ -383,7 +426,7 @@ mod macos {
     pub(super) fn capture() -> Option<TargetDisplay> {
         let displays = screens()?;
         let target = frontmost_window();
-        let index = target
+        let matched = target
             .as_ref()
             .and_then(|app| app.window)
             .and_then(|window| super::display_for_window(window, &displays))
@@ -395,8 +438,17 @@ mod macos {
                         let (x, y) = window.center();
                         super::display_for_point(x, y, &displays)
                     })
-            })
-            .unwrap_or(0);
+            });
+        // No overlap and no containing centre (minimised/off-screen target, or
+        // permissions missing): fall back to the primary screen deliberately.
+        let index = matched.unwrap_or(0);
+        if matched.is_none() {
+            log_app!(
+                debug,
+                "No display contains the target window; defaulting to primary {:?}",
+                displays.get(index).map(|display| &display.name)
+            );
+        }
 
         Some(TargetDisplay {
             display: displays
@@ -418,15 +470,11 @@ mod macos {
                 return None;
             }
 
-            // Convert from AppKit's bottom-left origin to the top-left global
-            // coordinate space used by CoreGraphics and Tauri logical positions.
-            // The primary screen is the one at (0, 0); `screens` is ordered with
-            // it first on every macOS version we support.
-            let first: *mut AnyObject = msg_send![screens, objectAtIndex: 0usize];
-            let first_frame: NSRect = msg_send![first, frame];
-            let primary_height = first_frame.size.height;
-
-            let mut result = Vec::with_capacity(count);
+            // AppKit's global space has its primary screen (the one carrying the
+            // menu bar) at origin (0, 0). Find it by identity rather than relying
+            // on `screens[0]` ordering, and use its point height to mirror rects
+            // into the top-left space used by CoreGraphics bounds.
+            let mut raw = Vec::with_capacity(count);
             for index in 0..count {
                 let screen: *mut AnyObject = msg_send![screens, objectAtIndex: index];
                 let frame: NSRect = msg_send![screen, frame];
@@ -434,18 +482,49 @@ mod macos {
                 // Points → backing pixels for this screen only. Diagnostic use;
                 // the picker sizing formula stays in points.
                 let scale: f64 = msg_send![screen, backingScaleFactor];
-                result.push(Display {
+                raw.push((frame, visible, scale, screen_name(screen)));
+            }
+            let primary_height = raw
+                .iter()
+                .find(|(frame, ..)| frame.origin.x == 0.0 && frame.origin.y == 0.0)
+                .or(raw.first())
+                .map(|(frame, ..)| frame.size.height)
+                .unwrap_or(900.0);
+
+            let result = raw
+                .into_iter()
+                .map(|(frame, visible, scale, name)| Display {
+                    name,
                     frame: to_top_left(frame, primary_height),
                     work_area: to_top_left(visible, primary_height),
+                    // Unconverted AppKit space: exactly what setFrame: consumes.
+                    work_area_bl: Rect {
+                        x: visible.origin.x,
+                        y: visible.origin.y,
+                        width: visible.size.width,
+                        height: visible.size.height,
+                    },
                     scale_factor: if scale.is_finite() && scale > 0.0 {
                         scale
                     } else {
                         1.0
                     },
-                });
-            }
+                })
+                .collect();
             Some(result)
         }
+    }
+
+    unsafe fn screen_name(screen: *mut AnyObject) -> String {
+        let name: *mut AnyObject = msg_send![screen, localizedName];
+        if name.is_null() {
+            return String::new();
+        }
+        let utf8: *const std::ffi::c_char = msg_send![name, UTF8String];
+        if utf8.is_null() {
+            return String::new();
+        }
+        CStr::from_ptr(utf8).to_string_lossy().into_owned()
     }
 
     fn to_top_left(rect: NSRect, primary_height: f64) -> Rect {
@@ -593,24 +672,28 @@ mod tests {
     use super::*;
 
     fn display(x: f64, y: f64, width: f64, height: f64) -> Display {
+        let frame = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        // Real work areas exclude the menu bar; tests keep the same bounds
+        // unless a test is specifically about positioning.
+        let work_area = frame;
         Display {
-            frame: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
-            // Real work areas exclude the menu bar; tests keep the same bounds
-            // unless a test is specifically about positioning.
-            work_area: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
+            name: format!("screen@{x},{y}"),
+            work_area_bl: mirror_vertical(work_area, TEST_PRIMARY_HEIGHT),
+            frame,
+            work_area,
             scale_factor: 1.0,
         }
     }
+
+    /// Height of the synthetic primary used by the test fixtures, so the
+    /// bottom-left mirrors built by [`display`] describe the same physical
+    /// rectangles as the top-left values the positioning helpers consume.
+    const TEST_PRIMARY_HEIGHT: f64 = 1080.0;
 
     /// A display with an explicit backing scale (Retina built-in vs 1× external).
     fn scaled_display(x: f64, y: f64, width: f64, height: f64, scale: f64) -> Display {
@@ -1205,6 +1288,294 @@ mod tests {
             1,
             "empty session keeps one column"
         );
+    }
+
+    /// The two placement helpers must describe the same physical rectangle: same
+    /// x, and bottom-left origin y equal to `primary_height - (top-left y + h)`.
+    /// Any drift between them would place the native window somewhere other than
+    /// where the diagnostics claim it is.
+    #[test]
+    fn bl_and_tl_placements_describe_the_same_rect() {
+        let areas = [
+            Rect {
+                x: 0.0,
+                y: 25.0,
+                width: 1920.0,
+                height: 1055.0,
+            },
+            Rect {
+                x: 1728.0,
+                y: -531.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            Rect {
+                x: 1728.0,
+                y: 549.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            Rect {
+                x: -2560.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1415.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 38.0,
+                width: 1728.0,
+                height: 1079.0,
+            },
+        ];
+        for work in areas {
+            let work_bl = mirror_vertical(work, TEST_PRIMARY_HEIGHT);
+            for (width, height) in [(1080.0, 810.0), (672.0, 570.0), (452.0, 272.0)] {
+                let (x, y) = bottom_center_position(work, width, height, 24.0);
+                let (bx, by) = bottom_center_position_bl(work_bl, width, 24.0);
+                assert_eq!(bx, x, "x must be identical in both spaces");
+                assert!(
+                    (by - (TEST_PRIMARY_HEIGHT - (y + height))).abs() < 1e-9,
+                    "bottom edge mismatch for {work:?}: bl y {by} vs mirror {}",
+                    TEST_PRIMARY_HEIGHT - (y + height)
+                );
+                // And the bottom-left placement really sits inside the mirrored area.
+                assert!(
+                    bx >= work_bl.x
+                        && by >= work_bl.y
+                        && bx + width <= work_bl.x + work_bl.width
+                        && by + height <= work_bl.y + work_bl.height,
+                    "bl containment failed for {work:?}"
+                );
+            }
+        }
+    }
+
+    /// Fixture mirroring this repository's development Mac: a 2× Retina built-in
+    /// primary (1728×1117pt, 1079pt visible) at origin, one external whose top
+    /// sits 531pt ABOVE the primary top, and one whose top sits 549pt BELOW it.
+    /// The bottom-left values are the raw `NSScreen.visibleFrame`s read off the
+    /// live machine; the top-left values are what macOS `CGWindowBounds` for
+    /// windows on those screens fall into. Pinning these together is the
+    /// regression guard for the coordinate conversion itself — a wrong primary
+    /// height or sign convention shifts every placement and is caught here.
+    #[test]
+    fn three_screen_layout_roundtrips_like_real_macos() {
+        let primary_height = 1117.0;
+        let builtin_bl = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1728.0,
+            height: 1079.0,
+        };
+        let above_bl = Rect {
+            x: 1728.0,
+            y: 568.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let below_bl = Rect {
+            x: 1728.0,
+            y: -512.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+
+        assert_eq!(
+            mirror_vertical(builtin_bl, primary_height),
+            Rect {
+                x: 0.0,
+                y: 38.0,
+                width: 1728.0,
+                height: 1079.0
+            }
+        );
+        assert_eq!(
+            mirror_vertical(above_bl, primary_height),
+            Rect {
+                x: 1728.0,
+                y: -531.0,
+                width: 1920.0,
+                height: 1080.0
+            }
+        );
+        assert_eq!(
+            mirror_vertical(below_bl, primary_height),
+            Rect {
+                x: 1728.0,
+                y: 549.0,
+                width: 1920.0,
+                height: 1080.0
+            }
+        );
+        // Mirroring is an involution: native placement computed from the raw
+        // bottom-left data lands exactly where the top-left math predicts.
+        for bl in [builtin_bl, above_bl, below_bl] {
+            assert_eq!(
+                mirror_vertical(mirror_vertical(bl, primary_height), primary_height),
+                bl
+            );
+        }
+    }
+
+    /// Window bounds as macOS reports them (CG top-left global points, from live
+    /// machines) must select the correct screen in this three-display layout —
+    /// including a window straddling the primary and the upper external.
+    #[test]
+    fn real_world_window_bounds_select_the_owning_screen() {
+        let primary_height = 1117.0;
+        let mk = |name: &str, frame_bl: Rect, scale: f64| Display {
+            name: name.to_string(),
+            frame: mirror_vertical(frame_bl, primary_height),
+            work_area: mirror_vertical(frame_bl, primary_height),
+            work_area_bl: frame_bl,
+            scale_factor: scale,
+        };
+        let displays = vec![
+            mk(
+                "builtin",
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1728.0,
+                    height: 1117.0,
+                },
+                2.0,
+            ),
+            mk(
+                "above",
+                Rect {
+                    x: 1728.0,
+                    y: 568.0,
+                    width: 1920.0,
+                    height: 1080.0,
+                },
+                1.0,
+            ),
+            mk(
+                "below",
+                Rect {
+                    x: 1728.0,
+                    y: -512.0,
+                    width: 1920.0,
+                    height: 1080.0,
+                },
+                1.0,
+            ),
+        ];
+
+        // Live Safari bounds on the built-in.
+        assert_eq!(
+            display_for_window(
+                Rect {
+                    x: 64.0,
+                    y: 38.0,
+                    width: 1664.0,
+                    height: 1079.0
+                },
+                &displays
+            ),
+            Some(0)
+        );
+        // A window on the upper external (CG y negative, above the primary).
+        assert_eq!(
+            display_for_window(
+                Rect {
+                    x: 1799.0,
+                    y: -506.0,
+                    width: 1848.0,
+                    height: 1055.0
+                },
+                &displays
+            ),
+            Some(1)
+        );
+        // A window on the lower external (CG y beyond the primary's bottom).
+        assert_eq!(
+            display_for_window(
+                Rect {
+                    x: 1799.0,
+                    y: 574.0,
+                    width: 1848.0,
+                    height: 1055.0
+                },
+                &displays
+            ),
+            Some(2)
+        );
+        // Straddling the primary and the upper external: the external owns it.
+        assert_eq!(
+            display_for_window(
+                Rect {
+                    x: 1600.0,
+                    y: 100.0,
+                    width: 400.0,
+                    height: 500.0
+                },
+                &displays
+            ),
+            Some(1)
+        );
+    }
+
+    /// Repeated sessions across the real three-display layout each land inside
+    /// their own screen in BOTH coordinate spaces — the exact pattern of the
+    /// field bug (built-in → external → built-in → other external), evaluated on
+    /// the geometry that the native `setFrame:` path consumes.
+    #[test]
+    fn alternating_real_displays_place_inside_both_spaces() {
+        let primary_height = 1117.0;
+        let screens = [
+            (
+                "builtin",
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1728.0,
+                    height: 1079.0,
+                },
+            ),
+            (
+                "above",
+                Rect {
+                    x: 1728.0,
+                    y: 568.0,
+                    width: 1920.0,
+                    height: 1080.0,
+                },
+            ),
+            (
+                "below",
+                Rect {
+                    x: 1728.0,
+                    y: -512.0,
+                    width: 1920.0,
+                    height: 1080.0,
+                },
+            ),
+        ];
+        let visits = [0usize, 1, 0, 2, 1, 0];
+        let mut results = Vec::new();
+        for visit in visits {
+            let (name, work_bl) = screens[visit];
+            let work_tl = mirror_vertical(work_bl, primary_height);
+            let layout = picker_layout(work_tl, 3);
+            let (bx, by) = bottom_center_position_bl(work_bl, layout.width, 24.0);
+            assert!(
+                bx >= work_bl.x
+                    && by >= work_bl.y
+                    && bx + layout.width <= work_bl.x + work_bl.width + 1e-9
+                    && by + layout.height <= work_bl.y + work_bl.height + 1e-9,
+                "{name}: native frame escapes its screen"
+            );
+            results.push((layout.width, layout.height, bx, by));
+        }
+        // Each visit is a pure function of the visited screen: revisits match
+        // byte-for-byte, and no session inherits another screen's geometry.
+        assert_eq!(results[0], results[2]);
+        assert_eq!(results[2], results[5]);
+        assert_eq!(results[1], results[4]);
+        assert_ne!(results[0], results[1]);
     }
 
     #[test]

@@ -7,17 +7,27 @@ import {
   onPickerState,
   type PickerOptionView,
   type PickerView,
+  reportPickerLayout,
   selectPickerOption,
 } from "./bridge";
 
-function useWindowWidth(): number {
-  const [width, setWidth] = useState(() => window.innerWidth);
+function useWindowViewport(): { width: number; height: number } {
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return width;
+  return viewport;
+}
+
+/** Column ceiling for a measured viewport width (legacy fallback tiers). */
+function columnsForWidth(width: number, count: number): number {
+  const max = width < 520 ? 1 : width < 780 ? 2 : 4;
+  return Math.max(1, Math.min(count || 1, max));
 }
 
 function applyTheme(theme: string) {
@@ -46,7 +56,7 @@ export function PickerApp() {
   const [closing, setClosing] = useState(false);
   const sessionIdRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const width = useWindowWidth();
+  const { width, height } = useWindowViewport();
 
   useEffect(() => {
     let mounted = true;
@@ -101,14 +111,35 @@ export function PickerApp() {
   const options = view?.options ?? [];
   const columns = useMemo(() => {
     // The native layout owns the column policy: it is computed from the same
-    // (clamped) window width that sized the panel. Only fall back to local
-    // width heuristics for payloads without the field — `window.innerWidth`
-    // can lag a cross-monitor resize of the reused window.
-    if (view?.columns && view.columns > 0) return view.columns;
-    if (width < 520) return 1;
-    const max = width < 780 ? 2 : 4;
-    return Math.max(1, Math.min(options.length || 1, max));
+    // work area that sized the panel, so it never depends on `window.innerWidth`
+    // lagging a cross-monitor resize of the reused window.
+    //
+    // It is still only a *request*: if this viewport measures narrower than
+    // native expected (a constrained frame, a mid-transition resize), applying
+    // it verbatim would clip the cards. So cap it by the measured width, and
+    // let a viewport that widens again restore it — the grid re-renders on
+    // every resize event.
+    const fit = columnsForWidth(width, options.length);
+    if (view?.columns && view.columns > 0) return Math.min(view.columns, fit);
+    return fit;
   }, [view?.columns, width, options.length]);
+
+  const desiredColumns = view?.columns && view.columns > 0 ? view.columns : columns;
+
+  // One diagnostic per settled layout: what the page actually measures against
+  // what native asked for. Divergence here is the "wrong size on the outer
+  // monitor" symptom seen from the renderer side.
+  useEffect(() => {
+    if (!view) return;
+    reportPickerLayout({
+      sessionId: view.sessionId,
+      viewportWidth: width,
+      viewportHeight: height,
+      scaleFactor: window.devicePixelRatio,
+      desiredColumns,
+      columns,
+    });
+  }, [view, width, height, desiredColumns, columns]);
 
   const select = useCallback(
     async (option: PickerOptionView) => {

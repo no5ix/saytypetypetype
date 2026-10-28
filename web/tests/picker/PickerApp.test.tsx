@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   view: null as unknown,
   selectPickerOption: vi.fn(async () => {}),
   cancelPicker: vi.fn(async () => {}),
+  reportPickerLayout: vi.fn(),
 }));
 
 vi.mock("@/picker/bridge", () => ({
@@ -42,6 +43,7 @@ vi.mock("@/picker/bridge", () => ({
   },
   selectPickerOption: h.selectPickerOption,
   cancelPicker: h.cancelPicker,
+  reportPickerLayout: h.reportPickerLayout,
 }));
 
 function option(
@@ -400,28 +402,77 @@ describe("PickerApp immediate dismissal", () => {
   });
 });
 
-describe("PickerApp native column policy", () => {
-  it("uses the payload column count over a stale window width", async () => {
-    // 652px would fall into the legacy two-column tier; the native layout for
-    // this session says three, and the native number wins because it is the
-    // number the window was actually sized for.
-    vi.stubGlobal("innerWidth", 652);
-    const { container } = await renderPicker(view(OPTIONS, 14, 3));
-    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
-    expect(grid?.style.gridTemplateColumns).toContain("repeat(3");
-
-    // Payloads without the field still fall back to the width heuristic.
-    emitState(view(OPTIONS, 15));
-    const nextGrid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
-    expect(nextGrid?.style.gridTemplateColumns).toContain("repeat(2");
+describe("PickerApp column policy", () => {
+  beforeEach(() => {
+    h.reportPickerLayout.mockClear();
   });
 
-  it("keeps every card on one row when the payload says one row", async () => {
-    const { container } = await renderPicker(view(OPTIONS, 16, 3));
-    const cards = screen.getAllByRole("button", { name: /^(原文|润色|要点)/ });
-    expect(cards).toHaveLength(3);
+  it("applies the native column count when the viewport supports it", async () => {
+    // 1344px viewport (built-in/external panel width) supports the native 3.
+    vi.stubGlobal("innerWidth", 1344);
+    const { container } = await renderPicker(view(OPTIONS, 14, 3));
     const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
-    // Three columns × three cards = a single horizontal row.
+    // Three columns × three cards = a single horizontal row (invariant).
     expect(grid?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
+  });
+
+  it("clamps the native column count to the viewport that actually fits", async () => {
+    // Native asked for three, but this window measures 652px: forcing three
+    // columns would clip the cards, so the measured width decides the grid.
+    // A stale native number must never produce horizontal overflow.
+    vi.stubGlobal("innerWidth", 652);
+    const { container } = await renderPicker(view(OPTIONS, 15, 3));
+    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(grid?.style.gridTemplateColumns).toContain("repeat(2");
+  });
+
+  it("widens the grid when the viewport grows after a monitor switch", async () => {
+    // Opens on the narrow measure, then the window lands on the wider display:
+    // the resize event must re-derive the layout instead of pinning the old one.
+    vi.stubGlobal("innerWidth", 652);
+    const { container } = await renderPicker(view(OPTIONS, 16, 3));
+    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(grid?.style.gridTemplateColumns).toContain("repeat(2");
+
+    vi.stubGlobal("innerWidth", 1344);
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const widened = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(widened?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
+  });
+
+  it("falls back to the width heuristic for payloads without a column count", async () => {
+    vi.stubGlobal("innerWidth", 652);
+    const { container } = await renderPicker(view(OPTIONS, 17));
+    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(grid?.style.gridTemplateColumns).toContain("repeat(2");
+  });
+
+  it("reports the measured viewport and applied grid to the native log", async () => {
+    vi.stubGlobal("innerWidth", 1344);
+    vi.stubGlobal("innerHeight", 809);
+    await renderPicker(view(OPTIONS, 18, 3));
+    expect(h.reportPickerLayout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 18,
+        viewportWidth: 1344,
+        viewportHeight: 809,
+        desiredColumns: 3,
+        columns: 3,
+      }),
+    );
+  });
+
+  it("reports the divergence when the viewport forces fewer columns", async () => {
+    vi.stubGlobal("innerWidth", 652);
+    await renderPicker(view(OPTIONS, 19, 3));
+    expect(h.reportPickerLayout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 19,
+        desiredColumns: 3,
+        columns: 2,
+      }),
+    );
   });
 });

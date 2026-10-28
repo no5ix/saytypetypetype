@@ -52,10 +52,10 @@ pub(crate) struct PickerView {
     pub error: Option<String>,
     pub theme: String,
     pub target_app: Option<String>,
-    /// Cards per row, computed natively from the target display's work area
-    /// with the same policy that sized the window. The renderer must use this
-    /// instead of deriving columns from `window.innerWidth`, which can lag the
-    /// native resize when the window is reused across monitors.
+    /// Cards per row the native layout *asked for*, derived from the target
+    /// display's work area with the same policy that sized the window. The
+    /// renderer cross-checks it against its actual viewport (which is the only
+    /// measurement of what really fits) and reports any divergence.
     pub columns: usize,
 }
 
@@ -343,6 +343,7 @@ mod tests {
     fn target() -> Option<TargetDisplay> {
         Some(TargetDisplay {
             display: Display {
+                name: "test".to_string(),
                 frame: Rect {
                     x: 0.0,
                     y: 0.0,
@@ -352,6 +353,12 @@ mod tests {
                 work_area: Rect {
                     x: 0.0,
                     y: 25.0,
+                    width: 1920.0,
+                    height: 1055.0,
+                },
+                work_area_bl: Rect {
+                    x: 0.0,
+                    y: 0.0,
                     width: 1920.0,
                     height: 1055.0,
                 },
