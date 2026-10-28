@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   cancelPicker,
   getPickerState,
+  onPickerClosing,
   onPickerState,
   type PickerOptionView,
   type PickerView,
@@ -39,6 +40,11 @@ export function PickerApp() {
   const [view, setView] = useState<PickerView | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The window is reused across sessions and hidden natively, so the exit
+  // animation needs an explicit signal: `closing` is set when the backend says it
+  // is about to hide the window and cleared by the next session's first state.
+  const [closing, setClosing] = useState(false);
+  const sessionIdRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const width = useWindowWidth();
 
@@ -46,15 +52,27 @@ export function PickerApp() {
     let mounted = true;
     getPickerState()
       .then((initial) => {
-        if (mounted && initial) setView(initial);
+        if (!mounted || !initial) return;
+        sessionIdRef.current = initial.sessionId;
+        setView(initial);
       })
       .catch(() => {});
     const unlisten = onPickerState((next) => {
-      if (mounted) setView(next);
+      if (!mounted) return;
+      if (next.sessionId !== sessionIdRef.current) {
+        // A new session owns the window again: replay the entrance animation.
+        sessionIdRef.current = next.sessionId;
+        setClosing(false);
+      }
+      setView(next);
+    });
+    const unlistenClosing = onPickerClosing(() => {
+      if (mounted) setClosing(true);
     });
     return () => {
       mounted = false;
       unlisten();
+      unlistenClosing();
     };
   }, []);
 
@@ -111,7 +129,7 @@ export function PickerApp() {
   if (!view) {
     return (
       <div className="picker-root flex h-screen w-screen items-center justify-center p-2">
-        <div className="flex items-center gap-2 rounded-2xl border border-border/70 bg-surface-card px-4 py-3 text-sm text-text-dim shadow-2xl backdrop-blur-2xl">
+        <div className="picker-surface flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm text-text-dim backdrop-blur-2xl">
           <Loader2 className="size-4 animate-spin" />
           等待转写…
         </div>
@@ -124,11 +142,17 @@ export function PickerApp() {
 
   return (
     <div className="picker-root relative h-screen w-screen p-2">
-      <section className="picker-panel picker-surface flex h-full w-full flex-col overflow-hidden rounded-[20px] border bg-surface-card backdrop-blur-xl">
+      {/* Keyed by session so every session replays the entrance animation (and
+          remounts the card list at the top). */}
+      <section
+        key={view.sessionId}
+        data-picker-state={closing ? "closing" : "open"}
+        className="picker-panel picker-surface flex h-full w-full flex-col overflow-hidden rounded-[20px] border bg-surface-card backdrop-blur-xl"
+      >
         {/* The header is a flex item in its own right: `shrink-0` keeps it at its
-            natural height, the opaque background hides cards scrolling behind
-            the scroll container's top edge, and `z-10` keeps the card hover
-            lift from painting over it. */}
+            natural height so resizing can never squash it, the opaque background
+            hides cards scrolling behind the scroll container's top edge, and `z-10`
+            keeps the card hover lift from painting over it. */}
         <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border/50 bg-surface-card px-4 pt-3 pb-2.5">
           <div className="min-w-0">
             <h1 className="truncate text-[13px] font-semibold text-text">选择要粘贴的版本</h1>
@@ -160,16 +184,18 @@ export function PickerApp() {
           </div>
         )}
 
-        {/* Scroll region: starts *below* the header, so the first card row and
-            any row scrolled into view are clipped by this container's top edge,
-            never drawn under the header. */}
+        {/* Scroll region: starts *below* the header, so the first card row and any
+            row scrolled into view are clipped by this container's top edge, never
+            drawn under the header. It owns the space between header and footer and
+            scrolls on its own, so a long transcript never pushes the footer out of
+            the window. */}
         <div
           ref={scrollRef}
           data-picker-scroll=""
           className="relative mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2"
         >
           <div
-            className={`grid h-full gap-2 ${options.length <= 2 ? "mx-auto max-w-[660px]" : ""}`}
+            className={`grid h-full gap-2 ${options.length <= 2 ? "mx-auto max-w-[792px]" : ""}`}
             style={{
               gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
               gridAutoRows: "minmax(156px, 1fr)",

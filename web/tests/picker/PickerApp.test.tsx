@@ -1,9 +1,30 @@
+/// <reference types="node" />
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PickerOptionView, PickerView } from "@/picker/bridge";
 
+import { PickerApp } from "@/picker/PickerApp";
+
+/**
+ * The stylesheet the picker window actually loads. Asserted as text so the
+ * appearance rules (no outer shadow, theme-aware 1px outline, motion budget) are
+ * checked against the source of truth instead of a jsdom approximation, which
+ * neither applies external stylesheets nor real layout.
+ */
+const css = (() => {
+  const candidates = ["src/picker/picker.css", "web/src/picker/picker.css"].map((relative) =>
+    resolve(process.cwd(), relative),
+  );
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (!found) throw new Error(`picker.css not found near ${process.cwd()}`);
+  return readFileSync(found, "utf8");
+})();
+
 const h = vi.hoisted(() => ({
-  listeners: new Set<(view: unknown) => void>(),
+  stateListeners: new Set<(view: unknown) => void>(),
+  closingListeners: new Set<() => void>(),
   view: null as unknown,
   selectPickerOption: vi.fn(async () => {}),
   cancelPicker: vi.fn(async () => {}),
@@ -12,14 +33,16 @@ const h = vi.hoisted(() => ({
 vi.mock("@/picker/bridge", () => ({
   getPickerState: () => Promise.resolve(h.view),
   onPickerState: (listener: (view: unknown) => void) => {
-    h.listeners.add(listener);
-    return () => h.listeners.delete(listener);
+    h.stateListeners.add(listener);
+    return () => h.stateListeners.delete(listener);
+  },
+  onPickerClosing: (listener: () => void) => {
+    h.closingListeners.add(listener);
+    return () => h.closingListeners.delete(listener);
   },
   selectPickerOption: h.selectPickerOption,
   cancelPicker: h.cancelPicker,
 }));
-
-import { PickerApp } from "@/picker/PickerApp";
 
 function option(
   overrides: Partial<PickerOptionView> & Pick<PickerOptionView, "id">,
@@ -47,15 +70,21 @@ function view(optionOverrides: PickerOptionView[], sessionId = 1): PickerView {
   };
 }
 
-const DEFAULT_OPTIONS: PickerOptionView[] = [
+const OPTIONS: PickerOptionView[] = [
   option({ id: "original", title: "原文", hotkey: "R ⌥", kind: "original" }),
   option({ id: "polish", title: "润色", hotkey: "U" }),
   option({ id: "summary", title: "要点", hotkey: "V" }),
 ];
 
+function panel(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>("section");
+  if (!section) throw new Error("picker panel not rendered");
+  return section;
+}
+
 function scrollRegion(container: HTMLElement): HTMLElement {
   const region = container.querySelector<HTMLElement>("[data-picker-scroll]");
-  if (!region) throw new Error("scroll region not found");
+  if (!region) throw new Error("scroll region not rendered");
   return region;
 }
 
@@ -66,8 +95,21 @@ async function renderPicker(nextView: PickerView) {
   return result;
 }
 
+function emitState(next: PickerView) {
+  act(() => {
+    for (const listener of h.stateListeners) listener(next);
+  });
+}
+
+function emitClosing() {
+  act(() => {
+    for (const listener of h.closingListeners) listener();
+  });
+}
+
 beforeEach(() => {
-  h.listeners.clear();
+  h.stateListeners.clear();
+  h.closingListeners.clear();
   h.selectPickerOption.mockClear();
   h.cancelPicker.mockClear();
   vi.stubGlobal("matchMedia", (query: string) => ({
@@ -92,63 +134,136 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("PickerApp panel outline and shadow", () => {
+  it("draws the panel with a theme-aware border and no drop shadow", () => {
+    const surface = css.slice(css.indexOf(".picker-surface {"), css.indexOf("/* Pop-in"));
+    expect(surface).toContain("border: 1px solid var(--picker-border)");
+    expect(surface).not.toContain("box-shadow");
+    // No theme variant adds a shadow back either.
+    expect(css).not.toMatch(/\.picker-surface[^{]*\{[^}]*box-shadow/);
+  });
+
+  it("outlines dark themes with near-white and light themes with near-black", () => {
+    expect(css).toMatch(/--picker-border:\s*rgba\(255,\s*255,\s*255,\s*0\.\d+\)/);
+    expect(css).toMatch(/\[data-theme="light"\][^{]*\{[^}]*--picker-border:\s*rgba\(0,\s*0,\s*0,/s);
+    // The border reuses the app's existing theme switch, not a new theme system.
+    expect(css).toContain('[data-theme="light"] .picker-root');
+  });
+
+  it("keeps the border on the panel element and off the placeholder pill", async () => {
+    h.view = null;
+    const placeholder = render(<PickerApp />);
+    await waitFor(() => expect(placeholder.container.firstChild).not.toBeNull());
+    const pill = placeholder.container.querySelector<HTMLElement>(".picker-surface");
+    expect(pill, "the waiting pill uses the same outlined surface").not.toBeNull();
+    expect(pill?.className).not.toContain("shadow");
+
+    const { container } = await renderPicker(view(OPTIONS));
+    expect(panel(container).className).toContain("picker-surface");
+    expect(panel(container).className).not.toContain("shadow");
+  });
+});
+
+describe("PickerApp pop-in and pop-out", () => {
+  it("animates within the 120-180ms budget and drops the scale for reduced motion", () => {
+    const durations = [...css.matchAll(/--picker-pop-(in|out):\s*(\d+)ms/g)].map((m) =>
+      Number(m[2]),
+    );
+    expect(durations.length).toBeGreaterThanOrEqual(2);
+    for (const duration of durations) {
+      expect(duration).toBeGreaterThanOrEqual(120);
+      expect(duration).toBeLessThanOrEqual(180);
+    }
+    expect(css).toContain("animation: picker-in");
+    expect(css).toContain("@keyframes picker-in");
+    expect(css).toMatch(/scale\(var\(--picker-pop-scale\)\)/);
+
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain("--picker-pop-scale: 1");
+  });
+
+  it("marks the panel per session so the entrance animation replays", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 7));
+    const first = panel(container);
+    expect(first.getAttribute("data-picker-state")).toBe("open");
+
+    emitState(view(OPTIONS, 8));
+    const second = panel(container);
+    expect(second.getAttribute("data-picker-state")).toBe("open");
+    // A new DOM node for a new session restarts the CSS keyframes.
+    expect(second.isSameNode(first)).toBe(false);
+  });
+
+  it("plays the exit when the backend announces the close and resets for the next session", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 1));
+    expect(panel(container).getAttribute("data-picker-state")).toBe("open");
+
+    emitClosing();
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+
+    // Re-opening while an exit is in flight must return to the open state, so the
+    // window can never stay invisible-but-shown.
+    emitState(view(OPTIONS, 2));
+    expect(panel(container).getAttribute("data-picker-state")).toBe("open");
+  });
+});
+
 describe("PickerApp layout", () => {
-  it("keeps the header outside the scrolling card region", async () => {
-    const { container } = await renderPicker(view(DEFAULT_OPTIONS));
-    const section = container.querySelector("section");
+  it("keeps header, cards and footer as separate rows of the panel", async () => {
+    const { container } = await renderPicker(view(OPTIONS));
+    const section = panel(container);
     const header = container.querySelector("header");
+    const footer = container.querySelector("footer");
     const region = scrollRegion(container);
 
-    expect(section).not.toBeNull();
-    expect(header).not.toBeNull();
-    // The header owns layout space as a flex item: it is a direct child of the
-    // panel and is never nested inside the scroll container.
     expect(header?.parentElement).toBe(section);
+    expect(footer?.parentElement).toBe(section);
     expect(region.parentElement).toBe(section);
     expect(region.contains(header)).toBe(false);
-    // It cannot be squeezed away when the window is short, it paints an opaque
-    // background over the scroll cut line, and it sits above card hover lifts.
+    expect(region.contains(footer)).toBe(false);
+
+    // Nothing may collapse when the window is short.
     expect(header?.className).toContain("shrink-0");
-    expect(header?.className).toContain("bg-surface-card");
+    expect(footer?.className).toContain("shrink-0");
+
+    // The header owns its own space and paints over the scroll cut line: opaque
+    // background, positioned above the cards, with its own separating border.
     expect(header?.className).toContain("relative");
     expect(header?.className).toContain("z-10");
+    expect(header?.className).toContain("bg-surface-card");
+    expect(header?.className).toContain("border-b");
 
-    // The card region starts below the header with a small visual gap instead of
-    // being flush against it, and it owns the scroll behaviour.
+    // The card region owns the remaining space, starts below the header with a
+    // small gap, and owns the scroll behaviour (it is not absolutely positioned).
+    expect(region.className).toContain("min-h-0");
+    expect(region.className).toContain("flex-1");
     expect(region.className).toContain("mt-1.5");
     expect(region.className).toContain("overflow-y-auto");
     expect(region.className).toContain("overscroll-contain");
     expect(region.className).not.toContain("absolute");
   });
 
-  it("renders every option inside the scroll region", async () => {
-    const { container } = await renderPicker(view(DEFAULT_OPTIONS));
+  it("renders every option inside the scroll region and resets it per session", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 1));
     const region = scrollRegion(container);
     const cards = screen.getAllByRole("button", { name: /^(原文|润色|要点)/ });
     expect(cards).toHaveLength(3);
     for (const card of cards) expect(region.contains(card)).toBe(true);
-  });
 
-  it("resets a scroll offset left by the previous session", async () => {
-    const { container } = await renderPicker(view(DEFAULT_OPTIONS, 1));
-    const region = scrollRegion(container);
     region.scrollTop = 120;
     const scrollTo = vi.mocked(Element.prototype.scrollTo);
-    // The initial session legitimately starts at the top; only the session
-    // change is under test here.
+    // The initial session legitimately starts at the top; only the session change
+    // is under test here.
     scrollTo.mockClear();
 
-    await act(async () => {
-      for (const listener of h.listeners) listener(view(DEFAULT_OPTIONS, 2));
-    });
-
+    emitState(view(OPTIONS, 2));
     await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 0 }));
   });
 });
 
 describe("PickerApp hover and selection", () => {
   it("marks hovering as an accent affordance distinct from the original-tint", async () => {
-    const { container } = await renderPicker(view(DEFAULT_OPTIONS));
+    const { container } = await renderPicker(view(OPTIONS));
     const polish = container.querySelector<HTMLElement>("button[aria-label^='润色']");
     const original = container.querySelector<HTMLElement>("button[aria-label^='原文']");
 
@@ -161,7 +276,7 @@ describe("PickerApp hover and selection", () => {
   });
 
   it("does not select anything on hover, but selects on click", async () => {
-    const { container } = await renderPicker(view(DEFAULT_OPTIONS));
+    const { container } = await renderPicker(view(OPTIONS));
     const polish = container.querySelector<HTMLElement>("button[aria-label^='润色']");
     expect(polish).not.toBeNull();
 
@@ -174,13 +289,27 @@ describe("PickerApp hover and selection", () => {
     await waitFor(() => expect(h.selectPickerOption).toHaveBeenCalledWith(1, "polish"));
   });
 
-  it("ignores clicks on cards that are still loading or failed", async () => {
+  it("still pastes the clicked version", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 4));
+    fireEvent.click(
+      container.querySelector<HTMLElement>("button[aria-label^='润色']") as HTMLElement,
+    );
+    await waitFor(() => expect(h.selectPickerOption).toHaveBeenCalledWith(4, "polish"));
+  });
+
+  it("still cancels through the Esc control", async () => {
+    await renderPicker(view(OPTIONS, 5));
+    fireEvent.click(screen.getByRole("button", { name: /Esc 取消/ }));
+    await waitFor(() => expect(h.cancelPicker).toHaveBeenCalledWith(5));
+  });
+
+  it("ignores clicks while a delivery is in flight or a card is not ready", async () => {
     const options = [
       option({ id: "original", title: "原文", kind: "original" }),
       option({ id: "polish", title: "润色", status: "loading", text: null }),
       option({ id: "summary", title: "要点", status: "failed", text: null, error: "超时" }),
     ];
-    const { container } = await renderPicker(view(options));
+    const { container } = await renderPicker(view(options, 6));
 
     fireEvent.click(
       container.querySelector<HTMLElement>("button[aria-label^='润色']") as HTMLElement,
@@ -193,6 +322,6 @@ describe("PickerApp hover and selection", () => {
     fireEvent.click(
       container.querySelector<HTMLElement>("button[aria-label^='原文']") as HTMLElement,
     );
-    await waitFor(() => expect(h.selectPickerOption).toHaveBeenCalledWith(1, "original"));
+    await waitFor(() => expect(h.selectPickerOption).toHaveBeenCalledWith(6, "original"));
   });
 });

@@ -98,24 +98,36 @@ pub(crate) fn bottom_center_position(
     (x, y)
 }
 
-/// Picker window size for `option_count` cards. Wider for more cards and one
-/// extra row per row the CSS grid will actually produce, capped to the usable
-/// area so small displays get a compact but still readable panel (the panel then
-/// scrolls).
+/// Panel sizing for the floating picker.
+///
+/// Every piece of picker geometry comes out of this one function so the native
+/// window, the CSS grid and the tests cannot disagree:
+///
+/// * width  — 120% of the historical per-count width, clamped into the work area;
+/// * height — half of the target display's usable height, grown only when the card
+///   rows genuinely need more, and clamped into the work area.
+///
+/// Both axes keep a floor so the panel stays readable on small laptops and can
+/// never exceed the visible area (`clamp_to` prefers the area limit over the
+/// floor). The panel content itself stretches (`grid-auto-rows: minmax(…, 1fr)`),
+/// so the extra space goes to the cards instead of empty gaps.
 pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, f64) {
-    let target_width: f64 = match option_count {
+    let base_width: f64 = match option_count {
         0 | 1 => 560.0,
         2 => 620.0,
         3 => 900.0,
         _ => 1120.0,
     };
-    let width = target_width
-        .min((work_area.width - 48.0).max(320.0))
-        .max(320.0);
-    // Rows follow the same column breakpoints as `web/src/picker/PickerApp.tsx`
-    // (1 column under 520pt, 2 under 780pt, 4 above). Deriving columns from the
-    // *clamped* width matters on narrow displays: there the panel is narrower
-    // than the target, so it fits fewer cards per row and needs more height.
+    let width = clamp_to(
+        base_width * WIDTH_GROWTH,
+        MIN_WIDTH,
+        work_area.width - AREA_INSET,
+    );
+
+    // Columns mirror `web/src/picker/PickerApp.tsx` (one column below 520px, two
+    // below 780px, four above). Deriving them from the *clamped* width matters on
+    // narrow displays: there the panel is narrower than its target, fits fewer
+    // cards per row and therefore needs more rows of height.
     let max_columns = if width < 520.0 {
         1
     } else if width < 780.0 {
@@ -125,16 +137,42 @@ pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, 
     };
     let columns = max_columns.min(option_count.max(1));
     let rows = option_count.div_ceil(columns).max(1);
-    let target_height: f64 = match rows {
-        1 => 380.0,
-        2 => 540.0,
-        _ => 700.0,
-    };
-    let height: f64 = target_height
-        .min((work_area.height - 48.0).max(280.0))
-        .max(280.0);
+
+    let content_height = CHROME_HEIGHT + rows as f64 * ROW_HEIGHT;
+    let height = clamp_to(
+        (work_area.height * HEIGHT_RATIO).max(content_height),
+        MIN_HEIGHT,
+        work_area.height - AREA_INSET,
+    );
     (width, height)
 }
+
+/// Clamp `value` into `[min, max]`, preferring `max` when the area cannot even fit
+/// `min`: staying inside the visible screen outranks the readability floor.
+fn clamp_to(value: f64, min: f64, max: f64) -> f64 {
+    if max < min {
+        max.max(0.0)
+    } else {
+        value.clamp(min, max)
+    }
+}
+
+/// Width multiplier over the historical per-count widths.
+const WIDTH_GROWTH: f64 = 1.2;
+/// Target share of the display's usable height.
+const HEIGHT_RATIO: f64 = 0.5;
+/// Readability floors.
+const MIN_WIDTH: f64 = 480.0;
+const MIN_HEIGHT: f64 = 360.0;
+/// Keep the panel at least this far from the work-area edges.
+const AREA_INSET: f64 = 48.0;
+/// One card row: CSS `grid-auto-rows` minimum (156px) plus the grid gap (8px).
+const ROW_HEIGHT: f64 = 164.0;
+/// Vertical space used by the window padding, the panel border, the header, the
+/// footer and the scroll-region gaps (measured ~115.8pt in the renderer), i.e.
+/// everything inside the window that is not a card row. The single grid gap is
+/// already accounted for by [`ROW_HEIGHT`].
+const CHROME_HEIGHT: f64 = 116.0;
 
 /// Fallback work area when no screen information is available. Coordinates are
 /// synthetic but deterministic; only used if AppKit unexpectedly returns no
@@ -632,10 +670,45 @@ mod tests {
             height: 320.0,
         };
         let (width, height) = picker_window_size(work, 6);
+        // The area cannot honour the floors (480 x 360), so the visible bounds win.
         assert_eq!(width, 452.0);
-        assert_eq!(height, 280.0);
+        assert_eq!(height, 272.0);
         assert!(width <= work.width);
         assert!(height <= work.height);
+    }
+
+    #[test]
+    fn picker_widths_are_twenty_percent_wider_than_the_historical_targets() {
+        let work = display(0.0, 0.0, 3000.0, 1600.0).work_area;
+        for (count, historical) in [(1, 560.0), (2, 620.0), (3, 900.0), (4, 1120.0), (8, 1120.0)] {
+            assert_eq!(
+                picker_window_size(work, count).0,
+                historical * 1.2,
+                "{count} options must be 120% of the previous width"
+            );
+        }
+    }
+
+    #[test]
+    fn picker_height_is_half_the_usable_height() {
+        for usable in [760.0, 1055.0, 1440.0] {
+            let work = Rect {
+                x: 0.0,
+                y: 25.0,
+                width: 1920.0,
+                height: usable,
+            };
+            let (_, height) = picker_window_size(work, 2);
+            assert_eq!(height, usable * 0.5, "usable height {usable}");
+        }
+        // Below the floor the panel stays a usable size instead of shrinking away.
+        let tiny = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 700.0,
+        };
+        assert_eq!(picker_window_size(tiny, 2).1, MIN_HEIGHT);
     }
 
     #[test]
@@ -643,58 +716,87 @@ mod tests {
         let work = display(0.0, 0.0, 3000.0, 1600.0);
         let one = picker_window_size(work.work_area, 1);
         let four = picker_window_size(work.work_area, 4);
-        assert!(four.0 > one.0);
-        assert_eq!(one.1, 380.0);
+        assert!(four.0 > one.0, "more cards get a wider panel");
+        // Height is display-driven once the cards still fit on one row.
+        assert_eq!(one.1, work.work_area.height * HEIGHT_RATIO);
+        assert_eq!(four.1, one.1);
     }
 
     #[test]
     fn picker_adds_a_row_for_more_than_four_options() {
-        let work = display(0.0, 0.0, 3000.0, 1600.0).work_area;
+        let work = Rect {
+            x: 0.0,
+            y: 25.0,
+            width: 1440.0,
+            height: 900.0,
+        };
         let four = picker_window_size(work, 4);
-        let five = picker_window_size(work, 5);
         let eight = picker_window_size(work, 8);
         let nine = picker_window_size(work, 9);
-        assert_eq!(four.1, 380.0);
-        assert_eq!(five.1, 540.0, "second row must fit instead of clipping");
-        assert_eq!(eight.1, 540.0);
-        assert!(nine.1 > eight.1, "a third row grows the panel further");
-        assert!(nine.1 <= work.height);
+        assert_eq!(four.1, 450.0, "one row fits inside the half-height target");
+        assert_eq!(
+            eight.1, 450.0,
+            "two rows still fit inside the half-height target"
+        );
+        assert!(
+            nine.1 > eight.1,
+            "a third row must grow the panel instead of clipping"
+        );
+        assert_eq!(nine.1, CHROME_HEIGHT + 3.0 * ROW_HEIGHT);
+        assert!(nine.1 <= work.height - AREA_INSET);
     }
 
     #[test]
-    fn picker_rows_follow_the_narrow_layout_column_count() {
-        // A 700pt work area clamps the panel to 652pt, where the CSS grid uses
-        // two columns instead of four. Three or four cards then need two rows,
-        // otherwise the second row would be clipped by the panel footer.
+    fn picker_rows_follow_the_live_column_count() {
+        // A 700pt work area clamps the panel to 652pt, where the CSS grid uses two
+        // columns instead of four, so the same option count needs more rows.
         let work = Rect {
             x: 0.0,
             y: 0.0,
             width: 700.0,
             height: 1200.0,
         };
-        let two = picker_window_size(work, 2);
-        let three = picker_window_size(work, 3);
-        let four = picker_window_size(work, 4);
-        assert_eq!(two.0, 620.0);
-        assert_eq!(two.1, 380.0, "two cards still share one row");
-        assert_eq!(three.0, 652.0);
-        assert_eq!(three.1, 540.0, "two columns means two rows");
-        assert_eq!(four.1, 540.0);
+        let half = work.height * HEIGHT_RATIO;
         assert_eq!(
-            picker_window_size(work, 5).1,
-            700.0,
-            "five cards span three rows in two columns"
+            picker_window_size(work, 2).0,
+            652.0,
+            "clamped to the work area minus the inset"
         );
+        // One and two rows still fit inside the half-height target...
+        assert_eq!(
+            picker_window_size(work, 2).1,
+            half,
+            "two cards share one row"
+        );
+        assert_eq!(picker_window_size(work, 3).1, half);
+        assert_eq!(picker_window_size(work, 4).1, half, "two rows fit");
+        // ...three rows in two columns do not, so the panel grows instead of
+        // clipping the last row behind the footer.
+        let five = picker_window_size(work, 5).1;
+        assert_eq!(five, CHROME_HEIGHT + 3.0 * ROW_HEIGHT);
+        assert!(five > half, "five cards span three rows in two columns");
+        assert!(five <= work.height - AREA_INSET);
 
-        // Below 520pt the grid is a single column, so even two cards need two rows.
+        // Below 520pt the grid collapses to a single column, so every extra card
+        // adds a row. A short display keeps the half-height target small enough for
+        // that row growth to be the binding constraint.
         let narrow = Rect {
             x: 0.0,
             y: 0.0,
             width: 500.0,
-            height: 1200.0,
+            height: 760.0,
         };
-        assert_eq!(picker_window_size(narrow, 1).1, 380.0);
-        assert_eq!(picker_window_size(narrow, 2).1, 540.0);
+        assert!(
+            narrow.width - AREA_INSET < MIN_WIDTH,
+            "the panel is narrow enough for the single-column layout"
+        );
+        let one = picker_window_size(narrow, 1).1;
+        let two = picker_window_size(narrow, 2).1;
+        let three = picker_window_size(narrow, 3).1;
+        assert_eq!(one, narrow.height * HEIGHT_RATIO);
+        assert_eq!(two, CHROME_HEIGHT + 2.0 * ROW_HEIGHT);
+        assert_eq!(three, CHROME_HEIGHT + 3.0 * ROW_HEIGHT);
+        assert!(three > two && two > one, "one column means one row each");
     }
 
     #[test]
@@ -707,5 +809,72 @@ mod tests {
         };
         let (_, height) = picker_window_size(work, 9);
         assert_eq!(height, 352.0, "clamped to the work area minus margins");
+    }
+
+    /// The panel must land fully inside the display it was sized for, including
+    /// secondary screens with negative origins and very small work areas.
+    #[test]
+    fn picker_always_fits_inside_the_target_work_area() {
+        let areas = [
+            Rect {
+                x: 0.0,
+                y: 25.0,
+                width: 1920.0,
+                height: 1055.0,
+            },
+            Rect {
+                x: -2560.0,
+                y: -1440.0,
+                width: 2560.0,
+                height: 1415.0,
+            },
+            Rect {
+                x: 1920.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 720.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 480.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 420.0,
+                height: 300.0,
+            },
+        ];
+        for work in areas {
+            for count in [1usize, 2, 3, 4, 6, 8, 9, 12] {
+                let (width, height) = picker_window_size(work, count);
+                let (x, y) = bottom_center_position(work, width, height, 24.0);
+                assert!(
+                    width > 0.0
+                        && height > 0.0
+                        && x >= work.x
+                        && y >= work.y
+                        && x + width <= work.x + work.width
+                        && y + height <= work.y + work.height,
+                    "count {count} on {work:?}: {x},{y} {width}x{height}"
+                );
+                // Centred horizontally on its own display.
+                assert!(
+                    (x + width / 2.0 - (work.x + work.width / 2.0)).abs() < 1e-9,
+                    "count {count} on {work:?} is not centred: {x} + {width}/2"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clamp_to_prefers_the_area_limit_over_the_floor() {
+        assert_eq!(clamp_to(1000.0, 480.0, 1200.0), 1000.0);
+        assert_eq!(clamp_to(100.0, 480.0, 1200.0), 480.0);
+        assert_eq!(clamp_to(5000.0, 480.0, 1200.0), 1200.0);
+        assert_eq!(clamp_to(5000.0, 480.0, 300.0), 300.0);
+        assert_eq!(clamp_to(5000.0, 480.0, -40.0), 0.0);
     }
 }

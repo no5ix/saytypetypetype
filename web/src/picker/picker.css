@@ -26,6 +26,16 @@ body,
   --color-fill-subtle: rgba(255, 255, 255, 0.09);
   --color-fill-hover: rgba(255, 255, 255, 0.15);
   --color-error: #ff9a94;
+
+  /* The panel outline carries all of the separation from the desktop, so it is a
+   * crisp 1px near-white line instead of a drop shadow: over arbitrary windows a
+   * large shadow reads as a smudge. The native window shadow is disabled too
+   * (`WebviewWindowBuilder::shadow(false)`), so this is the only outline. */
+  --picker-border: rgba(255, 255, 255, 0.34);
+  /* Shared scale factor for the pop-in/pop-out motion (see below). */
+  --picker-pop-scale: 0.975;
+  --picker-pop-in: 150ms;
+  --picker-pop-out: 130ms;
 }
 
 [data-theme="light"] .picker-root {
@@ -38,39 +48,65 @@ body,
   --color-fill-subtle: rgba(0, 0, 0, 0.05);
   --color-fill-hover: rgba(0, 0, 0, 0.09);
   --color-error: #b3261e;
+
+  /* Same restrained outline, inverted for light desktops. */
+  --picker-border: rgba(0, 0, 0, 0.3);
 }
 
 .picker-surface {
   background: var(--color-surface-card);
-  border-color: var(--color-border);
-  box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.4),
-    0 2px 8px rgba(0, 0, 0, 0.24);
+  /* No outer shadow on purpose: the panel is defined by its border. */
+  border: 1px solid var(--picker-border);
 }
 
-[data-theme="light"] .picker-surface {
-  box-shadow:
-    0 18px 40px rgba(20, 20, 15, 0.18),
-    0 2px 8px rgba(20, 20, 15, 0.1);
-}
-
+/* Pop-in / pop-out.
+ *
+ * The window is shown and hidden natively, so the panel animates itself:
+ *
+ * * entrance — keyframes that run on (re)mount. `PickerApp` keys the panel by
+ *   session id, so every session replays the same 150ms fade + slight scale-up;
+ * * exit — `data-picker-state="closing"`, set when the backend announces that it
+ *   is about to hide the window (it waits `EXIT_ANIMATION_MS`, the same length).
+ *
+ * Both are short and monotonic: no overshoot, no bounce, so the picker never
+ * feels slower than the dictation flow it belongs to.
+ */
 .picker-panel {
-  animation: picker-in 150ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  animation: picker-in var(--picker-pop-in) cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition:
+    opacity var(--picker-pop-out) cubic-bezier(0.4, 0, 0.9, 1),
+    transform var(--picker-pop-out) cubic-bezier(0.4, 0, 0.9, 1);
+  will-change: opacity, transform;
+}
+
+.picker-panel[data-picker-state="closing"] {
+  opacity: 0;
+  transform: scale(var(--picker-pop-scale));
+  /* The session is over: ignore clicks while the panel fades away. */
+  pointer-events: none;
 }
 
 @keyframes picker-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.985);
+    transform: scale(var(--picker-pop-scale));
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: scale(1);
   }
 }
 
+/* Reduced motion: keep the fade (it covers the native show/hide, so the panel
+ * still does not pop in and out harshly) but drop the scaling entirely. */
 @media (prefers-reduced-motion: reduce) {
   .picker-panel {
-    animation: none;
+    --picker-pop-scale: 1;
+    animation-duration: 90ms;
+    transition-duration: 70ms;
+  }
+
+  .picker-panel[data-picker-state="closing"] {
+    transform: none;
   }
 }
