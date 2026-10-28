@@ -52,6 +52,11 @@ pub(crate) struct PickerView {
     pub error: Option<String>,
     pub theme: String,
     pub target_app: Option<String>,
+    /// Cards per row, computed natively from the target display's work area
+    /// with the same policy that sized the window. The renderer must use this
+    /// instead of deriving columns from `window.innerWidth`, which can lag the
+    /// native resize when the window is reused across monitors.
+    pub columns: usize,
 }
 
 /// Everything the delivery path needs, copied out of the session while the
@@ -298,6 +303,14 @@ impl PickerStore {
 
 impl PickerSession {
     fn view(&self) -> PickerView {
+        // Same sizing entry point the native window uses, so the shipped column
+        // count always matches the window the renderer is laid out in.
+        let work_area = self
+            .target
+            .as_ref()
+            .map(|target| target.display.work_area)
+            .unwrap_or_else(|| crate::display::fallback_display().work_area);
+        let layout = crate::display::picker_layout(work_area, self.options.len());
         PickerView {
             session_id: self.id,
             options: self
@@ -317,6 +330,7 @@ impl PickerSession {
                 .as_ref()
                 .and_then(|target| target.target.as_ref())
                 .map(|app| app.name.clone()),
+            columns: layout.columns,
         }
     }
 }
@@ -341,6 +355,7 @@ mod tests {
                     width: 1920.0,
                     height: 1055.0,
                 },
+                scale_factor: 1.0,
             },
             target: None,
         })
@@ -372,6 +387,17 @@ mod tests {
             target(),
             1,
         )
+    }
+
+    /// The open payload carries the native column policy so the renderer never
+    /// has to trust a (potentially stale) `window.innerWidth` after a monitor
+    /// switch: three cards on a 1920-wide target ship as one row of three.
+    #[test]
+    fn view_ships_the_native_column_policy() {
+        let store = PickerStore::default();
+        let view = open(&store);
+        assert_eq!(view.options.len(), 3, "original + two templates");
+        assert_eq!(view.columns, 3, "three cards share one row at 1080pt");
     }
 
     #[test]

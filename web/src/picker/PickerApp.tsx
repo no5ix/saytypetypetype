@@ -66,8 +66,11 @@ export function PickerApp() {
       }
       setView(next);
     });
-    const unlistenClosing = onPickerClosing(() => {
-      if (mounted) setClosing(true);
+    const unlistenClosing = onPickerClosing((signal) => {
+      if (!mounted) return;
+      // `closing: false` is a failed-delivery re-arm on the same session:
+      // return the panel to open instead of fading out invisibly.
+      setClosing(signal.closing ?? true);
     });
     return () => {
       mounted = false;
@@ -97,10 +100,15 @@ export function PickerApp() {
 
   const options = view?.options ?? [];
   const columns = useMemo(() => {
+    // The native layout owns the column policy: it is computed from the same
+    // (clamped) window width that sized the panel. Only fall back to local
+    // width heuristics for payloads without the field — `window.innerWidth`
+    // can lag a cross-monitor resize of the reused window.
+    if (view?.columns && view.columns > 0) return view.columns;
     if (width < 520) return 1;
     const max = width < 780 ? 2 : 4;
     return Math.max(1, Math.min(options.length || 1, max));
-  }, [width, options.length]);
+  }, [view?.columns, width, options.length]);
 
   const select = useCallback(
     async (option: PickerOptionView) => {
@@ -108,10 +116,15 @@ export function PickerApp() {
       if (option.status !== "ready" || !option.text) return;
       setSubmitting(true);
       setExpanded(null);
+      // Same frame as the click: start the existing pop-out immediately. The
+      // backend keeps the window alive for the animation while the clipboard
+      // and paste run, and re-opens (closing: false) if delivery fails.
+      setClosing(true);
       try {
         await selectPickerOption(view.sessionId, option.id);
       } catch {
         setSubmitting(false);
+        setClosing(false);
       }
     },
     [submitting, view],
@@ -119,10 +132,14 @@ export function PickerApp() {
 
   const dismiss = useCallback(async () => {
     if (!view) return;
+    // The Esc control begins the same exit animation instantly; nothing is
+    // pasted and the native hide lands when the animation ends.
+    setClosing(true);
     try {
       await cancelPicker(view.sessionId);
     } catch {
       /* ESC is the authoritative path; a failed click-close is harmless */
+      setClosing(false);
     }
   }, [view]);
 

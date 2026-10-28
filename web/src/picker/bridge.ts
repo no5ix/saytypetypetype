@@ -22,6 +22,13 @@ export interface PickerView {
   error?: string | null;
   theme: string;
   targetApp?: string | null;
+  /**
+   * Cards per row, computed natively from the target display's work area.
+   * Authoritative: `window.innerWidth` can lag a cross-monitor resize of the
+   * reused picker window, which would otherwise briefly (or persistently)
+   * render the previous monitor's column count.
+   */
+  columns?: number;
 }
 
 export function getPickerState(): Promise<PickerView | null> {
@@ -48,17 +55,26 @@ export function onPickerState(cb: (view: PickerView) => void): () => void {
   };
 }
 
+/** Payload of "picker:closing" — the direction lets a failed delivery undo the
+ * exit animation on the same session (`closing: false` = window is back). */
+export interface PickerClosingSignal {
+  generation?: number;
+  closing?: boolean;
+}
+
 /**
- * Subscribe to "the window is about to be hidden".
+ * Subscribe to close/reopen announcements for the window.
  *
  * The window itself is shown/hidden natively, so the renderer cannot animate an
- * exit on its own: the backend announces the close and keeps the window on screen
- * just long enough for the pop-out transition to play.
+ * exit on its own timeline: the backend announces the close at the moment the
+ * user's selection or cancel is accepted and keeps the window on screen just
+ * long enough for the pop-out to play. A `closing: false` signal means a
+ * re-arm (failed delivery) put the session back on screen.
  */
-export function onPickerClosing(cb: () => void): () => void {
+export function onPickerClosing(cb: (signal: PickerClosingSignal) => void): () => void {
   let active = true;
-  const unlisten = listen("picker:closing", () => {
-    if (active) cb();
+  const unlisten = listen<PickerClosingSignal>("picker:closing", (event) => {
+    if (active) cb(event.payload ?? {});
   });
   return () => {
     active = false;

@@ -41,10 +41,18 @@ impl Rect {
 }
 
 /// One screen and its usable area (menu bar and Dock excluded).
+///
+/// `frame`/`work_area` are logical points (top-left global space). The
+/// `scale_factor` is the screen's backing-store ratio (points → pixels); it is
+/// carried for diagnostics and containment math only — the sizing formulas work
+/// purely in points and never multiply by it. Mixing the two is exactly what
+/// made the picker come out wrong when sessions moved between a Retina display
+/// (2×) and an external monitor (1×).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Display {
     pub frame: Rect,
     pub work_area: Rect,
+    pub scale_factor: f64,
 }
 
 /// The frontmost application whose window we are targeting.
@@ -100,15 +108,55 @@ pub(crate) fn bottom_center_position(
     (x, y)
 }
 
-/// Panel sizing for the floating picker.
+/// The complete picker layout decision: native window size plus the exact card
+/// grid the renderer must use. Columns are computed here once and shipped to
+/// the frontend in the open payload, so the native window, the row count used
+/// for sizing, and the rendered grid can never disagree — not even while a
+/// reused window's `innerWidth` still reflects the previous monitor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PickerLayout {
+    pub width: f64,
+    pub height: f64,
+    /// Cards per row the renderer must use (already capped by card count).
+    pub columns: usize,
+    /// Rows the cards occupy at that column count (drives the height growth).
+    pub rows: usize,
+}
+
+/// Deterministic column policy for the final window width.
+///
+/// * `< 520pt`  — one column (genuinely narrow fallback; keeps cards readable)
+/// * `< 780pt`  — two columns
+/// * `≥ 780pt`  — up to four columns
+///
+/// The tier boundaries match the renderer fallback in `PickerApp.tsx`, but the
+/// authoritative value is always this function: every supported monitor (MacBook
+/// built-in at 1280–1512pt, 1080p+ externals, ultrawides) lands three cards in
+/// one horizontal row because their clamped three-card width (1080pt) is above
+/// the two-column tier. Scaling factors never enter here — widths are points on
+/// every display.
+pub(crate) fn picker_columns(width: f64, option_count: usize) -> usize {
+    let max_columns = if width < 520.0 {
+        1
+    } else if width < 780.0 {
+        2
+    } else {
+        4
+    };
+    max_columns.min(option_count.max(1))
+}
+
+/// Full picker layout for a target work area and card count.
 ///
 /// Every piece of picker geometry comes out of this one function so the native
-/// window, the CSS grid and the tests cannot disagree:
+/// window, the shipped column policy and the tests cannot disagree:
 ///
 /// * width  — 120% of the historical per-count width, clamped into the work area
 ///   and capped at [`MAX_WIDTH`] so ultrawide displays keep readable card rows;
 /// * height — three quarters of the target display's usable height, grown only
-///   when the card rows genuinely need more, and clamped into the work area.
+///   when the card rows genuinely need more, and clamped into the work area;
+/// * columns/rows — the explicit [`picker_columns`] policy applied to the final
+///   clamped width, shipped verbatim to the renderer.
 ///
 /// Both axes keep a floor so the panel stays readable on small laptops and can
 /// never exceed the visible area (`clamp_to` prefers the area limit over the
@@ -119,7 +167,7 @@ pub(crate) fn bottom_center_position(
 /// `CGWindowBounds` are already points, and the caller applies the result as a
 /// Tauri `LogicalSize`/`LogicalPosition`. Retina backing scale never enters the
 /// formula, so a session can never size against another monitor's pixels.
-pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, f64) {
+pub(crate) fn picker_layout(work_area: Rect, option_count: usize) -> PickerLayout {
     let base_width: f64 = match option_count {
         0 | 1 => 560.0,
         2 => 620.0,
@@ -132,18 +180,10 @@ pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, 
         (work_area.width - AREA_INSET).min(MAX_WIDTH),
     );
 
-    // Columns mirror `web/src/picker/PickerApp.tsx` (one column below 520px, two
-    // below 780px, four above). Deriving them from the *clamped* width matters on
-    // narrow displays: there the panel is narrower than its target, fits fewer
-    // cards per row and therefore needs more rows of height.
-    let max_columns = if width < 520.0 {
-        1
-    } else if width < 780.0 {
-        2
-    } else {
-        4
-    };
-    let columns = max_columns.min(option_count.max(1));
+    // Deriving columns from the *clamped* width matters on narrow displays:
+    // there the panel is narrower than its target, fits fewer cards per row and
+    // therefore needs more rows of height.
+    let columns = picker_columns(width, option_count);
     let rows = option_count.div_ceil(columns).max(1);
 
     let content_height = CHROME_HEIGHT + rows as f64 * ROW_HEIGHT;
@@ -152,7 +192,12 @@ pub(crate) fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, 
         MIN_HEIGHT,
         work_area.height - AREA_INSET,
     );
-    (width, height)
+    PickerLayout {
+        width,
+        height,
+        columns,
+        rows,
+    }
 }
 
 /// Clamp `value` into `[min, max]`, preferring `max` when the area cannot even fit
@@ -203,6 +248,7 @@ pub(crate) fn fallback_display() -> Display {
             height: 875.0,
             ..frame
         },
+        scale_factor: 1.0,
     }
 }
 
@@ -385,9 +431,17 @@ mod macos {
                 let screen: *mut AnyObject = msg_send![screens, objectAtIndex: index];
                 let frame: NSRect = msg_send![screen, frame];
                 let visible: NSRect = msg_send![screen, visibleFrame];
+                // Points → backing pixels for this screen only. Diagnostic use;
+                // the picker sizing formula stays in points.
+                let scale: f64 = msg_send![screen, backingScaleFactor];
                 result.push(Display {
                     frame: to_top_left(frame, primary_height),
                     work_area: to_top_left(visible, primary_height),
+                    scale_factor: if scale.is_finite() && scale > 0.0 {
+                        scale
+                    } else {
+                        1.0
+                    },
                 });
             }
             Some(result)
@@ -554,7 +608,22 @@ mod tests {
                 width,
                 height,
             },
+            scale_factor: 1.0,
         }
+    }
+
+    /// A display with an explicit backing scale (Retina built-in vs 1× external).
+    fn scaled_display(x: f64, y: f64, width: f64, height: f64, scale: f64) -> Display {
+        Display {
+            scale_factor: scale,
+            ..display(x, y, width, height)
+        }
+    }
+
+    /// Test tuple view of [`picker_layout`] (size only) for the older assertions.
+    fn picker_window_size(work_area: Rect, option_count: usize) -> (f64, f64) {
+        let layout = picker_layout(work_area, option_count);
+        (layout.width, layout.height)
     }
 
     fn three_displays() -> Vec<Display> {
@@ -1013,6 +1082,129 @@ mod tests {
                 "stale or oversized panel for {work:?}: {x},{y} {width}x{height}"
             );
         }
+    }
+
+    /// Three result cards must share one horizontal row on every normally
+    /// supported monitor — MacBook built-in Retina and 1× externals alike —
+    /// so a monitor switch can never silently split the `[原文][润色][翻译]`
+    /// row. Columns come from the final clamped width, and the three-card
+    /// target (1080pt) clears the two-column tier on all these displays.
+    #[test]
+    fn three_cards_stay_one_row_on_supported_monitors() {
+        let monitors = [
+            ("MacBook built-in 1440", 1440.0, 875.0),
+            ("MacBook scaled 1280", 1280.0, 755.0),
+            ("1366 laptop", 1366.0, 743.0),
+            ("1080p external", 1920.0, 1055.0),
+            ("1440p external", 2560.0, 1415.0),
+            ("ultrawide", 3440.0, 1415.0),
+        ];
+        for (name, width, height) in monitors {
+            let work = Rect {
+                x: 0.0,
+                y: 25.0,
+                width,
+                height,
+            };
+            let layout = picker_layout(work, 3);
+            assert_eq!(layout.columns, 3, "{name}: three cards share one row");
+            assert_eq!(layout.rows, 1, "{name}: one row, no stacking");
+            assert!(
+                layout.width <= width - AREA_INSET,
+                "{name}: panel must fit inside the work area"
+            );
+        }
+    }
+
+    /// The layout depends on logical points only — never on the backing scale.
+    /// Identical logical sizes on a Retina panel (2×) and a 1× display produce
+    /// byte-identical geometry, so switching between displays with different
+    /// scale factors can never half- or double-size the picker.
+    #[test]
+    fn layout_is_independent_of_backing_scale() {
+        let retina = scaled_display(0.0, 25.0, 1440.0, 875.0, 2.0);
+        let external = scaled_display(0.0, 25.0, 1440.0, 875.0, 1.0);
+        for count in [1usize, 2, 3, 4, 6, 9] {
+            assert_eq!(
+                picker_layout(retina.work_area, count),
+                picker_layout(external.work_area, count),
+                "count {count}: scale must not enter the layout"
+            );
+        }
+        // The scale factor is still carried through for diagnostics.
+        assert_eq!(retina.scale_factor, 2.0);
+        assert_eq!(external.scale_factor, 1.0);
+    }
+
+    /// Alternating sessions between the built-in Retina display and a 1×
+    /// external each derive geometry fresh from their own target: the second
+    /// and third visit to a display match the first visit exactly — no session
+    /// inherits stale dimensions from the previously shown monitor — and every
+    /// placement stays inside its own work area.
+    #[test]
+    fn alternating_monitor_sessions_recompute_from_scratch() {
+        let builtin = scaled_display(0.0, 25.0, 1440.0, 875.0, 2.0);
+        let external = scaled_display(1920.0, 25.0, 1920.0, 1055.0, 1.0);
+        let sequence = [
+            builtin.clone(),
+            external.clone(),
+            builtin.clone(),
+            external.clone(),
+            builtin.clone(),
+        ];
+
+        let layouts: Vec<PickerLayout> = sequence
+            .iter()
+            .map(|display| picker_layout(display.work_area, 3))
+            .collect();
+
+        assert_eq!(layouts[0], layouts[2], "built-in revisit must match");
+        assert_eq!(layouts[2], layouts[4], "built-in revisit must match");
+        assert_eq!(layouts[1], layouts[3], "external revisit must match");
+        assert_ne!(
+            layouts[0], layouts[1],
+            "each display sizes its own panel (height differs)"
+        );
+
+        for (display, layout) in sequence.iter().zip(&layouts) {
+            let (x, y) =
+                bottom_center_position(display.work_area, layout.width, layout.height, 24.0);
+            assert!(
+                x >= display.work_area.x
+                    && y >= display.work_area.y
+                    && x + layout.width <= display.work_area.x + display.work_area.width
+                    && y + layout.height <= display.work_area.y + display.work_area.height,
+                "panel escapes {:?}: {x},{y} {}x{}",
+                display.work_area,
+                layout.width,
+                layout.height
+            );
+        }
+    }
+
+    /// The explicit column policy: width tiers decide the grid, capped by the
+    /// card count. The narrow single-column tier is the deliberate fallback for
+    /// genuinely small displays, not something mid-range monitors can hit.
+    #[test]
+    fn column_policy_is_deterministic_per_width_tier() {
+        assert_eq!(picker_columns(480.0, 3), 1, "narrow fallback tier");
+        assert_eq!(picker_columns(519.0, 3), 1);
+        assert_eq!(picker_columns(520.0, 3), 2);
+        assert_eq!(picker_columns(652.0, 3), 2);
+        assert_eq!(picker_columns(779.0, 3), 2);
+        assert_eq!(
+            picker_columns(780.0, 3),
+            3,
+            "full tier still capped by cards"
+        );
+        assert_eq!(picker_columns(1080.0, 3), 3);
+        assert_eq!(picker_columns(1080.0, 4), 4);
+        assert_eq!(picker_columns(1344.0, 6), 4, "capped at four columns");
+        assert_eq!(
+            picker_columns(1080.0, 0),
+            1,
+            "empty session keeps one column"
+        );
     }
 
     #[test]

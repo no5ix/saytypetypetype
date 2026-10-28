@@ -24,7 +24,7 @@ const css = (() => {
 
 const h = vi.hoisted(() => ({
   stateListeners: new Set<(view: unknown) => void>(),
-  closingListeners: new Set<() => void>(),
+  closingListeners: new Set<(signal: { closing?: boolean }) => void>(),
   view: null as unknown,
   selectPickerOption: vi.fn(async () => {}),
   cancelPicker: vi.fn(async () => {}),
@@ -36,7 +36,7 @@ vi.mock("@/picker/bridge", () => ({
     h.stateListeners.add(listener);
     return () => h.stateListeners.delete(listener);
   },
-  onPickerClosing: (listener: () => void) => {
+  onPickerClosing: (listener: (signal: { closing?: boolean }) => void) => {
     h.closingListeners.add(listener);
     return () => h.closingListeners.delete(listener);
   },
@@ -58,7 +58,7 @@ function option(
   };
 }
 
-function view(optionOverrides: PickerOptionView[], sessionId = 1): PickerView {
+function view(optionOverrides: PickerOptionView[], sessionId = 1, columns?: number): PickerView {
   return {
     sessionId,
     options: optionOverrides,
@@ -67,6 +67,7 @@ function view(optionOverrides: PickerOptionView[], sessionId = 1): PickerView {
     error: null,
     theme: "dark",
     targetApp: "Safari",
+    ...(columns ? { columns } : {}),
   };
 }
 
@@ -101,9 +102,9 @@ function emitState(next: PickerView) {
   });
 }
 
-function emitClosing() {
+function emitClosing(closing = true) {
   act(() => {
-    for (const listener of h.closingListeners) listener();
+    for (const listener of h.closingListeners) listener({ closing });
   });
 }
 
@@ -323,5 +324,104 @@ describe("PickerApp hover and selection", () => {
       container.querySelector<HTMLElement>("button[aria-label^='原文']") as HTMLElement,
     );
     await waitFor(() => expect(h.selectPickerOption).toHaveBeenCalledWith(6, "original"));
+  });
+});
+
+describe("PickerApp immediate dismissal", () => {
+  it("begins the pop-out in the same frame a card is clicked", async () => {
+    // Keep the selection IPC open: the dismissal must not wait for it.
+    let resolveSelect: () => void = () => {};
+    h.selectPickerOption.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSelect = resolve;
+        }),
+    );
+    const { container } = await renderPicker(view(OPTIONS, 9));
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>("button[aria-label^='润色']") as HTMLElement,
+    );
+
+    // Asserted synchronously: the panel is already exiting while the paste
+    // work is still in flight (previously the exit only started after it).
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+    expect(h.selectPickerOption).toHaveBeenCalledWith(9, "polish");
+    resolveSelect();
+  });
+
+  it("begins the pop-out on the Esc control without pasting anything", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 10));
+
+    fireEvent.click(screen.getByRole("button", { name: /Esc 取消/ }));
+
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+    expect(h.cancelPicker).toHaveBeenCalledWith(10);
+    expect(h.selectPickerOption).not.toHaveBeenCalled();
+  });
+
+  it("pastes only once when selection events repeat while closing", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 11));
+    const polish = container.querySelector<HTMLElement>(
+      "button[aria-label^='润色']",
+    ) as HTMLElement;
+
+    fireEvent.click(polish);
+    fireEvent.click(polish);
+    fireEvent.click(polish);
+
+    expect(h.selectPickerOption).toHaveBeenCalledTimes(1);
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+  });
+
+  it("returns to open when a failed delivery re-arms the same session", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 12));
+
+    emitClosing(true);
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+
+    // The backend re-showed the window after a failed paste: same session id,
+    // so only an explicit reopen signal can stop the exit animation.
+    emitClosing(false);
+    expect(panel(container).getAttribute("data-picker-state")).toBe("open");
+  });
+
+  it("returns the panel to open when the selection IPC itself fails", async () => {
+    h.selectPickerOption.mockRejectedValueOnce(new Error("ipc down"));
+    const { container } = await renderPicker(view(OPTIONS, 13));
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>("button[aria-label^='润色']") as HTMLElement,
+    );
+    expect(panel(container).getAttribute("data-picker-state")).toBe("closing");
+
+    await waitFor(() => expect(panel(container).getAttribute("data-picker-state")).toBe("open"));
+    expect(h.cancelPicker).not.toHaveBeenCalled();
+  });
+});
+
+describe("PickerApp native column policy", () => {
+  it("uses the payload column count over a stale window width", async () => {
+    // 652px would fall into the legacy two-column tier; the native layout for
+    // this session says three, and the native number wins because it is the
+    // number the window was actually sized for.
+    vi.stubGlobal("innerWidth", 652);
+    const { container } = await renderPicker(view(OPTIONS, 14, 3));
+    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(grid?.style.gridTemplateColumns).toContain("repeat(3");
+
+    // Payloads without the field still fall back to the width heuristic.
+    emitState(view(OPTIONS, 15));
+    const nextGrid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    expect(nextGrid?.style.gridTemplateColumns).toContain("repeat(2");
+  });
+
+  it("keeps every card on one row when the payload says one row", async () => {
+    const { container } = await renderPicker(view(OPTIONS, 16, 3));
+    const cards = screen.getAllByRole("button", { name: /^(原文|润色|要点)/ });
+    expect(cards).toHaveLength(3);
+    const grid = container.querySelector<HTMLElement>("[data-picker-scroll] > div");
+    // Three columns × three cards = a single horizontal row.
+    expect(grid?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
   });
 });

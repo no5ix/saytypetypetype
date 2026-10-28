@@ -33,8 +33,10 @@ const PICKER_LABEL: &str = "picker";
 const SCREEN_MARGIN: f64 = 24.0;
 
 /// How long the renderer's pop-out animation needs. The native window has to stay
-/// on screen for that long, so a hide is deferred by this much. Text delivery has
-/// already happened by then, so only the window disappearing is delayed.
+/// on screen for that long, so the hide is scheduled this far ahead — counted
+/// from the moment the close *animation begins* (the selection/cancel
+/// interaction itself), never from when the paste finishes. Text delivery keeps
+/// running with the window on screen while the panel animates away.
 const EXIT_ANIMATION_MS: u64 = 140;
 
 /// Coordinates the deferred hide with the exit animation.
@@ -230,11 +232,16 @@ pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
         selection.session_id
     );
 
-    // Reflect the in-flight delivery in the UI; the window stays visible while
-    // the paste runs so a failure can keep the text on screen.
+    // Reflect the in-flight delivery in the UI.
     if let Some(view) = inner.picker.view(session_id) {
         emit_state(&app, &view);
     }
+
+    // Begin the dismissal in the same interaction that accepted the selection:
+    // the panel starts its existing pop-out now while the clipboard/paste work
+    // runs with the (animating) window still on screen. The native hide lands
+    // when the animation is over; `finish_close` below is only the backstop.
+    let close_ticket = begin_close(&app);
 
     // A mouse click activates VoicePaste on macOS. Put the captured target app
     // back in front before the paste keystroke, otherwise the selected text
@@ -279,7 +286,7 @@ pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
                 hotkey::clear_picker_bindings(&hc);
                 hotkey::reset_recording(&hc);
             }
-            hide_window(&app);
+            finish_close(&app, close_ticket);
             inner
                 .volume_guard
                 .restore_session(selection.volume_session)
@@ -289,9 +296,23 @@ pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
             log_rec!(warn, "Picker delivery failed: {}", message);
             // Keep the text and the picker: re-arm selection so the user can
             // retry (or choose another version) instead of losing the session.
+            // The dismissal that started at selection time is revoked — the
+            // pending hide is invalidated by `show_window`, and the renderer is
+            // told to return the panel to its open state.
             inner
                 .picker
                 .finish_delivery(session_id, false, Some(message));
+            let option_count = inner
+                .picker
+                .view(session_id)
+                .map(|view| view.options.len())
+                .unwrap_or(1);
+            let shown = show_window(&app, &selection.target, option_count).await;
+            if shown {
+                signal_reopen(&app);
+            } else {
+                log_rec!(warn, "Could not re-show picker after failed delivery");
+            }
             if let Some(hc) = app.try_state::<HotkeyConfig>() {
                 let bindings = inner
                     .config_manager
@@ -326,7 +347,9 @@ pub(crate) async fn cancel(app: AppHandle, session_id: Option<u64>) {
         hotkey::clear_picker_bindings(&hc);
         hotkey::reset_recording(&hc);
     }
-    hide_window(&app);
+    // The Escape interaction itself starts the pop-out — no paste work is
+    // pending, so the single animation timer is the only hide needed.
+    begin_close(&app);
 
     // The recording workflow is over: restore the recording session's volume,
     // leave the overlay hidden and settle back to idle without writing history
@@ -388,6 +411,16 @@ fn picker_key_bindings(
 /// Create the picker window lazily, or reuse it if it already exists. Runs on
 /// the main thread because webview creation requires it, and reports success so
 /// the caller can fall back to automatic paste if the renderer is unavailable.
+///
+/// Ordering matters across monitors: tao applies `set_size`/`set_position` by
+/// dispatching `setContentSize:`/`setFrameTopLeftPoint:` onto the main dispatch
+/// queue, while `show` would order the window front immediately. Showing first
+/// would flash the *previous* monitor's geometry for a run-loop pass. So the
+/// size and position are queued here, and a follow-up task on the same FIFO
+/// queue performs the `show` and verifies the geometry the window actually has
+/// (points = physical ÷ the window's current backing scale) against the target
+/// work area. Any mismatch is logged — it is the field diagnostic for the
+/// "picker wrong size after moving to another monitor" class of bugs.
 async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_count: usize) -> bool {
     // Claim the window before anything else: an exit animation from the previous
     // session may still be waiting to hide it, and that hide must not fire after
@@ -402,46 +435,114 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
             .as_ref()
             .map(|target| target.display.clone())
             .unwrap_or_else(display::fallback_display);
-        let (width, height) = display::picker_window_size(display.work_area, option_count);
+        let layout = display::picker_layout(display.work_area, option_count);
         let (x, y) =
-            display::bottom_center_position(display.work_area, width, height, SCREEN_MARGIN);
+            display::bottom_center_position(display.work_area, layout.width, layout.height, SCREEN_MARGIN);
+        log_rec!(
+            info,
+            "Picker layout: frame={}x{}@{},{}, work={}x{}@{},{}, scale={:.1}, panel={:.0}x{:.0} at {:.0},{:.0}, cards={} cols={} rows={}",
+            display.frame.width,
+            display.frame.height,
+            display.frame.x,
+            display.frame.y,
+            display.work_area.width,
+            display.work_area.height,
+            display.work_area.x,
+            display.work_area.y,
+            display.scale_factor,
+            layout.width,
+            layout.height,
+            x,
+            y,
+            option_count,
+            layout.columns,
+            layout.rows,
+        );
 
-        if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
-            let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
+        let window = if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
+            let _ = window.set_size(Size::Logical(LogicalSize::new(layout.width, layout.height)));
             let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
+            window
+        } else {
+            let builder = WebviewWindowBuilder::new(
+                &handle,
+                PICKER_LABEL,
+                WebviewUrl::App("picker.html".into()),
+            )
+            .title("VoicePaste")
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            // Never become the key window: the global keytap still routes the
+            // shortcuts and the target application keeps focus for delivery.
+            .focusable(false)
+            .accept_first_mouse(true);
+
+            match builder.build() {
+                Ok(window) => {
+                    let _ =
+                        window.set_size(Size::Logical(LogicalSize::new(layout.width, layout.height)));
+                    let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
+                    let _ = window.set_visible_on_all_workspaces(true);
+                    window
+                }
+                Err(error) => {
+                    log_rec!(error, "Failed to create picker window: {}", error);
+                    let _ = tx.send(false);
+                    return;
+                }
+            }
+        };
+
+        // Runs after the queued size/position blocks above (same main queue,
+        // FIFO): show, then read back what the window really ended up with.
+        let show_handle = handle.clone();
+        if show_handle.run_on_main_thread(move || {
             let _ = window.show();
-            let _ = tx.send(true);
-            return;
-        }
-
-        let builder =
-            WebviewWindowBuilder::new(&handle, PICKER_LABEL, WebviewUrl::App("picker.html".into()))
-                .title("VoicePaste")
-                .decorations(false)
-                .transparent(true)
-                .shadow(false)
-                .resizable(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .visible(false)
-                // Never become the key window: the global keytap still routes the
-                // shortcuts and the target application keeps focus for delivery.
-                .focusable(false)
-                .accept_first_mouse(true);
-
-        match builder.build() {
-            Ok(window) => {
-                let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
-                let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
-                let _ = window.set_visible_on_all_workspaces(true);
-                let _ = window.show();
-                let _ = tx.send(true);
+            let scale = window.scale_factor().unwrap_or(1.0).max(0.5);
+            if let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) {
+                let actual_w = f64::from(size.width) / scale;
+                let actual_h = f64::from(size.height) / scale;
+                let actual_x = f64::from(position.x) / scale;
+                let actual_y = f64::from(position.y) / scale;
+                let fits = actual_x >= display.work_area.x - 1.0
+                    && actual_y >= display.work_area.y - 1.0
+                    && actual_x + actual_w <= display.work_area.x + display.work_area.width + 1.0
+                    && actual_y + actual_h <= display.work_area.y + display.work_area.height + 1.0;
+                if !fits
+                    || (actual_w - layout.width).abs() > 1.0
+                    || (actual_h - layout.height).abs() > 1.0
+                {
+                    log_rec!(
+                        warn,
+                        "Picker geometry drifted: wanted {:.0}x{:.0} at {:.0},{:.0}, got {:.0}x{:.0} at {:.0},{:.0} (window scale {:.1}, work {}x{}@{},{})",
+                        layout.width,
+                        layout.height,
+                        x,
+                        y,
+                        actual_w,
+                        actual_h,
+                        actual_x,
+                        actual_y,
+                        scale,
+                        display.work_area.width,
+                        display.work_area.height,
+                        display.work_area.x,
+                        display.work_area.y,
+                    );
+                }
             }
-            Err(error) => {
-                log_rec!(error, "Failed to create picker window: {}", error);
-                let _ = tx.send(false);
-            }
+        })
+        .is_err()
+        {
+            // Event loop is gone; nothing can place the window any more.
+            log_rec!(warn, "Could not schedule picker show on the main thread");
         }
+        let _ = tx.send(true);
     });
 
     if scheduled.is_err() {
@@ -460,19 +561,22 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
     }
 }
 
-/// Hide the picker after its pop-out animation.
+/// Begin the dismissal immediately: announce `picker:closing` so the renderer
+/// starts its existing 130ms pop-out, and schedule the native hide for when
+/// that animation ends. This must run in the same interaction that accepts the
+/// selection (or the cancel), not after the clipboard/paste work — waiting for
+/// delivery first is what made dismissal feel slow.
 ///
-/// The renderer cannot animate a window that is already gone, so the exit is
-/// announced over the existing IPC channel and the native `hide` runs once the
-/// animation has had time to play. Only the window disappearing is deferred —
-/// clipboard and paste happen before this is called — and the ticket keeps a
-/// re-open from being cancelled into an invisible window.
-fn hide_window(app: &AppHandle) {
+/// Returns the exit ticket; pass it to [`finish_close`] once the real work is
+/// done so the window is hidden even if some other path already consumed the
+/// animation timer. Re-opening a session calls [`ExitGuard::invalidate`] (via
+/// `show_window`), so a pending hide can never swallow a newer picker.
+fn begin_close(app: &AppHandle) -> u64 {
     let ticket = EXIT.begin();
     let _ = app.emit_to(
         PICKER_LABEL,
         "picker:closing",
-        serde_json::json!({ "generation": ticket }),
+        serde_json::json!({ "generation": ticket, "closing": true }),
     );
 
     let handle = app.clone();
@@ -489,6 +593,33 @@ fn hide_window(app: &AppHandle) {
             }
         });
     });
+    ticket
+}
+
+/// Complete a close started by [`begin_close`]: hide now when this exit still
+/// owns the window. Safe (and cheap) after the animation timer already hid it;
+/// a no-op once a newer session or hide took over.
+fn finish_close(app: &AppHandle, ticket: u64) {
+    if !EXIT.is_current(ticket) {
+        return;
+    }
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
+            let _ = window.hide();
+        }
+    });
+}
+
+/// Tell the renderer the window is visible again (used when a failed delivery
+/// re-arms the session): clears the closing state on the *same* session id so
+/// the panel returns to open instead of fading out invisibly.
+fn signal_reopen(app: &AppHandle) {
+    let _ = app.emit_to(
+        PICKER_LABEL,
+        "picker:closing",
+        serde_json::json!({ "closing": false }),
+    );
 }
 
 /// Tear the picker window down entirely (fallback cleanup). Queued on the main
@@ -583,7 +714,35 @@ mod tests {
         assert!(guard.is_current(third));
     }
 
+    /// The full dismissal lifecycle in ticket terms: `begin_close` starts the
+    /// animation timer at the selection instant; a session re-open that lands
+    /// while that timer is still in flight must invalidate it (that is what
+    /// `show_window` does first thing), so the obsolete close can never hide
+    /// the freshly opened picker.
+    #[test]
+    fn reopening_during_the_exit_animation_invalidates_the_pending_close() {
+        let guard = ExitGuard {
+            ticket: AtomicU64::new(0),
+        };
+
+        // User selects a result: the exit is claimed and the timer starts.
+        let closing = guard.begin();
+        assert!(
+            guard.is_current(closing),
+            "the close is pending mid-animation"
+        );
+
+        // A new session takes the window before the animation completes.
+        guard.invalidate();
+        assert!(
+            !guard.is_current(closing),
+            "the stale timer must not hide the new session"
+        );
+    }
+
     /// The window must not linger visible for a perceptible amount of time.
+    /// The timer counts from the moment the close animation begins (the
+    /// selection/cancel interaction), not from when delivery finishes.
     #[test]
     fn exit_animation_stays_short() {
         assert!((120..=180).contains(&EXIT_ANIMATION_MS));

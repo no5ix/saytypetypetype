@@ -1,11 +1,11 @@
 //! Temporary macOS system output-volume control for a transcription session.
 //!
 //! On session start we capture the current output volume and mute state, then
-//! glide the volume down to [`DIM_VOLUME`] percent over about a second when it
+//! glide the volume down to [`DIM_VOLUME`] percent over about 400 ms when it
 //! is higher. The captured state is restored exactly once when the workflow
-//! reaches any terminal outcome — also as a ~1 s glide — so a user adjustment
-//! made while transcribing is intentionally overwritten by the value saved at
-//! the start.
+//! reaches any terminal outcome — also as a ~400 ms glide — so a user
+//! adjustment made while transcribing is intentionally overwritten by the value
+//! saved at the start.
 //!
 //! The lifecycle owns the begin/restore boundaries; this module only owns the
 //! per-session snapshot, duplicate-cleanup protection, the ramp cancellation
@@ -16,7 +16,7 @@
 //! A ramp is a detached background thread writing one `set volume` step every
 //! [`RAMP_STEP`]; its target volume is derived from elapsed wall time rather
 //! than a fixed step index, so slow `osascript` round trips shorten the number
-//! of steps but never stretch the ~1 s duration. Every ramp carries a ticket:
+//! of steps but never stretch the ~400 ms duration. Every ramp carries a ticket:
 //! begin/stop/new-session bumps the ticket and the in-flight ramp aborts at its
 //! next check, leaving the volume exactly where the winning operation wants it.
 
@@ -27,11 +27,13 @@ use std::time::{Duration, Instant};
 /// Target output volume, in percent, while a transcription session is active.
 pub(crate) const DIM_VOLUME: u8 = 10;
 
-/// Total time of a smooth volume glide (dim and restore).
-const RAMP_DURATION: Duration = Duration::from_millis(1000);
+/// Total time of a smooth volume glide (dim and restore, each direction).
+/// Long enough to read as motion, short enough that the transition never feels
+/// like it is holding up the recording workflow.
+const RAMP_DURATION: Duration = Duration::from_millis(400);
 /// Pause between ramp writes. Small enough to read as continuous motion, large
 /// enough not to spam `osascript` (each write spawns a process).
-const RAMP_STEP: Duration = Duration::from_millis(40);
+const RAMP_STEP: Duration = Duration::from_millis(30);
 /// Safety bound for waiting on a detached ramp thread (it can only overshoot by
 /// one step plus its own scheduling delay).
 const RAMP_JOIN_SLACK: Duration = Duration::from_millis(250);
@@ -273,7 +275,7 @@ impl VolumeGuard {
     }
 
     /// Capture the current output state and glide the volume down to
-    /// [`DIM_VOLUME`] for `session` over ~1 s. Never returns an error:
+    /// [`DIM_VOLUME`] for `session` over ~400 ms. Never returns an error:
     /// transcription must proceed even if the volume operation fails. A dim for
     /// a session that is no longer active is ignored (the most important case:
     /// the user stopped while the start cue played).
@@ -435,7 +437,7 @@ impl VolumeGuard {
     }
 
     /// Restore `session`'s snapshot, at most once, gliding back to the original
-    /// volume over ~1 s on a detached thread (callers never block on it). A
+    /// volume over ~400 ms on a detached thread (callers never block on it). A
     /// restore for a session that is no longer active is ignored; it must never
     /// touch a newer session's snapshot.
     pub(crate) fn restore_session_blocking(self: &Arc<Self>, session: u64) {
@@ -898,7 +900,7 @@ mod tests {
     }
 
     /// Test ramp timing: short enough to keep the suite fast, long enough that
-    /// a dozen writes land per glide (the production budget is 1000ms/40ms).
+    /// a dozen writes land per glide (the production budget is 400ms/30ms).
     const TEST_RAMP: Duration = Duration::from_millis(120);
     const TEST_STEP: Duration = Duration::from_millis(12);
 
@@ -1009,8 +1011,8 @@ mod tests {
 
     #[test]
     fn ramp_timing_constants_stay_in_the_desired_window() {
-        // ~1 s total, ~30–50 ms steps, matching the requested feel.
-        assert!((700..=1500).contains(&RAMP_DURATION.as_millis()));
+        // ~400 ms per direction, ~25–60 ms steps: fast but still a glide.
+        assert!((300..=550).contains(&RAMP_DURATION.as_millis()));
         assert!((25..=60).contains(&RAMP_STEP.as_millis()));
     }
 
@@ -1045,8 +1047,8 @@ mod tests {
         let calls = fake.volume_calls();
         // The first write already moved off the original (no redundant set),
         // and the motion is gradual. Granularity scales with the injected
-        // schedule: with production timing (1000ms / 40ms ≈ 25 writes over a
-        // 90-point range) no step jumps more than ~6%, while smoothstep's
+        // schedule: with production timing (400ms / 30ms ≈ 13 writes over a
+        // 90-point range) no step jumps more than ~12%, while smoothstep's
         // 1.5× mid-glide speed bounds any gap by 2× the average step here.
         assert!(calls[0] < 100);
         assert!(calls.len() >= 5, "glide too coarse: {calls:?}");
