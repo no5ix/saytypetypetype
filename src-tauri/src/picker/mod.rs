@@ -13,6 +13,7 @@
 
 pub(crate) mod model;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,43 @@ use model::{prompt_option_id, PickerOptionSpec, PickerResult, PickerView, ORIGIN
 
 const PICKER_LABEL: &str = "picker";
 const SCREEN_MARGIN: f64 = 24.0;
+
+/// How long the renderer's pop-out animation needs. The native window has to stay
+/// on screen for that long, so a hide is deferred by this much. Text delivery has
+/// already happened by then, so only the window disappearing is delayed.
+const EXIT_ANIMATION_MS: u64 = 140;
+
+/// Coordinates the deferred hide with the exit animation.
+///
+/// Every hide takes a ticket and only performs the native `hide` once the
+/// animation has run *and* nothing newer has claimed the window. Opening a new
+/// session (or hiding again) invalidates an in-flight exit, so a rapid
+/// open/close/open sequence can never be swallowed by a late hide.
+#[derive(Debug)]
+struct ExitGuard {
+    ticket: AtomicU64,
+}
+
+impl ExitGuard {
+    /// Claim the window for an exit animation and return its ticket.
+    fn begin(&self) -> u64 {
+        self.ticket.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Cancel a pending exit (a new session is taking over the window).
+    fn invalidate(&self) {
+        self.ticket.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether `ticket` still owns the pending exit.
+    fn is_current(&self, ticket: u64) -> bool {
+        self.ticket.load(Ordering::SeqCst) == ticket
+    }
+}
+
+static EXIT: ExitGuard = ExitGuard {
+    ticket: AtomicU64::new(0),
+};
 
 /// Open a picker session for `original` and start one request per configured
 /// template. Returns `false` only when the window/renderer could not be
@@ -327,6 +365,10 @@ fn picker_key_bindings(
 /// the main thread because webview creation requires it, and reports success so
 /// the caller can fall back to automatic paste if the renderer is unavailable.
 async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_count: usize) -> bool {
+    // Claim the window before anything else: an exit animation from the previous
+    // session may still be waiting to hide it, and that hide must not fire after
+    // this session has shown the window again.
+    EXIT.invalidate();
     let app = app.clone();
     let handle = app.clone();
     let target = target.clone();
@@ -394,19 +436,42 @@ async fn show_window(app: &AppHandle, target: &Option<TargetDisplay>, option_cou
     }
 }
 
+/// Hide the picker after its pop-out animation.
+///
+/// The renderer cannot animate a window that is already gone, so the exit is
+/// announced over the existing IPC channel and the native `hide` runs once the
+/// animation has had time to play. Only the window disappearing is deferred —
+/// clipboard and paste happen before this is called — and the ticket keeps a
+/// re-open from being cancelled into an invisible window.
 fn hide_window(app: &AppHandle) {
-    let app = app.clone();
+    let ticket = EXIT.begin();
+    let _ = app.emit_to(
+        PICKER_LABEL,
+        "picker:closing",
+        serde_json::json!({ "generation": ticket }),
+    );
+
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
-            let _ = window.hide();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(EXIT_ANIMATION_MS)).await;
+        // A newer session or a newer hide owns the window now.
+        if !EXIT.is_current(ticket) {
+            return;
         }
+        let window_owner = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if let Some(window) = window_owner.get_webview_window(PICKER_LABEL) {
+                let _ = window.hide();
+            }
+        });
     });
 }
 
 /// Tear the picker window down entirely (fallback cleanup). Queued on the main
 /// thread after any pending creation, so it cannot be raced by a late build.
 fn destroy_window(app: &AppHandle) {
+    // No animation to wait for, and a pending exit must not target a dead window.
+    EXIT.invalidate();
     let app = app.clone();
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -465,5 +530,38 @@ mod tests {
         assert!(!bindings
             .iter()
             .any(|binding| binding.option_id == prompt_option_id("none")));
+    }
+
+    /// The deferred hide must be cancellable: otherwise a re-open that lands while
+    /// the pop-out is still running would be hidden by the previous session.
+    #[test]
+    fn only_the_newest_exit_may_hide_the_window() {
+        let guard = ExitGuard {
+            ticket: AtomicU64::new(0),
+        };
+
+        let first = guard.begin();
+        assert!(guard.is_current(first), "the exit is pending at first");
+
+        guard.invalidate();
+        assert!(
+            !guard.is_current(first),
+            "opening a new session swallows the pending hide"
+        );
+
+        let second = guard.begin();
+        assert!(guard.is_current(second));
+        let third = guard.begin();
+        assert!(
+            !guard.is_current(second),
+            "a newer hide replaces the old one"
+        );
+        assert!(guard.is_current(third));
+    }
+
+    /// The window must not linger visible for a perceptible amount of time.
+    #[test]
+    fn exit_animation_stays_short() {
+        assert!((120..=180).contains(&EXIT_ANIMATION_MS));
     }
 }

@@ -47,3 +47,21 @@ export function onPickerState(cb: (view: PickerView) => void): () => void {
     unlisten.then((fn) => fn());
   };
 }
+
+/**
+ * Subscribe to "the window is about to be hidden".
+ *
+ * The window itself is shown/hidden natively, so the renderer cannot animate an
+ * exit on its own: the backend announces the close and keeps the window on screen
+ * just long enough for the pop-out transition to play.
+ */
+export function onPickerClosing(cb: () => void): () => void {
+  let active = true;
+  const unlisten = listen("picker:closing", () => {
+    if (active) cb();
+  });
+  return () => {
+    active = false;
+    unlisten.then((fn) => fn());
+  };
+}
