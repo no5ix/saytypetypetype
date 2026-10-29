@@ -11,6 +11,8 @@
 //! `recording::deliver_text_result`, which records the original transcript in
 //! history and only pastes the selected string.
 
+#[cfg(target_os = "macos")]
+mod hover;
 pub(crate) mod model;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -486,6 +488,7 @@ fn place_and_show(
     placement: Placement,
     tx: tokio::sync::oneshot::Sender<bool>,
 ) -> Result<(), String> {
+    let app = window.app_handle().clone();
     window.with_webview(move |pw| unsafe {
         let Placement {
             width,
@@ -549,6 +552,13 @@ fn place_and_show(
         }
         // The geometry above is final before the window can appear; the
         // viewport follows because the web view is laid out at these bounds.
+        // Mouse-moved delivery: the window stays non-key so the app must not
+        // activate — accept our own synthetic moves when active too (they flow
+        // natively to a non-key window only with this flag).
+        let _: () = msg_send![win, setAcceptsMouseMovedEvents: true];
+        // The bridge observes moves while the app is inactive; it replays them
+        // into this window from its own handler.
+        hover::enable(&app);
         let _: () = msg_send![win, orderFrontRegardless];
         let _ = tx.send(true);
     })
@@ -730,6 +740,9 @@ fn begin_close(app: &AppHandle) -> u64 {
         }
         let window_owner = handle.clone();
         let _ = handle.run_on_main_thread(move || {
+            // Kill the hover bridge before hiding, against the same ticket:
+            // observed moves after this point belong to other apps only.
+            hover::disable();
             if let Some(window) = window_owner.get_webview_window(PICKER_LABEL) {
                 let _ = window.hide();
             }
@@ -747,6 +760,7 @@ fn finish_close(app: &AppHandle, ticket: u64) {
     }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        hover::disable();
         if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
             let _ = window.hide();
         }
@@ -772,6 +786,7 @@ fn destroy_window(app: &AppHandle) {
     let app = app.clone();
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        hover::disable();
         if let Some(window) = handle.get_webview_window(PICKER_LABEL) {
             let _ = window.destroy();
         }

@@ -149,23 +149,52 @@ pub(crate) fn position_overlay(app_handle: &AppHandle) {
     position_overlay_on(app_handle, &target);
 }
 
-/// Position the overlay on an already-resolved session target.
+/// Position the overlay on an already-resolved session target, sized with the
+/// picker's own multi-monitor rules: logical points from the target display's
+/// work area, recomputed per session, bottom edge pinned to the same margin so
+/// growth extends upward without moving the visible pill.
 pub(crate) fn position_overlay_on(app_handle: &AppHandle, target: &crate::display::TargetDisplay) {
+    // Window properties (RunEvent::Ready) rather than during setup() to avoid
+    // macOS window server timing issues.
     if let Some(overlay) = app_handle.get_window("overlay") {
-        // Set window properties here (RunEvent::Ready) rather than during setup()
-        // to avoid macOS window server timing issues.
         let _ = overlay.set_ignore_cursor_events(true);
         let _ = overlay.set_visible_on_all_workspaces(true);
+    }
 
-        // Use the target display's WORK AREA in LOGICAL points. Logical units
-        // keep Retina displays at native size; the work area excludes the menu
-        // bar and Dock. Coordinates are top-left global, so secondary displays
-        // left of or above the primary (negative x/y) work unchanged.
-        let work_area = target.display.work_area;
-        let (x, y) = crate::display::bottom_center_position(work_area, 720.0, 300.0, 48.0);
+    // Use the target display's work area in LOGICAL points. Logical units
+    // keep Retina displays at native size; the work area excludes the menu
+    // bar and Dock. Coordinates are top-left global, so secondary displays
+    // left of or above the primary (negative x/y) work unchanged.
+    #[cfg(target_os = "macos")]
+    {
+        // Build the caps from the top-left work area, then hand the native
+        // placement the display's raw bottom-left `visibleFrame` so AppKit
+        // coordinates never round-trip through another space.
+        let area = target.display.work_area;
+        let (shell_w, shell_h) = shared::dictation_shell_size(area.width, area.height);
+        macos::position_window_native(app_handle, target.display.work_area_bl, shell_w, shell_h);
+    }
 
-        let _ = overlay.set_size(tauri::Size::Logical(tauri::LogicalSize::new(720.0, 300.0)));
-        let _ = overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+    #[cfg(not(target_os = "macos"))]
+    {
+        // tao applies both calls through its event-loop proxy; on Windows a
+        // reused hidden window keeps that ordering deterministic, matching the
+        // picker's non-macOS sequence.
+        let area = target.display.work_area;
+        let (shell_w, shell_h) = shared::dictation_shell_size(area.width, area.height);
+        if let Some(overlay) = app_handle.get_window("overlay") {
+            let (x, y) = crate::display::bottom_center_position(
+                area,
+                shell_w,
+                shell_h,
+                shared::BOTTOM_OFFSET,
+            );
+            let _ = overlay.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                shell_w, shell_h,
+            )));
+            let _ =
+                overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        }
     }
 }
 

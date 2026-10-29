@@ -21,9 +21,9 @@ use tauri::{AppHandle, Manager};
 // Windows WebView stay driven by the same numbers.
 use super::shared::{
     visible_hint, Model, Shortcut, BOTTOM_OFFSET, FONT_SIZE, GAP, ICON_SIZE, INDICATOR_W,
-    MAX_LINES, MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, SINGLE_LINE_LIMIT,
-    TEXT_SLACK, WAVE_AREA_W, WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS, WAVE_DURATIONS,
-    WAVE_MAX_H, WAVE_MIN_H, WAVE_N, WAVE_PEAKS, WAVE_SETTLE_SECONDS,
+    MAX_LINES, MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, SHORTCUT_RESERVE,
+    SINGLE_LINE_LIMIT, TEXT_SLACK, WAVE_AREA_W, WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS,
+    WAVE_DURATIONS, WAVE_MAX_H, WAVE_MIN_H, WAVE_N, WAVE_PEAKS, WAVE_SETTLE_SECONDS,
 };
 
 enum GlassKind {
@@ -87,6 +87,13 @@ thread_local! {
     static VIEWS: RefCell<Option<Views>> = const { RefCell::new(None) };
     static RESIZE_TICK_PENDING: Cell<bool> = const { Cell::new(false) };
     static WAVE_ACTIVE: RefCell<bool> = const { RefCell::new(false) };
+    /// Transparent shell the pill may fill this session, set by
+    /// `position_window_native` (main thread) before each show. The legacy
+    /// default means "not positioned yet": the render falls back to the
+    /// historical 520pt/3-line caps until the target display is known.
+    static SHELL: RefCell<(f64, f64)> = const {
+        RefCell::new((super::shared::MIN_SHELL_W, super::shared::MIN_SHELL_H))
+    };
 }
 
 extern "C" fn pivot_hit_test(this: *mut AnyObject, _sel: Sel, point: NSPoint) -> *mut NSView {
@@ -157,6 +164,119 @@ fn liquid_glass_available() -> bool {
 /// Whether the configured style uses real Liquid Glass (vs the vibrancy fallback).
 fn uses_glass(style: &str) -> bool {
     matches!(style, "liquid" | "liquid-standard")
+}
+
+/// Slop (AppKit points) below which an applied frame is considered to match;
+/// absorbs sub-point rounding the same way the picker's verifier does.
+const FRAME_TOLERANCE: f64 = 1.5;
+
+fn frame_matches(frame: &NSRect, x: f64, y: f64, width: f64, height: f64) -> bool {
+    (frame.origin.x - x).abs() <= FRAME_TOLERANCE
+        && (frame.origin.y - y).abs() <= FRAME_TOLERANCE
+        && (frame.size.width - width).abs() <= FRAME_TOLERANCE
+        && (frame.size.height - height).abs() <= FRAME_TOLERANCE
+}
+
+/// Bottom-center shell frame in AppKit bottom-left points, straight from the
+/// screen's raw `visibleFrame` (`Display::work_area_bl`), so the same
+/// coordinates AppKit consumes never round-trip through another space.
+///
+/// Containment outranks the shell minimum: a screen that reports an oddly
+/// small usable rect gets a shell clamped to it.
+fn shell_frame_bl(
+    work_bl: crate::display::Rect,
+    shell_w: f64,
+    shell_h: f64,
+    bottom_margin: f64,
+) -> NSRect {
+    let mut width = shell_w;
+    let mut height = shell_h;
+    // The shell may not leave its work area even if a screen reports an oddly
+    // small usable rect (containment outranks the shell minimum).
+    if width > work_bl.width {
+        width = work_bl.width.max(0.0);
+    }
+    if height > work_bl.height {
+        height = work_bl.height.max(0.0);
+    }
+    NSRect {
+        origin: NSPoint {
+            x: work_bl.x + (work_bl.width - width) / 2.0,
+            y: work_bl.y + bottom_margin,
+        },
+        size: NSSize { width, height },
+    }
+}
+
+/// Place the overlay's transparent shell on the target display in one
+/// main-thread task, verified like the picker. tao routes `set_size`/`set_position`
+/// through the main GCD queue while `show` fronts through the event-loop proxy;
+/// that gap let a reused window appear one run-loop pass at the previous
+/// monitor's frame. Applying `setFrame:` directly removes the race, and the
+/// matching pill caps are recorded for the renderer only afterwards.
+///
+/// The frame pins its bottom edge at `bottom_margin` above the work-area
+/// bottom: the pill hangs `BOTTOM_OFFSET` inside the shell, so the visible
+/// pill stays at its historical on-screen position while the shell grows
+/// upward.
+pub(super) fn position_window_native(
+    app: &AppHandle,
+    work_bl: crate::display::Rect,
+    shell_w: f64,
+    shell_h: f64,
+) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(ptr) = make_window_ptr(&handle) else {
+            return;
+        };
+        // SAFETY: ptr is the overlay window's live NSWindow for the app lifetime.
+        let window: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+        let wanted = shell_frame_bl(work_bl, shell_w, shell_h, super::shared::BOTTOM_OFFSET);
+        let mut got: NSRect = unsafe {
+            let _: () = msg_send![window, setFrame: wanted, display: false];
+            msg_send![window, frame]
+        };
+        if !frame_matches(&got, wanted.origin.x, wanted.origin.y, wanted.size.width, wanted.size.height) {
+            // One bounded retry covers a transient constraint; a persistent
+            // mismatch is logged so the next failure is identifiable.
+            unsafe {
+                let _: () = msg_send![window, setFrame: wanted, display: false];
+                got = msg_send![window, frame];
+            }
+            if !frame_matches(&got, wanted.origin.x, wanted.origin.y, wanted.size.width, wanted.size.height) {
+                log_app!(
+                    warn,
+                    "Overlay shell did not converge: requested {:.0}x{:.0}@{:.0},{:.0} got {:.0}x{:.0}@{:.0},{:.0} (bl)",
+                    wanted.size.width,
+                    wanted.size.height,
+                    wanted.origin.x,
+                    wanted.origin.y,
+                    got.size.width,
+                    got.size.height,
+                    got.origin.x,
+                    got.origin.y,
+                );
+            }
+        }
+        SHELL.with(|shell| {
+            shell.replace((got.size.width, got.size.height));
+        });
+        log_app!(
+            info,
+            "Overlay shell set: {:.0}x{:.0}@{:.0},{:.0} (bl, work_bl {:.0}x{:.0}@{:.0},{:.0}, requested {:.0}x{:.0})",
+            got.size.width,
+            got.size.height,
+            got.origin.x,
+            got.origin.y,
+            work_bl.width,
+            work_bl.height,
+            work_bl.x,
+            work_bl.y,
+            shell_w,
+            shell_h,
+        );
+    });
 }
 
 /// Map the configured style to a Liquid Glass style, chosen to match the on-screen
@@ -1276,6 +1396,26 @@ fn render(app: &AppHandle, model: &mut Model) {
             0.0
         };
         let chrome = PAD_LEFT + left_slot + PAD_RIGHT;
+
+        // Session shell caps: how much text the transparent window can hold on
+        // the display the session targets. The legacy default (not yet
+        // positioned) keeps today's fixed 520pt/3-line behaviour untouched.
+        let (shell_w, shell_h) = SHELL.with(|shell| *shell.borrow());
+        let dynamic = (shell_w - super::shared::MIN_SHELL_W).abs() > 0.5
+            || (shell_h - super::shared::MIN_SHELL_H).abs() > 0.5;
+        // The pill hangs BOTTOM_OFFSET above the shell bottom; the shortcut
+        // hints take SHORTCUT_RESERVE (18pt row + 16pt gap) of the height
+        // above it.
+        let pill_h_cap = (shell_h - super::shared::BOTTOM_OFFSET - SHORTCUT_RESERVE).max(56.0);
+        // The shell only has to be wider than the legacy pill for the dynamic
+        // caps to change anything; on small displays the legacy floor keeps the
+        // today-visible behaviour.
+        let text_cap = if dynamic {
+            (shell_w - chrome).max(10.0)
+        } else {
+            MULTI_LINE_WIDTH
+        };
+
         let text_w = measured_w
             + if has_text && !has_hint && !show_icon {
                 TEXT_SLACK
@@ -1287,7 +1427,7 @@ fn render(app: &AppHandle, model: &mut Model) {
         let next_width = if success && !has_hint {
             PAD_LEFT + INDICATOR_W + PAD_RIGHT
         } else if want_wrap {
-            MULTI_LINE_WIDTH + chrome
+            text_cap + chrome
         } else {
             (SINGLE_LINE_LIMIT + chrome).min((text_w + chrome).max(MIN_PILL_W))
         };
@@ -1319,7 +1459,17 @@ fn render(app: &AppHandle, model: &mut Model) {
                 .setLineBreakMode(NSLineBreakMode::ByWordWrapping);
             views.label.setPreferredMaxLayoutWidth(text_area_w);
             let full = views.label.intrinsicContentSize().height.ceil();
-            let max_visible = one_line_h * (MAX_LINES as f64) + 4.0;
+            // How many lines fit above the shell's bottom margin and inside
+            // the pill's own padding: grows with the target display up to the
+            // ~50% shell, then older lines overflow upward (the existing
+            // top-fade + clip behaviour) instead of the pill expanding further.
+            let max_visible = if dynamic {
+                let line_room = (pill_h_cap - 16.0).max(one_line_h);
+                let max_lines = ((line_room / one_line_h).floor() as usize).max(1);
+                one_line_h * max_lines as f64 + 4.0
+            } else {
+                one_line_h * (MAX_LINES as f64) + 4.0
+            };
             let visible = full.min(max_visible);
             ((visible + 16.0).max(56.0), full, visible)
         } else if model.hint_level == "error" {

@@ -16,13 +16,19 @@ use super::session;
 use super::wav;
 use super::{
     begin_output_volume_session, is_current_epoch, lower_output_volume_for,
-    reset_matcher_recording, restore_output_volume, restore_output_volume_for,
+    reset_matcher_recording, restore_output_volume_for,
 };
 
 /// Upper bound on waiting for the start cue before dimming. The bundled cue is
 /// ~0.5 s; this only guards against a corrupt or unusually long custom file so
 /// the volume workflow can never stall indefinitely.
 const START_CUE_VOLUME_WAIT: Duration = Duration::from_millis(2500);
+
+/// Upper bound awaiting the dim ramp before capture starts. The ramp glides
+/// over `RAMP_DURATION` (400 ms) inside its volume task; twice the duration
+/// plus join slack covers a slow main-thread hand-off, and a wedged volume
+/// controller must not prevent dictation from starting at all.
+const DIM_COMPLETION_BOUND: Duration = Duration::from_millis(1000);
 
 /// Start recording from idle state. Used by both toggle and hold modes.
 pub(super) async fn start_recording(app_handle: AppHandle) {
@@ -77,29 +83,13 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     overlay::position_overlay_on(&app_handle, &target);
     overlay::show(&app_handle);
 
-    // 2. Warm up microphone capture (native cpal on macOS + Windows). The capture
-    //    owns its own ready signal (a oneshot the input thread fires once the
-    //    stream is built), so there is no renderer warmup round-trip to wait on.
+    // 2. Enter the Connecting baseline for the rest of startup. The microphone
+    //    is deliberately NOT started yet: with music playing at dictation time,
+    //    whatever the mic picks up while the output volume is still at the
+    //    user's level would be streamed into the session and transcribed.
+    //    Capture only starts after the start cue has played and the volume
+    //    dim ramp has completed (step 7).
     set_app_state(&app_handle, &app_inner, app_state::AppState::Connecting).await;
-    if let Err(e) = capture::start_capture(app_handle.clone(), Arc::clone(&app_inner)).await {
-        *recording_state.0.lock().unwrap() = false;
-        restore_output_volume(&app_inner).await;
-        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-        log_rec!(warn, "Native audio warmup failed: {}", e);
-        reset_matcher_recording(&app_handle);
-        overlay::show_restart_error(&app_handle, &app_inner, &e).await;
-        return;
-    }
-
-    // Check if recording was cancelled during warmup (hold mode: quick press-release)
-    if !*recording_state.0.lock().unwrap() {
-        log_rec!(warn, "Cancelled during warmup, aborting start");
-        capture::stop_capture(&app_inner).await;
-        restore_output_volume(&app_inner).await;
-        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
-        overlay::hide(&app_handle);
-        return;
-    }
 
     // 3. Active hotwords for this session (also reused on reconnect).
     let hotwords = app_inner.hotword_manager.active_words();
@@ -111,12 +101,11 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     );
 
     // 4. Play the start cue and enter Recording back-to-back: the cue tells the user
-    //    they may speak, so streaming must begin the instant it plays — no gap. DSP
-    //    has already converged during the settle delay above. The ASR session
-    //    connects in the background so the user can speak as soon as the (local,
-    //    fast) mic is ready instead of waiting on the (remote, variable) network
-    //    handshake; audio captured before the session is ready is buffered and
-    //    flushed once it connects.
+    //    they may speak, so the session must accept audio the instant the cue
+    //    ends. The ASR session connects in the background so the user can speak
+    //    as soon as the (local, fast) mic is ready instead of waiting on the
+    //    (remote, variable) network handshake; audio captured before the session
+    //    is ready is buffered and flushed once it connects.
     let my_epoch = app_inner
         .session_epoch
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -173,17 +162,65 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
         session::connect_and_attach(connect_handle, config, hotwords, my_epoch, connect_tx).await;
     });
 
-    // 6. Lower the output volume only after the cue is no longer audible. The
-    //    wait is bounded and the guard ignores a dim whose session has already
-    //    ended, so a rapid stop can never leave the system volume lowered.
-    let dim_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Some(cue) = start_cue {
-            cue.wait(START_CUE_VOLUME_WAIT).await;
-        }
-        let app_inner = dim_handle.state::<Arc<app_state::AppInner>>();
+    // 6. Wait for the start cue to finish, then lower the output volume and
+    //    only afterwards start the microphone: music playing at dictation time
+    //    must not be streamed in while the output is still at the user's
+    //    volume, so the dim ramp has to be *complete* before any capture
+    //    happens. `dim_session` only schedules its glide on a detached thread,
+    //    so the follow-up `wait_for_ramp` is what actually proves completion.
+    //    Both steps are bounded so a wedged volume controller can never stall
+    //    the session; on a failed or late dim, capture still starts because
+    //    losing the recording is worse than louder background.
+    if let Some(cue) = start_cue {
+        cue.wait(START_CUE_VOLUME_WAIT).await;
+    }
+    let dim_to_completion = async {
         lower_output_volume_for(&app_inner, my_epoch).await;
-    });
+        app_inner.volume_guard.wait_for_ramp().await;
+    };
+    if tokio::time::timeout(DIM_COMPLETION_BOUND, dim_to_completion)
+        .await
+        .is_err()
+    {
+        log_rec!(warn, "Volume dim deadline elapsed; starting capture anyway");
+    }
+    // The user can cancel while the cue plays or the volume glides down: a
+    // cancelled start must not open a capture stream, and its volume claim has
+    // to be released through the normal terminal path.
+    if !*recording_state.0.lock().unwrap() {
+        log_rec!(info, "Cancelled during volume dim; aborting start");
+        restore_output_volume_for(&app_inner, my_epoch).await;
+        overlay::hide(&app_handle);
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        return;
+    }
+    // A newer session superseded this start; it owns the state and volume now.
+    if !is_current_epoch(&app_inner, my_epoch) {
+        return;
+    }
+
+    // 7. Warm up microphone capture (native cpal on macOS + Windows) — first
+    //    audio the session ever records is therefore captured after the dim
+    //    completed. The capture owns its own ready signal (a oneshot the input
+    //    thread fires once the stream is built), so there is no renderer
+    //    warmup round-trip to wait on.
+    if let Err(e) = capture::start_capture(app_handle.clone(), Arc::clone(&app_inner)).await {
+        *recording_state.0.lock().unwrap() = false;
+        restore_output_volume_for(&app_inner, my_epoch).await;
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        log_rec!(warn, "Native audio warmup failed: {}", e);
+        reset_matcher_recording(&app_handle);
+        overlay::show_restart_error(&app_handle, &app_inner, &e).await;
+        return;
+    }
+    // Check if recording was cancelled during warmup (hold mode: quick press-release)
+    if !*recording_state.0.lock().unwrap() {
+        log_rec!(warn, "Cancelled during warmup, aborting start");
+        capture::stop_capture(&app_inner).await;
+        restore_output_volume_for(&app_inner, my_epoch).await;
+        set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;
+        overlay::hide(&app_handle);
+    }
 }
 
 /// Stop recording and finalize (paste text). Used by both toggle and hold modes.

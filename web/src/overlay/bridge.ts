@@ -43,6 +43,10 @@ export interface OverlayLayoutMetrics {
   multi_line_width: number;
   min_pill_w: number;
   text_slack: number;
+  /** Wrap-width clamp for the session's display (legacy 520 on the default shell). */
+  max_text_width: number;
+  /** Visible transcript lines for the session's display (legacy 3). */
+  max_text_lines: number;
   wave_area_w: number;
   wave_bar_w: number;
   wave_bar_gap: number;

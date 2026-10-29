@@ -1433,4 +1433,87 @@ mod tests {
         assert_eq!(fake.state().volume, 60);
         assert_eq!(guard.ramp_running.load(Ordering::SeqCst), 0);
     }
+
+    /// Controller whose every `set_volume` blocks on a latch, so the test can
+    /// prove exactly when glide writes happen relative to the async sequence
+    /// the start path runs.
+    struct LatchedController {
+        state: Mutex<OutputVolume>,
+        latch: Mutex<std::sync::Condvar>,
+        released: Mutex<bool>,
+        volume_calls: Mutex<Vec<u8>>,
+    }
+
+    impl LatchedController {
+        fn new(volume: u8) -> Self {
+            Self {
+                state: Mutex::new(OutputVolume {
+                    volume,
+                    muted: false,
+                }),
+                latch: Mutex::new(std::sync::Condvar::new()),
+                released: Mutex::new(false),
+                volume_calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.latch.lock().unwrap().notify_all();
+        }
+    }
+
+    impl VolumeController for LatchedController {
+        fn read(&self) -> Result<Option<OutputVolume>, String> {
+            Ok(Some(*self.state.lock().unwrap()))
+        }
+
+        fn set_volume(&self, volume: u8) -> Result<(), String> {
+            // Record only once the latch is open: while it is closed no write
+            // has demonstrably happened, which is what the assertions rely on.
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.latch.lock().unwrap().wait(released).unwrap();
+            }
+            drop(released);
+
+            self.volume_calls.lock().unwrap().push(volume);
+            let mut state = self.state.lock().unwrap();
+            state.volume = volume;
+            state.muted = volume == 0;
+            Ok(())
+        }
+
+        fn set_muted(&self, muted: bool) -> Result<(), String> {
+            self.state.lock().unwrap().muted = muted;
+            Ok(())
+        }
+    }
+
+    /// The start-path ordering contract (recording/lifecycle.rs step 6):
+    /// `dim_session` only schedules its glide on a detached thread, so
+    /// awaiting it must NOT be treated as "the music is inaudible now";
+    /// the follow-up `wait_for_ramp` is what the capture start waits behind.
+    #[tokio::test]
+    async fn scheduled_dim_finishes_only_after_wait_for_ramp_returned() {
+        let fake = std::sync::Arc::new(LatchedController::new(80));
+        let guard = std::sync::Arc::new(VolumeGuard::new(fake.clone()));
+        guard.set_ramp_timing(TEST_RAMP, TEST_STEP);
+
+        guard.begin_session_blocking(7);
+        // Awaiting the dim must return without any glide write happening.
+        guard.dim_session(7).await;
+        assert!(
+            fake.volume_calls.lock().unwrap().is_empty(),
+            "dim_session() schedules the glide; only wait_for_ramp proves completion"
+        );
+
+        // Let the glide run and wait for it exactly like the start path does,
+        // then start "capture": every volume write landed before this point.
+        fake.release();
+        guard.wait_for_ramp().await;
+        let calls = fake.volume_calls.lock().unwrap();
+        assert_eq!(*calls.last().unwrap(), DIM_VOLUME);
+        assert_eq!(guard.ramp_running.load(Ordering::SeqCst), 0);
+    }
 }

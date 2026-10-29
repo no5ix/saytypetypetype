@@ -105,11 +105,25 @@ pub async fn get_app_config(state: State<'_, AppState>) -> Result<serde_json::Va
 }
 
 /// Overlay pill layout constants, shared with the macOS native renderer via
-/// `overlay::shared`. The Windows WebView fetches these once at startup so both
-/// pills size identically (text width is still measured in the DOM).
+/// `overlay::shared`. The Windows WebView fetches these at startup and again
+/// on window resize — the backend sizes the overlay per session, so the caps
+/// track the session's target display (text width is still measured in the
+/// DOM).
 #[tauri::command]
-pub async fn get_overlay_layout_metrics() -> Result<crate::overlay::shared::LayoutMetrics, String> {
-    Ok(crate::overlay::shared::LayoutMetrics::current())
+pub async fn get_overlay_layout_metrics(
+    state: State<'_, AppState>,
+) -> Result<crate::overlay::shared::LayoutMetrics, String> {
+    // Cap the pill against the display of the session that owns the overlay,
+    // so a window-sized for the target monitor reports matching text limits.
+    let work = state
+        .session_target
+        .lock()
+        .await
+        .as_ref()
+        .map(|target| target.display.work_area);
+    Ok(crate::overlay::shared::LayoutMetrics::current_for(
+        work.as_ref(),
+    ))
 }
 
 /// Get audio config defaults used as runtime fallback.

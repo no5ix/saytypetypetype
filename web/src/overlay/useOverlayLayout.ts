@@ -140,8 +140,10 @@ export function useOverlayLayout(input: OverlayLayoutInput): UseOverlayLayout {
         !shouldMeasureHintOnly &&
         (layoutWrapRef.current || measuredWidth > m.single_line_limit);
       const textWidth = Math.max(measuredWidth, hintWidth) + (hasHint ? 2 : m.text_slack);
+      // 3. Wrap width: long transcripts lay out up to the session's shell cap
+      // (legacy 520 on the default shell from metrics.max_text_width).
       const nextWidth = shouldWrap
-        ? m.multi_line_width + chrome
+        ? m.max_text_width + chrome
         : Math.min(m.single_line_limit + chrome, Math.max(m.min_pill_w, textWidth + chrome));
 
       if (!lockLayout) {

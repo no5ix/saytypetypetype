@@ -211,6 +211,44 @@ describe("PickerApp pop-in and pop-out", () => {
   });
 });
 
+describe("PickerApp expanded preview and card row height", () => {
+  it("renders the card grid with the reduced ~5% row floor", async () => {
+    const { container } = await renderPicker(view(OPTIONS));
+    const grid = scrollRegion(container).querySelector<HTMLElement>(".grid");
+    expect(grid, "the card grid lives in the scroll region").not.toBeNull();
+    // 148px floors the row (was 156px); `1fr` lets full-height viewports
+    // stretch it back up, so long cards only scroll inside single cards.
+    expect(grid?.style.gridAutoRows).toBe("minmax(148px, 1fr)");
+  });
+
+  it("keeps the expanded preview and hovered cards free of drop shadows", async () => {
+    const { container } = await renderPicker(view(OPTIONS));
+    const maximize = container.querySelector<HTMLElement>('button[aria-label^="展开"]');
+    expect(maximize, "a ready card offers the expand affordance").not.toBeNull();
+    fireEvent.click(maximize!);
+
+    // The preview modal separates itself with its border and the dimmed
+    // backdrop, not a shadow layer.
+    const preview = container.querySelector<HTMLElement>(
+      'div[class*="rounded-2xl"][class*="bg-surface-card"]',
+    );
+    expect(preview, "the expanded preview mounts a modal").not.toBeNull();
+    expect(preview?.className).not.toMatch(/shadow(-\w+)?/);
+
+    // Card buttons may keep only the 1px border ring; any other shadow
+    // declaration (the removed hover drop glow, selected/normal states) fails.
+    for (const button of scrollRegion(container).querySelectorAll("button")) {
+      for (const match of button.className.matchAll(/shadow-\[[^\]]*\]/g)) {
+        expect(match[0]).toContain("0_0_0_1px");
+      }
+    }
+
+    // Close (X) returns to the card grid.
+    fireEvent.click(container.querySelector('button[aria-label="关闭预览"]')!);
+    expect(container.querySelectorAll('button[aria-label^="展开"]').length).toBeGreaterThan(0);
+  });
+});
+
 describe("PickerApp layout", () => {
   it("keeps header, cards and footer as separate rows of the panel", async () => {
     const { container } = await renderPicker(view(OPTIONS));
@@ -228,6 +266,10 @@ describe("PickerApp layout", () => {
     // Nothing may collapse when the window is short.
     expect(header?.className).toContain("shrink-0");
     expect(footer?.className).toContain("shrink-0");
+
+    // The hover lift (-translate-y-0.5 = 2px) must never clip the first row's
+    // top border at the scroll container edge, so it reserves top padding.
+    expect(region.className).toMatch(/\bpt-(1|2|3)\b/);
 
     // The header owns its own space and paints over the scroll cut line: opaque
     // background, positioned above the cards, with its own separating border.

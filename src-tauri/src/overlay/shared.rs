@@ -13,6 +13,14 @@ pub const FONT_SIZE: f64 = 14.0;
 pub const PAD_LEFT: f64 = 16.0;
 pub const PAD_RIGHT: f64 = 16.0;
 pub const INDICATOR_W: f64 = 16.0;
+/// Share of the target display's usable area the dictation shell may occupy —
+/// the pill grows with the transcript up to these caps, then older lines
+/// overflow upward instead of the window expanding further.
+pub const SHELL_WORK_SHARE: f64 = 0.5;
+/// Legacy transparent window shell. Kept as the minimum so small displays keep
+/// the previous shell and the un-positioned default window is unchanged.
+pub const MIN_SHELL_W: f64 = 720.0;
+pub const MIN_SHELL_H: f64 = 300.0;
 #[cfg(target_os = "macos")]
 pub const ICON_SIZE: f64 = 16.0;
 pub const GAP: f64 = 12.0;
@@ -23,8 +31,38 @@ pub const MIN_PILL_W: f64 = 48.0;
 pub const TEXT_SLACK: f64 = 10.0;
 #[cfg(target_os = "macos")]
 pub const MAX_LINES: usize = 3;
-#[cfg(target_os = "macos")]
+/// Distance from the shell window's bottom edge to the pill's bottom edge.
+/// Also the margin the shell keeps above the work area's bottom edge, so the
+/// visible pill has always sat 96pt above the work-area bottom (48 window
+/// margin + 48 pill offset). Used by the macOS renderer and by each platform's
+/// placement code, so it is available everywhere.
 pub const BOTTOM_OFFSET: f64 = 48.0;
+/// Vertical room the keyboard-hint row takes above the pill in the macOS
+/// shell (18pt height + 16pt gap). The native renderer and the Windows
+/// metrics both need it.
+pub const SHORTCUT_RESERVE: f64 = 34.0;
+
+/// Transparent shell size for a target work area, in logical points.
+///
+/// The dictation shell grows with the transcript via the pill itself; the
+/// shell only provides room for it. It scales up to ~half of the target
+/// display's usable area (from the same `NSScreen`-based `work_area` the picker
+/// uses — logical points, Dock and menu bar excluded), never below the legacy
+/// 720×300 shell, and never outside the work area. Placement keeps the bottom
+/// edge fixed at the work-area margin, so growth extends upward: the visible
+/// pill stays where it has always sat.
+pub(crate) fn dictation_shell_size(work_width: f64, work_height: f64) -> (f64, f64) {
+    // The shell cannot be wider than the work area itself; `clamp_to`-style
+    // preference for the area limit keeps degenerate (zero/negative) work
+    // areas from producing nonsense sizes.
+    let width = (work_width * SHELL_WORK_SHARE)
+        .max(MIN_SHELL_W)
+        .min(work_width.max(1.0));
+    let height = (work_height * SHELL_WORK_SHARE)
+        .max(MIN_SHELL_H)
+        .min(work_height.max(1.0));
+    (width, height)
+}
 
 // --- Waveform (4 bars in the indicator slot, recording only) ---
 pub const WAVE_N: usize = 4;
@@ -176,6 +214,13 @@ pub struct LayoutMetrics {
     pub multi_line_width: f64,
     pub min_pill_w: f64,
     pub text_slack: f64,
+    /// Wrap-width clamp for the current session's display, or the legacy
+    /// [`MULTI_LINE_WIDTH`] when the shell is the un-capped default: long
+    /// transcripts lay out up to this width, then scroll inside the pill.
+    pub max_text_width: f64,
+    /// Visible transcript lines for the current session's display (3 on the
+    /// legacy shell); overflow older lines with the existing top fade.
+    pub max_text_lines: f64,
     pub wave_area_w: f64,
     pub wave_bar_w: f64,
     pub wave_bar_gap: f64,
@@ -188,7 +233,29 @@ pub struct LayoutMetrics {
 }
 
 impl LayoutMetrics {
-    pub fn current() -> Self {
+    /// Build the metrics for a session's target work area, mirroring the
+    /// native macOS renderer's shell-derived caps (`SHELL` in overlay/macos.rs):
+    /// the pill may use the whole dictation shell once the shell grew beyond
+    /// the legacy 720×300 default, capped at ~50% of the display's work area.
+    pub fn current_for(work: Option<&crate::display::Rect>) -> Self {
+        let (shell_w, shell_h) = work
+            .map(|area| dictation_shell_size(area.width, area.height))
+            .unwrap_or((MIN_SHELL_W, MIN_SHELL_H));
+        // Dynamic ⇔ the shell differs from the legacy default, matching the
+        // decoder-side check in the native renderer.
+        let dynamic = (shell_w - MIN_SHELL_W).abs() > 0.5 || (shell_h - MIN_SHELL_H).abs() > 0.5;
+        // DOM line box: text-[14px] with leading 1.32 on the wrapped transcript.
+        const DOM_LINE_H: f64 = 14.0 * 1.32;
+        let (max_text_width, max_text_lines) = if dynamic {
+            let chrome = PAD_LEFT + PAD_RIGHT + INDICATOR_W + GAP;
+            (
+                (shell_w - chrome).max(MIN_PILL_W),
+                (((shell_h - BOTTOM_OFFSET - SHORTCUT_RESERVE - 16.0) / DOM_LINE_H).floor())
+                    .max(3.0),
+            )
+        } else {
+            (MULTI_LINE_WIDTH, 3.0)
+        };
         Self {
             pad_left: PAD_LEFT,
             pad_right: PAD_RIGHT,
@@ -199,6 +266,8 @@ impl LayoutMetrics {
             multi_line_width: MULTI_LINE_WIDTH,
             min_pill_w: MIN_PILL_W,
             text_slack: TEXT_SLACK,
+            max_text_width,
+            max_text_lines,
             wave_area_w: WAVE_AREA_W,
             wave_bar_w: WAVE_BAR_W,
             wave_bar_gap: WAVE_BAR_GAP,
@@ -320,5 +389,63 @@ mod tests {
         assert!(activity.update(&speech(), now + std::time::Duration::from_millis(600)));
         activity = WaveActivity::default();
         assert!(!activity.update(&[0.002; 1600], now + std::time::Duration::from_millis(700)));
+    }
+
+    #[test]
+    fn dictation_shell_scales_with_the_target_work_area_up_to_half() {
+        // This repository's development Mac: 2× Retina built-in and 1× external.
+        let (w, h) = dictation_shell_size(1728.0, 1079.0);
+        assert_eq!((w, h), (864.0, 539.5));
+        let (w, h) = dictation_shell_size(1920.0, 1080.0);
+        assert_eq!((w, h), (960.0, 540.0));
+    }
+
+    #[test]
+    fn dictation_shell_keeps_the_legacy_floor_on_small_displays() {
+        // Half of this work area is under the legacy shell: the minimum wins so
+        // small laptops and the un-positioned default keep today's shell.
+        let (w, h) = dictation_shell_size(1280.0, 700.0);
+        assert_eq!((w, h), (720.0, 350.0));
+        let (w, _) = dictation_shell_size(1366.0, 1040.0);
+        assert_eq!(w, 720.0);
+    }
+
+    #[test]
+    fn dictation_shell_never_leaves_the_work_area() {
+        // Degenerate inputs clamp to the area limit; a normal display stays
+        // inside, and a 1× shell never exceeds the usable width.
+        let (w, h) = dictation_shell_size(400.0, 200.0);
+        assert_eq!((w, h), (400.0, 200.0));
+        let (w, h) = dictation_shell_size(2560.0, 1415.0);
+        assert_eq!((w, h), (1280.0, 707.5));
+        assert!(w <= 2560.0 && h <= 1415.0);
+        assert!((w, h).0.is_finite() && (w, h).1.is_finite());
+    }
+
+    #[test]
+    fn layout_metrics_cap_the_pill_to_the_session_shell() {
+        fn work(x: f64, y: f64, width: f64, height: f64) -> crate::display::Rect {
+            crate::display::Rect {
+                x,
+                y,
+                width,
+                height,
+            }
+        }
+
+        // No session target yet: the legacy caps the renderer has always used.
+        let legacy = LayoutMetrics::current_for(None);
+        assert_eq!(legacy.max_text_width, MULTI_LINE_WIDTH);
+        assert_eq!(legacy.max_text_lines, 3.0);
+
+        // This repository's development Mac: built-in 2× work area 1728×1079
+        // and a 1× 1920×1080 external below it.
+        let metrics = LayoutMetrics::current_for(Some(&work(0.0, 38.0, 1728.0, 1079.0)));
+        assert_eq!(metrics.max_text_width, 864.0 - 60.0); // chrome 16+16+16+12
+        assert_eq!(metrics.max_text_lines, 23.0); // (539.5−48−34−16)/18.48
+
+        let metrics = LayoutMetrics::current_for(Some(&work(1728.0, -512.0, 1920.0, 1080.0)));
+        assert_eq!(metrics.max_text_width, 960.0 - 60.0);
+        assert_eq!(metrics.max_text_lines, 23.0);
     }
 }

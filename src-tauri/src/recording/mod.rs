@@ -294,12 +294,6 @@ pub(super) async fn await_output_volume_settled(app_inner: &Arc<app_state::AppIn
     app_inner.volume_guard.wait_for_ramp().await;
 }
 
-/// Restore whatever snapshot exists, regardless of session. Only for app exit,
-/// where no newer session can start.
-pub(super) async fn restore_output_volume(app_inner: &Arc<app_state::AppInner>) {
-    app_inner.volume_guard.restore().await;
-}
-
 /// True while `my_epoch` is still the current recording session. A background
 /// connect task uses this to detect that a cancel/restart has superseded it.
 pub(super) fn is_current_epoch(app_inner: &app_state::AppInner, my_epoch: u64) -> bool {

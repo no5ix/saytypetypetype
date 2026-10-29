@@ -240,13 +240,13 @@ export function PickerApp() {
         <div
           ref={scrollRef}
           data-picker-scroll=""
-          className="relative mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2"
+          className="relative mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-1 pb-2"
         >
           <div
             className={`grid h-full gap-2 ${options.length <= 2 ? "mx-auto max-w-[792px]" : ""}`}
             style={{
               gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-              gridAutoRows: "minmax(156px, 1fr)",
+              gridAutoRows: "minmax(148px, 1fr)",
             }}
           >
             {options.map((option) => (
@@ -278,7 +278,7 @@ export function PickerApp() {
 
       {expandedOption && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/45 p-3 backdrop-blur-sm">
-          <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-surface-card shadow-2xl">
+          <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-surface-card">
             <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
                 <h2 className="truncate text-[13px] font-semibold text-text">
@@ -351,8 +351,11 @@ function PickerCard({
         className={`flex h-full w-full min-w-0 flex-col rounded-xl border p-3 text-left transition duration-100 ${
           option.kind === "original" ? "border-accent/45 bg-accent-soft/30" : "border-border/70"
         } ${
+          // 1px accent ring only — the panel's design language forbids drop
+          // shadows, and the 2px hover lift needs the scroll region's pt-1
+          // room so the card's own top border never clips at the edge.
           selectable
-            ? "cursor-pointer hover:-translate-y-0.5 hover:border-accent hover:bg-accent-soft/40 hover:shadow-[0_0_0_1px_var(--color-accent-dim),0_8px_20px_-12px_var(--color-accent-glow)]"
+            ? "cursor-pointer hover:-translate-y-0.5 hover:border-accent hover:bg-accent-soft/40 hover:shadow-[0_0_0_1px_var(--color-accent-dim)]"
             : "cursor-default opacity-80"
         } ${busy ? "pointer-events-none opacity-60" : ""}`}
       >

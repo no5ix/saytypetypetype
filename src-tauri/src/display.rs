@@ -258,8 +258,10 @@ const MIN_WIDTH: f64 = 480.0;
 const MIN_HEIGHT: f64 = 360.0;
 /// Keep the panel at least this far from the work-area edges.
 const AREA_INSET: f64 = 48.0;
-/// One card row: CSS `grid-auto-rows` minimum (156px) plus the grid gap (8px).
-const ROW_HEIGHT: f64 = 164.0;
+/// One card row: CSS `grid-auto-rows` minimum (148px) plus the grid gap (8px).
+/// Reduced ~5% from 164pt alongside the renderer's `minmax` floor so the
+/// rendered cards and the window sizing stay consistent.
+const ROW_HEIGHT: f64 = 156.0;
 /// Vertical space used by the window padding, the panel border, the header, the
 /// footer and the scroll-region gaps (measured ~115.8pt in the renderer), i.e.
 /// everything inside the window that is not a card row. The single grid gap is
@@ -904,7 +906,7 @@ mod tests {
     #[test]
     fn picker_adds_a_row_for_more_than_four_options() {
         // A 720pt screen puts the three-quarters target at 521pt: two card rows
-        // (444pt content) fit, three rows (608pt) do not.
+        // (428pt content) fit, three rows (584pt) do not.
         let work = Rect {
             x: 0.0,
             y: 25.0,

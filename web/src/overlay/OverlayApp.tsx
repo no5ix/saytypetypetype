@@ -1,5 +1,5 @@
 import { Check, Info } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import { getOverlayLayoutMetrics, type OverlayLayoutMetrics } from "./bridge";
 import type { OverlayState } from "./types";
 import { useOverlayLayout } from "./useOverlayLayout";
@@ -20,6 +20,8 @@ const FALLBACK_METRICS: OverlayLayoutMetrics = {
   multi_line_width: 520,
   min_pill_w: 48,
   text_slack: 10,
+  max_text_width: 520,
+  max_text_lines: 3,
   wave_area_w: 22,
   wave_bar_w: 4,
   wave_bar_gap: 2,
@@ -55,11 +57,18 @@ export function OverlayApp() {
   const displayedShortcuts = state.shortcuts.length > 0 ? state.shortcuts : lastShortcuts;
 
   const [metrics, setMetrics] = useState<OverlayLayoutMetrics>(FALLBACK_METRICS);
-  useEffect(() => {
+  const refetch = useCallback(() => {
     getOverlayLayoutMetrics()
       .then(setMetrics)
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    refetch();
+    // The backend sizes the overlay per session (each new dictation targets
+    // the app's display); refetch the caps so the pill can use the new shell.
+    window.addEventListener("resize", refetch);
+    return () => window.removeEventListener("resize", refetch);
+  }, [refetch]);
 
   const visibleHint = visibleHintText(state);
   const hasHint = Boolean(visibleHint);
@@ -142,9 +151,10 @@ export function OverlayApp() {
                     ref={transcriptRef}
                     className={
                       wrap
-                        ? "block overflow-hidden whitespace-normal break-words leading-[1.32] [max-height:calc(1.32em*3+1px)] [mask-image:linear-gradient(180deg,transparent_0%,#000_30%)]"
+                        ? "block overflow-hidden whitespace-normal break-words leading-[1.32] [max-height:calc(1.32em*var(--overlay-max-lines,3)+1px)] [mask-image:linear-gradient(180deg,transparent_0%,#000_30%)]"
                         : "truncate"
                     }
+                    style={{ "--overlay-max-lines": metrics.max_text_lines } as CSSProperties}
                   >
                     <span className="text-inherit">{state.finalText}</span>
                     <span className="opacity-55">{state.partialText}</span>
