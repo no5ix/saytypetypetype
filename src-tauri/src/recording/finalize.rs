@@ -50,6 +50,10 @@ pub(super) async fn finalize_on_failure(
         session.close();
     }
     capture::stop_capture(app_inner).await;
+    // The microphone is closed: start the session's restore immediately, before
+    // history I/O or UI settle. Session-scoped, so a superseded session is a
+    // no-op and can never touch a newer recording's volume.
+    restore_output_volume_for(app_inner, expected_epoch).await;
     if !super::is_current_epoch(app_inner, expected_epoch) {
         return;
     }
@@ -68,10 +72,6 @@ pub(super) async fn finalize_on_failure(
     if let Some(active) = app.try_state::<ActivePromptId>() {
         *active.0.lock().unwrap() = None;
     }
-    // Terminal failure: restore the volume before returning to Idle. This is
-    // also the path used by the background ASR session manager when a fatal
-    // error ends an active recording.
-    restore_output_volume_for(app_inner, expected_epoch).await;
     overlay::emit_retryable_error_hint(app, app_inner, message).await;
     set_app_state(app, app_inner, app_state::AppState::Idle).await;
     overlay::schedule_retry_overlay_hide(app.clone(), Arc::clone(app_inner));
@@ -280,20 +280,24 @@ pub(super) async fn finalize_and_paste(
     }
 }
 
-/// Deliver already-polished/selected text while recording the original ASR
-/// transcript in history. Reports failures as a `Result` so the picker can keep
-/// its own error surface instead of the overlay's error state.
-pub(crate) async fn deliver_text_result(
+/// Paste phase of delivery: write the clipboard, post the simulated paste
+/// keystroke, and restore the previous clipboard when configured. Resolves once
+/// the paste has been delivered to the target application (or with the failure
+/// reason).
+///
+/// Split from [`finish_delivered_text`] so the picker can hand keyboard
+/// ownership back the instant this resolves and finish everything else in the
+/// background. Callers must not release the keyboard before this returns: user
+/// input would race the simulated paste.
+pub(crate) async fn paste_text(
     app_handle: &AppHandle,
-    app_inner: &Arc<app_state::AppInner>,
     final_text: &str,
-    history_text: &str,
     config: Option<&crate::config::AppConfig>,
-    polish: crate::stats::PolishRecord,
-    volume_session: u64,
 ) -> Result<(), String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
+    // The overlay's decision keys must be off before the paste lands; a
+    // picker-owned keyboard keeps its own suppression until delivery finishes.
     overlay::set_decision_keys_enabled(app_handle, false);
 
     // Both modes auto-paste the recognized text. keep_clipboard (ON) leaves the
@@ -326,11 +330,28 @@ pub(crate) async fn deliver_text_result(
     if !result.ok {
         return Err(result.message.unwrap_or_else(|| "模拟粘贴失败".to_string()));
     }
+    Ok(())
+}
 
-    // Successful delivery ends the volume session. Restore BEFORE the completion
-    // cue so the end sound plays at the user's original volume instead of the
-    // dimmed recording volume. Pick/session paths call restore again; the guard
-    // is idempotent and session-scoped.
+/// Post-paste finishing work: volume cleanup, timing diagnostics, history/usage
+/// stats, the Idle state and overlay dismissal, and the completion cue.
+///
+/// This never gates text delivery or keyboard hand-back — the picker spawns it
+/// right after [`paste_text`] and clears its key routing first. The restore is
+/// started when the microphone closes (see `lifecycle::stop_recording`); the
+/// call here is the idempotent backstop for retry/deferred paths, and the
+/// bounded glide wait only delays the optional end cue.
+pub(crate) async fn finish_delivered_text(
+    app_handle: &AppHandle,
+    app_inner: &Arc<app_state::AppInner>,
+    history_text: &str,
+    config: Option<&crate::config::AppConfig>,
+    polish: crate::stats::PolishRecord,
+    volume_session: u64,
+    expected_epoch: u64,
+) {
+    // Session-scoped and idempotent: a no-op when the stop path already
+    // restored (the usual case), and never able to touch a newer session.
     restore_output_volume_for(app_inner, volume_session).await;
 
     // Timing-only diagnostic. For the immediate path this is stop → pasted
@@ -355,6 +376,12 @@ pub(crate) async fn deliver_text_result(
         polish,
     )
     .await;
+
+    // A new recording may have started while history was written; this cleanup
+    // belongs to the finished session and must not hide the new overlay.
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return;
+    }
     // No post-paste success pill. It was drawn always-on-top near the bottom
     // center of the screen — right where the pasted text and the caret land —
     // so it covered the user's text. The workflow is finished: settle to Idle
@@ -362,11 +389,40 @@ pub(crate) async fn deliver_text_result(
     // surface through `show_output_error`, and the end cue is unchanged.
     set_app_state(app_handle, app_inner, app_state::AppState::Idle).await;
     overlay::hide(app_handle);
-    // The restore runs as a ~400 ms glide so it never blocks the paste or the
-    // state reset. The completion cue still honours the old ordering (volume
-    // restored before the cue): wait for the glide, bounded, right here.
+    // The restore runs as a 300 ms glide on a detached thread, so it never
+    // blocks the paste or the state reset. The completion cue plays at the
+    // user's restored volume, which is why it waits (bounded) for the glide.
     await_output_volume_settled(app_inner).await;
+    if !super::is_current_epoch(app_inner, expected_epoch) {
+        return;
+    }
     cue::emit_cue(app_handle, app_inner, "end");
+}
+
+/// Deliver text through the full pipeline for paths that do not own a modal
+/// keyboard: paste first, then history/cleanup/end cue. The picker calls
+/// [`paste_text`] and [`finish_delivered_text`] separately so it can release
+/// keyboard ownership between the two steps.
+pub(crate) async fn deliver_text_result(
+    app_handle: &AppHandle,
+    app_inner: &Arc<app_state::AppInner>,
+    final_text: &str,
+    history_text: &str,
+    config: Option<&crate::config::AppConfig>,
+    polish: crate::stats::PolishRecord,
+    volume_session: u64,
+) -> Result<(), String> {
+    paste_text(app_handle, final_text, config).await?;
+    finish_delivered_text(
+        app_handle,
+        app_inner,
+        history_text,
+        config,
+        polish,
+        volume_session,
+        volume_session,
+    )
+    .await;
     Ok(())
 }
 

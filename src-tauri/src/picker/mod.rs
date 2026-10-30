@@ -8,8 +8,9 @@
 //! the existing paste pipeline.
 //!
 //! The picker never persists processed text: delivery goes through
-//! `recording::deliver_text_result`, which records the original transcript in
-//! history and only pastes the selected string.
+//! `recording::paste_text` (clipboard + paste keystroke) followed by
+//! `recording::finish_delivered_text` (history, cleanup, end cue), which records
+//! the original transcript and only pastes the selected string.
 
 #[cfg(target_os = "macos")]
 mod hover;
@@ -169,6 +170,9 @@ pub(crate) async fn open_session(
         let _ = inner.picker.take();
         if let Some(hc) = app.try_state::<HotkeyConfig>() {
             hotkey::clear_picker_bindings(&hc);
+            // The workflow falls back to the immediate paste path, which still
+            // supports ESC cancellation while the state is Finishing.
+            hotkey::set_escape_enabled(&hc, true);
         }
         return false;
     }
@@ -228,8 +232,30 @@ pub(crate) async fn open_session(
     true
 }
 
+/// Paste first, release keyboard ownership second.
+///
+/// The release must never run while the paste is still in flight (user keys
+/// would race the simulated paste) and must never run when the paste failed
+/// (the picker stays open so the user can retry). Extracted so the ordering
+/// invariant is explicit and unit-tested rather than implied by call order.
+async fn paste_then_release<F, R>(paste: F, release: R) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<(), String>>,
+    R: FnOnce(),
+{
+    let result = paste.await;
+    if result.is_ok() {
+        release();
+    }
+    result
+}
+
 /// Select an option. Safe to call from a shortcut and a click at the same time:
 /// the store reserves the option so delivery happens at most once.
+///
+/// The paste phase is the only awaited part before keyboard ownership is handed
+/// back; history, state reset, volume settle, and the closing cue run in the
+/// background afterwards.
 pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
     let inner = Arc::clone(&app.state::<Arc<AppInner>>());
     let Some(selection) = inner.picker.begin_delivery(session_id, &option_id) else {
@@ -280,29 +306,49 @@ pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
         prompt_id: selection.prompt_id.clone(),
         raw_text: None,
     };
-    let result = crate::recording::deliver_text_result(
-        &app,
-        &inner,
-        &selection.text,
-        &selection.history_text,
-        config.as_ref(),
-        polish,
-        selection.volume_session,
-    )
-    .await;
-
-    match result {
-        Ok(()) => {
+    // The paste is the only step that must complete before keyboard ownership
+    // can be released; everything else is cleanup. The helper keeps that
+    // ordering invariant explicit (and unit-tested).
+    let result = paste_then_release(
+        crate::recording::paste_text(&app, &selection.text, config.as_ref()),
+        || {
             inner.picker.finish_delivery(session_id, true, None);
+            // The paste has landed: hand the keyboard back immediately. Picker
+            // key routing, the Escape/Enter gates it armed, and the recording
+            // matcher are all released here — before any closing animation,
+            // volume wait, history write, or sound. The user can type (or press
+            // Enter to send) in the target app from this point on.
             if let Some(hc) = app.try_state::<HotkeyConfig>() {
                 hotkey::clear_picker_bindings(&hc);
                 hotkey::reset_recording(&hc);
             }
             finish_close(&app, close_ticket);
-            inner
-                .volume_guard
-                .restore_session(selection.volume_session)
+        },
+    )
+    .await;
+
+    match result {
+        Ok(()) => {
+            // History/stats, the Idle state, overlay dismissal, the bounded
+            // volume-settle wait, and the closing cue continue independently in
+            // the background; none of them may block input.
+            let task_app = app.clone();
+            let task_inner = Arc::clone(&inner);
+            let history_text = selection.history_text.clone();
+            let task_polish = polish.clone();
+            let volume_session = selection.volume_session;
+            tauri::async_runtime::spawn(async move {
+                crate::recording::finish_delivered_text(
+                    &task_app,
+                    &task_inner,
+                    &history_text,
+                    config.as_ref(),
+                    task_polish,
+                    volume_session,
+                    volume_session,
+                )
                 .await;
+            });
         }
         Err(message) => {
             log_rec!(warn, "Picker delivery failed: {}", message);
@@ -363,9 +409,9 @@ pub(crate) async fn cancel(app: AppHandle, session_id: Option<u64>) {
     // pending, so the single animation timer is the only hide needed.
     begin_close(&app);
 
-    // The recording workflow is over: restore the recording session's volume,
-    // leave the overlay hidden and settle back to idle without writing history
-    // or pasting anything.
+    // The recording workflow is over and its volume was restored when capture
+    // stopped; this session-scoped call is an idempotent backstop that also
+    // covers a picker opened without a stop-time restore.
     if let Some(volume_session) = volume_session {
         inner.volume_guard.restore_session(volume_session).await;
     } else {
@@ -935,5 +981,47 @@ mod tests {
     #[test]
     fn exit_animation_stays_short() {
         assert!((120..=180).contains(&EXIT_ANIMATION_MS));
+    }
+
+    /// Keyboard-ownership invariant: release happens only after the paste
+    /// future resolves successfully. A pending paste keeps the picker modal, and
+    /// a failed paste keeps it open for a retry.
+    #[tokio::test]
+    async fn keyboard_ownership_is_released_only_after_a_successful_paste() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let released = Arc::new(AtomicBool::new(false));
+        let (paste_tx, paste_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let flag = Arc::clone(&released);
+        let delivery = tokio::spawn(async move {
+            paste_then_release(async move { paste_rx.await.unwrap() }, move || {
+                flag.store(true, Ordering::SeqCst)
+            })
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "the keyboard must stay owned while the paste is in flight"
+        );
+        paste_tx.send(Ok(())).unwrap();
+        assert!(delivery.await.unwrap().is_ok());
+        assert!(
+            released.load(Ordering::SeqCst),
+            "a delivered paste must release the keyboard immediately"
+        );
+
+        // A failed paste must not release: the picker re-arms for a retry.
+        let released_on_failure = AtomicBool::new(false);
+        let failed = paste_then_release(async { Err("粘贴失败".to_string()) }, || {
+            released_on_failure.store(true, Ordering::SeqCst);
+        })
+        .await;
+        assert!(failed.is_err());
+        assert!(
+            !released_on_failure.load(Ordering::SeqCst),
+            "a failed delivery must keep keyboard ownership with the picker"
+        );
     }
 }

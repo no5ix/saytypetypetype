@@ -109,14 +109,7 @@ fn install_suppress_handler(config: &HotkeyConfig) {
             // The picker is modal for its own keys: option shortcuts, ESC and
             // Enter must not leak into the target application. Ordinary typing
             // passes through so a stuck picker can never lock the keyboard.
-            if matches!(key, Key::Escape | Key::Enter | Key::NumpadEnter) {
-                return true;
-            }
-            if picker
-                .bindings
-                .iter()
-                .any(|binding| binding.keys.contains(&key))
-            {
+            if super::picker_consumes_key(picker, key) {
                 return true;
             }
         }

@@ -270,9 +270,34 @@ pub fn set_picker_bindings(
     sync_suppressed_keys(config);
 }
 
-/// Remove picker key routing (selection started, delivered, or cancelled).
+/// Remove picker key routing and release every gate the picker armed. ESC and
+/// Enter return to the ordinary keyboard immediately, so a delivered selection
+/// never leaves them swallowed while the closing animation, volume settle, or
+/// sound playback is still running. The recording matcher is reset so ordinary
+/// shortcuts start from a clean state. Idempotent: clearing an already-clear
+/// picker changes nothing (and never touches gates owned by another flow).
 pub fn clear_picker_bindings(config: &HotkeyConfig) {
-    config.write().unwrap().picker = None;
+    let mut cfg = config.write().unwrap();
+    if cfg.picker.take().is_none() {
+        return;
+    }
+    cfg.escape_enabled = false;
+    cfg.enter_enabled = false;
+    cfg.matcher.reset_recording();
+    drop(cfg);
+    sync_suppressed_keys(config);
+}
+
+/// Whether the picker owns `key` as a modal command. Its configured option
+/// shortcuts plus ESC and both Enter variants must not leak into the target
+/// application while the picker is open; ordinary typing always passes through
+/// so a stuck picker can never lock the keyboard.
+pub(super) fn picker_consumes_key(picker: &PickerKeyState, key: Key) -> bool {
+    matches!(key, Key::Escape | Key::Enter | Key::NumpadEnter)
+        || picker
+            .bindings
+            .iter()
+            .any(|binding| binding.keys.contains(&key))
 }
 
 /// The picker session currently owning the keyboard, if any.
@@ -436,5 +461,73 @@ mod picker_tests {
         );
         assert!(process_picker_event(&mut cfg, EventKind::KeyRepeat(keytap::Key::T)).is_none());
         assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::T)).is_none());
+    }
+
+    /// The picker is modal only for its own commands. After delivery the same
+    /// keys (ESC, Enter, option shortcuts) must be ordinary again, while plain
+    /// typing was never intercepted in the first place.
+    #[test]
+    fn picker_consumes_modal_keys_only() {
+        let picker = PickerKeyState {
+            session_id: 7,
+            bindings: vec![binding("prompt:translate", &[keytap::Key::T])],
+            held: HashSet::new(),
+            armed: true,
+        };
+        for key in [
+            keytap::Key::Escape,
+            keytap::Key::Enter,
+            keytap::Key::NumpadEnter,
+            keytap::Key::T,
+        ] {
+            assert!(
+                picker_consumes_key(&picker, key),
+                "{key:?} belongs to the picker while it is open"
+            );
+        }
+        for key in [keytap::Key::A, keytap::Key::Space, keytap::Key::ShiftRight] {
+            assert!(
+                !picker_consumes_key(&picker, key),
+                "{key:?} must pass through ordinary typing"
+            );
+        }
+    }
+
+    /// Releasing the keyboard after a paste must clear every gate the picker
+    /// armed, without waiting for the closing animation or any volume work.
+    #[test]
+    fn clearing_picker_bindings_releases_its_keyboard_gates() {
+        let config = create_config(Vec::new());
+        {
+            let mut cfg = config.write().unwrap();
+            cfg.picker = Some(PickerKeyState {
+                session_id: 7,
+                bindings: vec![binding("__original__", &[keytap::Key::ShiftRight])],
+                held: HashSet::new(),
+                armed: true,
+            });
+            cfg.escape_enabled = true;
+            cfg.enter_enabled = true;
+            cfg.matcher.reset_recording();
+        }
+
+        clear_picker_bindings(&config);
+
+        let cfg = config.read().unwrap();
+        assert!(cfg.picker.is_none(), "picker routing must be gone");
+        assert!(!cfg.escape_enabled, "ESC must not stay swallowed");
+        assert!(!cfg.enter_enabled, "Enter must not stay swallowed");
+    }
+
+    /// Clearing an already-clear picker is a no-op: it must not disturb gates
+    /// that another flow (recording, deferred polish) legitimately owns.
+    #[test]
+    fn clearing_without_a_picker_keeps_other_gates() {
+        let config = create_config(Vec::new());
+        config.write().unwrap().escape_enabled = true;
+
+        clear_picker_bindings(&config);
+
+        assert!(config.read().unwrap().escape_enabled);
     }
 }

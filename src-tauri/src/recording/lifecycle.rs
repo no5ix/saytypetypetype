@@ -24,11 +24,13 @@ use super::{
 /// the volume workflow can never stall indefinitely.
 const START_CUE_VOLUME_WAIT: Duration = Duration::from_millis(2500);
 
-/// Upper bound awaiting the dim ramp before capture starts. The ramp glides
-/// over `RAMP_DURATION` (400 ms) inside its volume task; twice the duration
-/// plus join slack covers a slow main-thread hand-off, and a wedged volume
-/// controller must not prevent dictation from starting at all.
-const DIM_COMPLETION_BOUND: Duration = Duration::from_millis(1000);
+/// Upper bound awaiting the dim before capture starts. It covers the blocking
+/// `osascript` read that captures the original volume, the
+/// `system_volume::DIM_DURATION` (150 ms) glide, and the glide thread's join
+/// hand-off with generous margin. The microphone never opens while the dim is
+/// in flight; this deadline only exists so a wedged system volume controller
+/// cannot stall dictation forever (the read itself is OS-timeout bounded).
+const DIM_COMPLETION_BOUND: Duration = Duration::from_millis(2000);
 
 /// Start recording from idle state. Used by both toggle and hold modes.
 pub(super) async fn start_recording(app_handle: AppHandle) {
@@ -250,6 +252,13 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
 
     // 2. Stop renderer audio first so the final buffered chunk is flushed.
     capture::stop_capture(&app_inner).await;
+    // The microphone is closed: start restoring the user's output volume right
+    // now, before ASR/polish/picker work. Restoration must never wait for a
+    // picker selection or for any later decision, and it runs on a detached
+    // glide so the rest of the pipeline never waits for it either. The guard is
+    // session-scoped, so a superseded stop cannot touch a newer session's
+    // volume (it becomes a no-op).
+    restore_output_volume_for(&app_inner, my_epoch).await;
     if !is_current_epoch(&app_inner, my_epoch) {
         return;
     }
@@ -430,8 +439,10 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
             return;
         }
         if outcome == finalize::FinalizeOutcome::Picker {
-            // The picker owns delivery now. Keep the volume lowered and the app
-            // state as-is until the user selects or dismisses it.
+            // The picker owns delivery now. The output volume was already
+            // restored the moment capture stopped, so the picker (and its
+            // templates) never run against a lowered system volume. Keep the
+            // app state as-is until the user selects or dismisses it.
             *app_inner.accumulated_text.lock().await = String::new();
             return;
         }
@@ -454,8 +465,9 @@ pub(super) async fn stop_recording(app_handle: AppHandle) {
     // 11. Clear cross-reconnect accumulated text for the next recording.
     *app_inner.accumulated_text.lock().await = String::new();
 
-    // The workflow (ASR, polish, clipboard, paste) is complete; restore before
-    // returning to Idle so a new session cannot race this cleanup.
+    // The workflow (ASR, polish, clipboard, paste) is complete. The volume was
+    // restored at capture stop; this duplicate is an idempotent backstop for
+    // paths that reach here without having stopped capture.
     restore_output_volume_for(&app_inner, my_epoch).await;
 
     // Successful output owns its feedback lifetime.
@@ -484,12 +496,14 @@ pub(super) async fn abort_retry_or_failure(
         session.close();
     }
     capture::stop_capture(app_inner).await;
+    // Capture is closed: start the restore immediately, before the state
+    // bookkeeping below. Session-scoped, so a superseded abort is a no-op.
+    restore_output_volume_for(app_inner, abort_epoch).await;
     app_inner.pending_audio.lock().await.clear();
     *app_inner.current_retry_of.lock().await = None;
     *app_inner.current_failure_ts.lock().await = None;
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.accumulated_text.lock().await = String::new();
-    restore_output_volume_for(app_inner, abort_epoch).await;
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     overlay::hide(app_handle);
     // set_app_state(Idle) also re-syncs (disables) the ESC shortcut.
@@ -532,6 +546,9 @@ pub(super) async fn cancel_recording(app_handle: AppHandle) {
     }
 
     capture::stop_capture(&app_inner).await;
+    // Mirror the normal stop path: the microphone is closed, so the restore
+    // starts now rather than after the session teardown below.
+    restore_output_volume_for(&app_inner, cancel_epoch).await;
 
     if let Some(session) = app_inner.asr_session.lock().await.take() {
         session.close();
@@ -540,7 +557,6 @@ pub(super) async fn cancel_recording(app_handle: AppHandle) {
     *app_inner.latest_transcript.lock().await = (String::new(), String::new());
     *app_inner.accumulated_text.lock().await = String::new();
 
-    restore_output_volume_for(&app_inner, cancel_epoch).await;
     let _ = app_handle.emit("overlay:event", serde_json::json!({ "type": "reset" }));
     overlay::hide(&app_handle);
     set_app_state(&app_handle, &app_inner, app_state::AppState::Idle).await;

@@ -1,11 +1,13 @@
 //! Temporary macOS system output-volume control for a transcription session.
 //!
 //! On session start we capture the current output volume and mute state, then
-//! glide the volume down to [`DIM_VOLUME`] percent over about 400 ms when it
-//! is higher. The captured state is restored exactly once when the workflow
-//! reaches any terminal outcome — also as a ~400 ms glide — so a user
+//! glide the volume down to [`DIM_VOLUME`] percent over [`DIM_DURATION`] when
+//! it is higher. The captured state is restored exactly once when the workflow
+//! reaches any terminal outcome — as a [`RESTORE_DURATION`] glide — so a user
 //! adjustment made while transcribing is intentionally overwritten by the value
-//! saved at the start.
+//! saved at the start. The two directions have their own durations: the dim is
+//! on the recording's critical path (capture waits for it), while the restore
+//! runs afterwards and may be gentler.
 //!
 //! The lifecycle owns the begin/restore boundaries; this module only owns the
 //! per-session snapshot, duplicate-cleanup protection, the ramp cancellation
@@ -16,21 +18,26 @@
 //! A ramp is a detached background thread writing one `set volume` step every
 //! [`RAMP_STEP`]; its target volume is derived from elapsed wall time rather
 //! than a fixed step index, so slow `osascript` round trips shorten the number
-//! of steps but never stretch the ~400 ms duration. Every ramp carries a ticket:
-//! begin/stop/new-session bumps the ticket and the in-flight ramp aborts at its
-//! next check, leaving the volume exactly where the winning operation wants it.
+//! of steps but never stretch the requested duration. Every ramp carries a
+//! ticket: begin/stop/new-session bumps the ticket and the in-flight ramp aborts
+//! at its next check, leaving the volume exactly where the winning operation
+//! wants it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Target output volume, in percent, while a transcription session is active.
-pub(crate) const DIM_VOLUME: u8 = 10;
+pub(crate) const DIM_VOLUME: u8 = 5;
 
-/// Total time of a smooth volume glide (dim and restore, each direction).
-/// Long enough to read as motion, short enough that the transition never feels
-/// like it is holding up the recording workflow.
-const RAMP_DURATION: Duration = Duration::from_millis(400);
+/// Time the downward glide takes at session start. Deliberately short: the
+/// start path waits for this ramp before opening the microphone, so it is
+/// latency on the critical path (the value still reads as a glide, not a cut).
+const DIM_DURATION: Duration = Duration::from_millis(150);
+/// Time the upward glide back to the user's volume takes after the microphone
+/// closes. Slower than the dim so the return never startles; ASR, polishing,
+/// and the picker keep running while this glide plays out.
+const RESTORE_DURATION: Duration = Duration::from_millis(300);
 /// Pause between ramp writes. Small enough to read as continuous motion, large
 /// enough not to spam `osascript` (each write spawns a process).
 const RAMP_STEP: Duration = Duration::from_millis(30);
@@ -117,8 +124,11 @@ pub(crate) struct VolumeGuard {
     /// (consumed by the next `dim`).
     user_volume_override: Mutex<Option<u8>>,
     /// Ramp timing in milliseconds (injectable for tests; production uses the
-    /// constants). Atomics because the guard lives in an `Arc`.
-    ramp_duration_ms: AtomicU64,
+    /// constants). Atomics because the guard lives in an `Arc`. Dim and restore
+    /// intentionally keep separate durations: capture waits for the dim, while
+    /// the restore is free to be gentler.
+    dim_duration_ms: AtomicU64,
+    restore_duration_ms: AtomicU64,
     ramp_step_ms: AtomicU64,
 }
 
@@ -144,22 +154,29 @@ impl VolumeGuard {
             ramp_running: AtomicU64::new(0),
             expected_restore: Mutex::new(None),
             user_volume_override: Mutex::new(None),
-            ramp_duration_ms: AtomicU64::new(RAMP_DURATION.as_millis() as u64),
+            dim_duration_ms: AtomicU64::new(DIM_DURATION.as_millis() as u64),
+            restore_duration_ms: AtomicU64::new(RESTORE_DURATION.as_millis() as u64),
             ramp_step_ms: AtomicU64::new(RAMP_STEP.as_millis() as u64),
         }
     }
 
     /// Override the glide timing (tests use a compressed schedule).
     #[cfg(test)]
-    fn set_ramp_timing(&self, duration: Duration, step: Duration) {
-        self.ramp_duration_ms
-            .store(duration.as_millis() as u64, Ordering::SeqCst);
+    fn set_ramp_timing(&self, dim: Duration, restore: Duration, step: Duration) {
+        self.dim_duration_ms
+            .store(dim.as_millis() as u64, Ordering::SeqCst);
+        self.restore_duration_ms
+            .store(restore.as_millis() as u64, Ordering::SeqCst);
         self.ramp_step_ms
             .store(step.as_millis() as u64, Ordering::SeqCst);
     }
 
-    fn ramp_duration(&self) -> Duration {
-        Duration::from_millis(self.ramp_duration_ms.load(Ordering::SeqCst))
+    fn dim_duration(&self) -> Duration {
+        Duration::from_millis(self.dim_duration_ms.load(Ordering::SeqCst))
+    }
+
+    fn restore_duration(&self) -> Duration {
+        Duration::from_millis(self.restore_duration_ms.load(Ordering::SeqCst))
     }
 
     fn ramp_step(&self) -> Duration {
@@ -191,7 +208,7 @@ impl VolumeGuard {
     /// Async variant: resolve once any in-flight glide has finished (or the
     /// safety bound elapses). Used to keep the end cue after the restore ramp.
     pub(crate) async fn wait_for_ramp(&self) {
-        let budget = self.ramp_duration() * 2 + RAMP_JOIN_SLACK;
+        let budget = self.dim_duration().max(self.restore_duration()) * 2 + RAMP_JOIN_SLACK;
         let _ = tokio::time::timeout(budget, async {
             while self.ramp_running.load(Ordering::SeqCst) > 0 {
                 tokio::time::sleep(Duration::from_millis(15)).await;
@@ -200,10 +217,10 @@ impl VolumeGuard {
         .await;
     }
 
-    /// Glide the output volume from `from` to `to` over `ramp_duration`, one
-    /// write per `ramp_step`, aborting as soon as `ticket` is superseded.
+    /// Glide the output volume from `from` to `to` over `duration`, one write
+    /// per `ramp_step`, aborting as soon as `ticket` is superseded.
     /// Returns whether the ramp reached its endpoint while still current.
-    fn run_volume_ramp(&self, from: u8, to: u8, ticket: u64) -> bool {
+    fn run_volume_ramp(&self, from: u8, to: u8, ticket: u64, duration: Duration) -> bool {
         if from == to {
             return true;
         }
@@ -217,7 +234,7 @@ impl VolumeGuard {
             }
             // Target by elapsed time, not step index: slow writes reduce the
             // number of steps but never stretch the duration.
-            let progress = started.elapsed().as_secs_f64() / self.ramp_duration().as_secs_f64();
+            let progress = started.elapsed().as_secs_f64() / duration.as_secs_f64();
             let value = ramp_volume(from, to, progress);
             if last_written != Some(value) {
                 if !self.is_ramp_current(ticket) {
@@ -238,7 +255,7 @@ impl VolumeGuard {
             }
             std::thread::sleep(
                 self.ramp_step()
-                    .min(self.ramp_duration().saturating_sub(started.elapsed())),
+                    .min(duration.saturating_sub(started.elapsed())),
             );
         }
     }
@@ -275,10 +292,10 @@ impl VolumeGuard {
     }
 
     /// Capture the current output state and glide the volume down to
-    /// [`DIM_VOLUME`] for `session` over ~400 ms. Never returns an error:
-    /// transcription must proceed even if the volume operation fails. A dim for
-    /// a session that is no longer active is ignored (the most important case:
-    /// the user stopped while the start cue played).
+    /// [`DIM_VOLUME`] for `session` over [`DIM_DURATION`]. Never returns an
+    /// error: transcription must proceed even if the volume operation fails. A
+    /// dim for a session that is no longer active is ignored (the most important
+    /// case: the user stopped while the start cue played).
     pub(crate) fn dim_session_blocking(self: &Arc<Self>, session: u64) {
         let _operation = self.operation.lock().unwrap();
         if *self.active.lock().unwrap() != Some(session) {
@@ -385,18 +402,21 @@ impl VolumeGuard {
             return;
         }
 
-        // Smooth dimming on a detached thread: the recording pipeline never
-        // waits on it, and the guard ticket cancels it the moment this session
-        // stops or a newer session takes over.
+        // Smooth dimming on a detached thread: `dim_session` returns as soon as
+        // the glide is scheduled, so the start path proves completion with
+        // `wait_for_ramp` before opening the microphone. The guard ticket
+        // cancels it the moment this session stops or a newer session takes
+        // over.
         let ticket = self.take_ramp_ticket();
         self.ramp_running.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         let from = original.volume;
+        let duration = self.dim_duration();
         let spawned = std::thread::Builder::new()
             .name("voicepaste-vol-dim".to_string())
             .spawn(move || {
                 let _running = RunningRamp(&this);
-                let completed = this.run_volume_ramp(from, DIM_VOLUME, ticket);
+                let completed = this.run_volume_ramp(from, DIM_VOLUME, ticket, duration);
                 if !this.is_ramp_current(ticket) {
                     return; // superseded; the new owner sets the volume
                 }
@@ -437,9 +457,9 @@ impl VolumeGuard {
     }
 
     /// Restore `session`'s snapshot, at most once, gliding back to the original
-    /// volume over ~400 ms on a detached thread (callers never block on it). A
-    /// restore for a session that is no longer active is ignored; it must never
-    /// touch a newer session's snapshot.
+    /// volume over [`RESTORE_DURATION`] on a detached thread (callers never
+    /// block on it). A restore for a session that is no longer active is
+    /// ignored; it must never touch a newer session's snapshot.
     pub(crate) fn restore_session_blocking(self: &Arc<Self>, session: u64) {
         let _operation = self.operation.lock().unwrap();
         if *self.active.lock().unwrap() != Some(session) {
@@ -514,11 +534,12 @@ impl VolumeGuard {
         *self.expected_restore.lock().unwrap() = Some(state);
         self.ramp_running.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
+        let duration = self.restore_duration();
         let spawned = std::thread::Builder::new()
             .name("voicepaste-vol-restore".to_string())
             .spawn(move || {
                 let _running = RunningRamp(&this);
-                let completed = this.run_volume_ramp(from, state.volume, ticket);
+                let completed = this.run_volume_ramp(from, state.volume, ticket, duration);
                 if !this.is_ramp_current(ticket) {
                     // A newer session or cleanup owns the volume now. `begin`
                     // consumes the endpoint for its own snapshot; `restore_
@@ -900,20 +921,23 @@ mod tests {
     }
 
     /// Test ramp timing: short enough to keep the suite fast, long enough that
-    /// a dozen writes land per glide (the production budget is 400ms/30ms).
+    /// several writes land per glide (production: 150 ms dim, 300 ms restore,
+    /// 30 ms steps). The two directions stay distinct so tests exercise the
+    /// split durations.
     const TEST_RAMP: Duration = Duration::from_millis(120);
+    const TEST_RESTORE: Duration = Duration::from_millis(220);
     const TEST_STEP: Duration = Duration::from_millis(12);
 
     fn guard(volume: u8, muted: bool) -> (Arc<VolumeGuard>, Arc<FakeController>) {
         let fake = Arc::new(FakeController::new(volume, muted));
         let guard = Arc::new(VolumeGuard::new(fake.clone()));
-        guard.set_ramp_timing(TEST_RAMP, TEST_STEP);
+        guard.set_ramp_timing(TEST_RAMP, TEST_RESTORE, TEST_STEP);
         (guard, fake)
     }
 
     /// Block until the detached ramp thread finishes (bounded).
     fn settle(guard: &VolumeGuard) {
-        guard.wait_for_ramp_blocking(TEST_RAMP + Duration::from_millis(500));
+        guard.wait_for_ramp_blocking(TEST_RESTORE + Duration::from_millis(500));
     }
 
     /// Start a session and glide the volume down, mirroring the lifecycle's
@@ -1010,21 +1034,83 @@ mod tests {
     }
 
     #[test]
-    fn ramp_timing_constants_stay_in_the_desired_window() {
-        // ~400 ms per direction, ~25–60 ms steps: fast but still a glide.
-        assert!((300..=550).contains(&RAMP_DURATION.as_millis()));
-        assert!((25..=60).contains(&RAMP_STEP.as_millis()));
+    fn volume_transition_constants_match_the_configured_schedule() {
+        // The exact values the product specifies: a quick 150 ms dim so the
+        // microphone can open, a gentler 300 ms restore afterwards, a 30 ms
+        // update interval, and a 5% listening volume.
+        assert_eq!(DIM_VOLUME, 5);
+        assert_eq!(DIM_DURATION, Duration::from_millis(150));
+        assert_eq!(RESTORE_DURATION, Duration::from_millis(300));
+        assert_eq!(RAMP_STEP, Duration::from_millis(30));
     }
 
     #[test]
-    fn lowers_60_percent_to_10_and_restores_60() {
+    fn dim_and_restore_use_their_own_durations() {
+        // The two directions must not share one duration: with 50 ms down and
+        // 250 ms up, each glide lands exactly and the return takes visibly
+        // longer than the dim (this is what keeps the dim off the user's
+        // critical path without making the restore abrupt).
+        let (guard, fake) = guard(80, false);
+        guard.set_ramp_timing(
+            Duration::from_millis(50),
+            Duration::from_millis(250),
+            Duration::from_millis(10),
+        );
+        guard.begin_session_blocking(1);
+        let dim_started = Instant::now();
+        guard.dim_session_blocking(1);
+        guard.wait_for_ramp_blocking(Duration::from_millis(800));
+        let dim_elapsed = dim_started.elapsed();
+        assert_eq!(fake.state().volume, DIM_VOLUME);
+
+        let restore_started = Instant::now();
+        guard.restore_session_blocking(1);
+        guard.wait_for_ramp_blocking(Duration::from_millis(800));
+        let restore_elapsed = restore_started.elapsed();
+
+        assert_eq!(fake.state().volume, 80);
+        assert!(
+            dim_elapsed < Duration::from_millis(200),
+            "dim must use the short duration: {dim_elapsed:?}"
+        );
+        assert!(
+            restore_elapsed >= Duration::from_millis(200),
+            "restore must use the longer duration: {restore_elapsed:?}"
+        );
+        assert!(
+            restore_elapsed > dim_elapsed,
+            "restore ({restore_elapsed:?}) must outlast the dim ({dim_elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn restore_starts_without_waiting_for_the_glide_to_finish() {
+        // The stop path calls `restore_session_blocking` at the moment capture
+        // ends and must not be held until the glide is over. Scheduling is
+        // synchronous; the 300 ms motion happens on a detached thread.
+        let (guard, fake) = guard(80, false);
+        dim(&guard, 1);
+        guard.set_ramp_timing(TEST_RAMP, Duration::from_millis(400), TEST_STEP);
+        let started = Instant::now();
+        guard.restore_session_blocking(1);
+        let scheduling = started.elapsed();
+        assert!(
+            scheduling < Duration::from_millis(100),
+            "restore must be scheduled, not awaited: {scheduling:?}"
+        );
+        settle(&guard);
+        assert_eq!(fake.state().volume, 80);
+    }
+
+    #[test]
+    fn lowers_60_percent_to_the_dim_volume_and_restores_60() {
         let (guard, fake) = guard(60, false);
         dim(&guard, 1);
         assert_descending(&fake.volume_calls(), DIM_VOLUME);
         assert_eq!(
             fake.state(),
             OutputVolume {
-                volume: 10,
+                volume: DIM_VOLUME,
                 muted: false
             }
         );
@@ -1047,9 +1133,9 @@ mod tests {
         let calls = fake.volume_calls();
         // The first write already moved off the original (no redundant set),
         // and the motion is gradual. Granularity scales with the injected
-        // schedule: with production timing (400ms / 30ms ≈ 13 writes over a
-        // 90-point range) no step jumps more than ~12%, while smoothstep's
-        // 1.5× mid-glide speed bounds any gap by 2× the average step here.
+        // schedule: with production timing (150 ms / 30 ms = 5 writes over a
+        // 95-point range) no step jumps more than ~2× the average, while
+        // smoothstep's 1.5× mid-glide speed bounds any gap here.
         assert!(calls[0] < 100);
         assert!(calls.len() >= 5, "glide too coarse: {calls:?}");
         let range = 100 - u32::from(DIM_VOLUME);
@@ -1064,10 +1150,10 @@ mod tests {
     }
 
     #[test]
-    fn lowers_100_percent_to_10_and_restores_100() {
+    fn lowers_100_percent_to_the_dim_volume_and_restores_100() {
         let (guard, fake) = guard(100, false);
         dim(&guard, 1);
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         let after_dim = fake.volume_calls().len();
         restore(&guard, 1);
         assert_ascending(&fake.volume_calls()[after_dim..], 100);
@@ -1075,21 +1161,21 @@ mod tests {
     }
 
     #[test]
-    fn leaves_10_percent_unchanged() {
-        let (guard, fake) = guard(10, false);
+    fn leaves_the_dim_volume_unchanged() {
+        let (guard, fake) = guard(DIM_VOLUME, false);
         dim(&guard, 1);
         restore(&guard, 1);
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         assert!(fake.volume_calls().is_empty());
         assert!(fake.mute_calls().is_empty());
     }
 
     #[test]
-    fn leaves_5_percent_unchanged() {
-        let (guard, fake) = guard(5, false);
+    fn leaves_volume_below_the_dim_target_unchanged() {
+        let (guard, fake) = guard(3, false);
         dim(&guard, 1);
         restore(&guard, 1);
-        assert_eq!(fake.state().volume, 5);
+        assert_eq!(fake.state().volume, 3);
         assert!(fake.volume_calls().is_empty());
     }
 
@@ -1118,11 +1204,11 @@ mod tests {
         assert_eq!(
             fake.state(),
             OutputVolume {
-                volume: 10,
+                volume: DIM_VOLUME,
                 muted: true
             }
         );
-        assert_eq!(fake.volume_calls(), vec![10]);
+        assert_eq!(fake.volume_calls(), vec![DIM_VOLUME]);
         assert_eq!(fake.mute_calls(), vec![true]);
 
         restore(&guard, 1);
@@ -1133,7 +1219,7 @@ mod tests {
                 muted: true
             }
         );
-        assert_eq!(fake.volume_calls(), vec![10, 60]);
+        assert_eq!(fake.volume_calls(), vec![DIM_VOLUME, 60]);
         assert_eq!(fake.mute_calls(), vec![true, true]);
     }
 
@@ -1154,7 +1240,7 @@ mod tests {
         dim(&guard, 1);
         // The volume was lowered but the mute re-apply failed; the snapshot must
         // survive so terminal cleanup can still restore the original state.
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
 
         restore(&guard, 1);
         assert_eq!(
@@ -1164,7 +1250,7 @@ mod tests {
                 muted: true
             }
         );
-        assert_eq!(fake.volume_calls(), vec![10, 60]);
+        assert_eq!(fake.volume_calls(), vec![DIM_VOLUME, 60]);
         assert_eq!(fake.mute_calls(), vec![true, true]);
     }
 
@@ -1256,7 +1342,7 @@ mod tests {
         // A later session still snapshots and restores its own state.
         fake.user_set_volume(75);
         dim(&guard, 2);
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         restore(&guard, 2);
         assert_eq!(fake.state().volume, 75);
         assert_eq!(*fake.volume_calls().last().unwrap(), 75);
@@ -1282,7 +1368,7 @@ mod tests {
 
         fake.user_set_volume(80);
         dim(&guard, 2);
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         restore(&guard, 2);
 
         assert_eq!(fake.state().volume, 80);
@@ -1303,7 +1389,7 @@ mod tests {
         // volume rather than an already-dimmed value.
         let calls = fake.volume_calls();
         assert!(
-            calls.windows(2).any(|w| w == [10, 60]),
+            calls.windows(2).any(|w| w == [DIM_VOLUME, 60]),
             "stale restore must jump back to 60 before the next dim: {calls:?}"
         );
         assert_eq!(fake.state().volume, 60);
@@ -1335,13 +1421,13 @@ mod tests {
         guard.dim_session_blocking(2);
         settle(&guard);
 
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         // Only session 2's dim ran.
         assert_descending(&fake.volume_calls(), DIM_VOLUME);
 
         // A late restore from session 1 must not restore session 2's snapshot.
         restore(&guard, 1);
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
 
         restore(&guard, 2);
         assert_eq!(fake.state().volume, 60);
@@ -1352,7 +1438,11 @@ mod tests {
     fn stop_during_dim_ramp_aborts_it_and_restores_exactly() {
         let (guard, fake) = guard(60, false);
         guard.begin_session_blocking(1);
-        guard.set_ramp_timing(Duration::from_millis(400), TEST_STEP);
+        guard.set_ramp_timing(
+            Duration::from_millis(400),
+            Duration::from_millis(400),
+            TEST_STEP,
+        );
         guard.dim_session_blocking(1);
         // Catch the glide mid-descent, then stop the session.
         std::thread::sleep(Duration::from_millis(60));
@@ -1371,7 +1461,11 @@ mod tests {
         let (guard, fake) = guard(60, false);
         dim(&guard, 1);
         // Schedule a long restore glide and start a new session mid-flight.
-        guard.set_ramp_timing(Duration::from_millis(400), TEST_STEP);
+        guard.set_ramp_timing(
+            Duration::from_millis(400),
+            Duration::from_millis(400),
+            TEST_STEP,
+        );
         guard.restore_session_blocking(1);
         std::thread::sleep(Duration::from_millis(60));
         let before_session_two = fake.volume_calls().len();
@@ -1386,7 +1480,7 @@ mod tests {
             calls[before_session_two] > 40,
             "session 2 must dim from ~60%, not from the mid-ramp value: {calls:?}"
         );
-        assert_eq!(fake.state().volume, 10);
+        assert_eq!(fake.state().volume, DIM_VOLUME);
         restore(&guard, 2);
         assert_eq!(fake.state().volume, 60);
         assert_eq!(*fake.volume_calls().last().unwrap(), 60);
@@ -1399,7 +1493,7 @@ mod tests {
             guard.begin_session_blocking(session);
             guard.dim_session_blocking(session);
             settle(&guard);
-            assert_eq!(fake.state().volume, 10);
+            assert_eq!(fake.state().volume, DIM_VOLUME);
             restore(&guard, session);
             assert_eq!(fake.state().volume, 70);
             assert_eq!(*fake.volume_calls().last().unwrap(), 70);
@@ -1411,7 +1505,11 @@ mod tests {
         let (guard, fake) = guard(60, false);
         dim(&guard, 1);
         // Schedule a slow restore glide, then quit the app mid-glide.
-        guard.set_ramp_timing(Duration::from_millis(400), TEST_STEP);
+        guard.set_ramp_timing(
+            Duration::from_millis(400),
+            Duration::from_millis(400),
+            TEST_STEP,
+        );
         guard.restore_session_blocking(1);
         std::thread::sleep(Duration::from_millis(40));
         guard.restore_blocking();
@@ -1498,7 +1596,7 @@ mod tests {
     async fn scheduled_dim_finishes_only_after_wait_for_ramp_returned() {
         let fake = std::sync::Arc::new(LatchedController::new(80));
         let guard = std::sync::Arc::new(VolumeGuard::new(fake.clone()));
-        guard.set_ramp_timing(TEST_RAMP, TEST_STEP);
+        guard.set_ramp_timing(TEST_RAMP, TEST_RESTORE, TEST_STEP);
 
         guard.begin_session_blocking(7);
         // Awaiting the dim must return without any glide write happening.

@@ -24,7 +24,7 @@ use crate::app_state::{self, ActivePromptId, RecordingState};
 use crate::hotkey;
 
 pub(crate) use capture::NativeAudioCapture;
-pub(crate) use finalize::deliver_text_result;
+pub(crate) use finalize::{finish_delivered_text, paste_text};
 pub(crate) use polish::repolish_history_entry;
 pub(crate) use polish::retry_pending_polish;
 pub(crate) use regenerate::regenerate_history_transcription;
