@@ -217,7 +217,7 @@ export function PickerApp() {
         {/* The header is a flex item in its own right: `shrink-0` keeps it at its
             natural height so resizing can never squash it, the opaque background
             hides cards scrolling behind the scroll container's top edge, and `z-10`
-            keeps the card hover lift from painting over it. */}
+            keeps any card repaint from painting over it. */}
         <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border/50 bg-surface-card px-4 pt-3 pb-2.5">
           <div className="min-w-0">
             <h1 className="truncate text-[13px] font-semibold text-text">
@@ -372,12 +372,12 @@ function PickerCard({
         className={`flex h-full w-full min-w-0 flex-col rounded-xl border p-3 text-left transition duration-100 ${
           option.kind === "original" ? "border-accent/45 bg-accent-soft/30" : "border-border/70"
         } ${
-          // 1px accent ring only — the panel's design language forbids drop
-          // shadows, and the 2px hover lift needs the scroll region's pt-1
-          // room so the card's own top border never clips at the edge.
-          selectable
-            ? "cursor-pointer hover:-translate-y-0.5 hover:border-accent hover:bg-accent-soft/40 hover:shadow-[0_0_0_1px_var(--color-accent-dim)]"
-            : "cursor-default opacity-80"
+          // Cards must never react to the pointer. The panel floats over
+          // arbitrary application content, so a hover highlight reads as
+          // flicker while the user is deciding; selection is carried by the
+          // accent tint and the original-card ring alone. A selectable card
+          // therefore differs from a disabled one by cursor and opacity only.
+          selectable ? "cursor-pointer" : "cursor-default opacity-80"
         } ${busy ? "pointer-events-none opacity-60" : ""}`}
       >
         <div className="flex items-start justify-between gap-2 pr-7">

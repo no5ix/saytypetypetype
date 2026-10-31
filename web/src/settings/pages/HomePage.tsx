@@ -193,8 +193,10 @@ export function HomePage() {
         ))}
       </div>
 
-      {/* All-time */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+      {/* All-time: four equal cards in one row. `sm` (640px) is below the
+          window's 760px minimum, so the app always shows four columns; the
+          two-column fallback only applies in deliberately narrow dev previews. */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         {totalCards.map((c) => (
           <StatCard key={c.label} value={c.v} unit={c.u} label={c.label} />
         ))}
@@ -474,7 +476,7 @@ export function HomePage() {
 
 function StatCard({ value, unit, label }: { value: string; unit: string; label: string }) {
   return (
-    <div className="flex min-h-28 py-4 px-4 pb-5 bg-surface-card border border-border rounded-xl">
+    <div className="flex min-h-28 py-4 px-3 pb-5 bg-surface-card border border-border rounded-xl">
       <div className="flex flex-1 flex-col justify-between min-w-0">
         <div className="flex items-baseline gap-1 min-w-0">
           <span className="text-xl font-bold leading-[1.05] text-text tracking-normal whitespace-nowrap">
@@ -482,9 +484,11 @@ function StatCard({ value, unit, label }: { value: string; unit: string; label: 
           </span>
           {unit && <span className="text-sm font-medium text-text whitespace-nowrap">{unit}</span>}
         </div>
-        <span className="text-xs font-semibold text-text whitespace-nowrap leading-none">
-          {label}
-        </span>
+        {/* truncate, not wrap: at the minimum window width the four-up row
+            leaves ~86px per card interior and "Total sessions" is ~84px; an
+            ellipsis on an unexpected font is still better than a wrapped or
+            clipped label. */}
+        <span className="text-xs font-semibold text-text truncate leading-none">{label}</span>
       </div>
     </div>
   );

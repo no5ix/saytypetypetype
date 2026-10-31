@@ -55,20 +55,26 @@ export function Sidebar({ active, onNavigate }: SidebarProps) {
           : "text-text-dim hover:bg-fill-hover hover:text-text"
       }`}
     >
-      <Icon size={18} />
-      {label}
+      <Icon size={18} className="shrink-0" />
+      <span className="min-w-0 whitespace-nowrap">{label}</span>
     </button>
   );
 
   return (
-    <aside className="w-44 xl:w-50 shrink-0 flex flex-col">
-      {/* Header: icon + title + update button */}
-      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border-subtle">
-        <img src="./icon.png" alt="SayTypeTypeType" className="w-7 h-7 rounded-md shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text tracking-[-0.01em]">
-          SayTypeTypeType
-        </span>
-        <UpdateButton compact />
+    // 13rem fits the longest English nav label ("Language models") and the
+    // full product name on one line each, at the 760px minimum window width.
+    <aside className="w-52 shrink-0 flex flex-col">
+      {/* Header: icon + full name on the first row; the compact update control
+          gets its own row under the name so it never squeezes the title into
+          a truncation. The row indents past the icon to align with the name. */}
+      <div className="flex flex-col gap-1.5 px-4 py-3 border-b border-border-subtle">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <img src="./icon.png" alt="SayTypeTypeType" className="w-7 h-7 rounded-md shrink-0" />
+          <span className="min-w-0 truncate text-sm font-semibold text-text tracking-[-0.01em]">
+            SayTypeTypeType
+          </span>
+        </div>
+        <UpdateButton compact className="self-start ml-[38px]" />
       </div>
 
       {/* Navigation */}
@@ -82,8 +88,8 @@ export function Sidebar({ active, onNavigate }: SidebarProps) {
           }}
           className="w-full flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-sm transition-colors text-text-dim hover:bg-fill-hover hover:text-text"
         >
-          <BookOpen size={18} />
-          {t("帮助说明")}
+          <BookOpen size={18} className="shrink-0" />
+          <span className="min-w-0 whitespace-nowrap">{t("帮助说明")}</span>
         </button>
         {navBtn("about", Info, t("关于"))}
       </nav>

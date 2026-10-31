@@ -307,15 +307,17 @@ describe("PickerApp layout", () => {
 });
 
 describe("PickerApp hover and selection", () => {
-  it("marks hovering as an accent affordance distinct from the original-tint", async () => {
+  it("keeps card paint state-driven: no hover affordance, original keeps its tint", async () => {
     const { container } = await renderPicker(view(OPTIONS));
     const polish = container.querySelector<HTMLElement>("button[aria-label^='润色']");
     const original = container.querySelector<HTMLElement>("button[aria-label^='原文']");
 
-    expect(polish?.className).toContain("hover:border-accent");
-    expect(polish?.className).not.toContain("hover:border-border-hover");
+    // Hovering must never highlight a card: no hover-variant utilities, and
+    // no translate/shadow utilities that could lift or ring it either.
+    expect(polish?.className).not.toMatch(/hover:/);
+    expect(polish?.className).not.toMatch(/(translate|shadow)/);
     // The original option keeps its permanent accent tint so the selected/
-    // special option stays distinguishable while another card is hovered.
+    // special option stays distinguishable without any hover response.
     expect(original?.className).toContain("border-accent/45");
     expect(original?.className).toContain("bg-accent-soft/30");
   });
@@ -516,5 +518,39 @@ describe("PickerApp column policy", () => {
         columns: 2,
       }),
     );
+  });
+});
+
+describe("Picker card hover stability", () => {
+  it("paints cards from state only, never from pointer position", async () => {
+    await renderPicker(
+      view([
+        option({ id: "original", title: "原文", hotkey: "R ⌥", kind: "original" }),
+        option({ id: "polish", title: "润色", hotkey: "U" }),
+        option({ id: "loading", title: "要点", hotkey: "V", status: "loading", text: null }),
+      ]),
+    );
+    const cards = [
+      screen.getByRole("button", { name: "原文（R ⌥）" }),
+      screen.getByRole("button", { name: "润色（U）" }),
+      screen.getByRole("button", { name: "要点（V）" }),
+    ];
+    for (const card of cards) {
+      // No hover-variant utility at all: background, border, position and
+      // shadow are decided by ready/original/disabled/busy state alone.
+      expect(card.className).not.toMatch(/hover:/);
+      expect(card.className).not.toMatch(/(translate|shadow)/);
+    }
+    // Ready cards stay clickable and disabled ones stay inert.
+    expect((cards[0] as HTMLButtonElement).disabled).toBe(false);
+    expect((cards[2] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps hover feedback on the small controls inside and around cards", async () => {
+    await renderPicker(view(OPTIONS));
+    // The expand affordance is a discrete button, not the card surface, so
+    // its own hover response is intentional and must survive.
+    const expand = screen.getByRole("button", { name: "展开 润色" });
+    expect(expand.className).toContain("hover:");
   });
 });

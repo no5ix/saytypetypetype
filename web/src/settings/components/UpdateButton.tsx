@@ -241,7 +241,14 @@ const compactVisibleStates = new Set<UpdateState>([
   "error",
 ]);
 
-export function UpdateButton({ compact = false }: { compact?: boolean }) {
+export function UpdateButton({
+  compact = false,
+  className,
+}: {
+  compact?: boolean;
+  /** Placement utilities from the host layout (e.g. sidebar row indent). */
+  className?: string;
+}) {
   const t = useT();
   const current = useUpdateSnapshot();
   const action = updateAction(current, t);
@@ -256,6 +263,7 @@ export function UpdateButton({ compact = false }: { compact?: boolean }) {
         variant={action.variant}
         onClick={action.onClick}
         disabled={action.disabled}
+        className={className}
       >
         <span className="min-w-0 truncate">{action.label}</span>
       </Button>
@@ -263,7 +271,7 @@ export function UpdateButton({ compact = false }: { compact?: boolean }) {
   }
 
   return (
-    <div className="flex flex-row items-center gap-2">
+    <div className={`flex flex-row items-center gap-2 ${className ?? ""}`}>
       <span className="text-xs text-text-muted">{status}</span>
       <Button variant={action.variant} onClick={action.onClick} disabled={action.disabled}>
         <UpdateIcon state={current.state} />
