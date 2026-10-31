@@ -77,6 +77,11 @@ export async function openHelpGuide(): Promise<void> {
   });
 }
 
+/** Open an external URL in the user's default browser. */
+export async function openUrl(url: string): Promise<void> {
+  return invoke("plugin:shell|open", { path: url });
+}
+
 export async function getData(): Promise<SettingsData> {
   return invoke("get_settings_data");
 }

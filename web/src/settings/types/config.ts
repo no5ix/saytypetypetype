@@ -3,6 +3,7 @@
 export interface AppConfig {
   hotkey?: string;
   hotkeyMode?: "toggle" | "hold";
+  language?: "system" | "zh-CN" | "en";
   removeTrailingPeriod?: boolean;
   keepClipboard?: boolean;
   simulatedStreaming?: boolean;

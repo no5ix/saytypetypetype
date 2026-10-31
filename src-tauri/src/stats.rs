@@ -10,12 +10,65 @@ const MAX_DAILY_COUNTS_DAYS: i64 = 182;
 pub struct Stats {
     #[serde(rename = "firstUsedAt")]
     pub first_used_at: Option<String>,
+    /// Times the user started a dictation, including ones that produced no text.
+    #[serde(rename = "totalUses", default)]
+    pub total_uses: u64,
+    /// Successfully delivered sessions.
     #[serde(rename = "totalSessions")]
     pub total_sessions: u64,
     #[serde(rename = "totalCharacters")]
     pub total_characters: u64,
+    /// Daily activity intensity (delivered characters). Kept for the heatmap's
+    /// historical behaviour and for backwards-compatible stats files.
     #[serde(rename = "dailyCounts")]
     pub daily_counts: HashMap<String, u64>,
+    /// Per-day delivery details used by the dashboard cards and heatmap tooltip.
+    #[serde(rename = "dailyStats", default)]
+    pub daily_stats: HashMap<String, DailyUsage>,
+}
+
+/// One local day's successfully delivered usage.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DailyUsage {
+    /// Completed sessions — one per successful delivery, never ASR retries.
+    pub sessions: u64,
+    /// Delivered words. Han characters count individually; space-delimited
+    /// languages count whitespace-separated tokens.
+    pub words: u64,
+    /// Microphone time only, in milliseconds.
+    #[serde(rename = "recordingMs")]
+    pub recording_ms: u64,
+}
+
+/// Count delivered words without double-counting punctuation or whitespace.
+///
+/// Chinese text has no spaces, so each Han character is one unit. Latin and
+/// other word-based scripts are counted as maximal runs of non-space,
+/// non-punctuation characters.
+pub fn delivered_word_count(text: &str) -> u64 {
+    let mut words = 0u64;
+    let mut in_word = false;
+    for ch in text.chars() {
+        let is_han = matches!(
+            ch as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
+        );
+        if is_han {
+            words += 1;
+            in_word = false;
+        } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
+            in_word = false;
+        } else if ch.is_alphanumeric() {
+            if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        } else {
+            // CJK punctuation and symbols end a word.
+            in_word = false;
+        }
+    }
+    words
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,12 +133,26 @@ impl StatsService {
         }
     }
 
+    /// Count one dictation attempt — the dashboard's "total uses" card. Recorded
+    /// when the microphone actually opens, so a hotkey press that never started
+    /// capture (blocked by the picker, a failed device) is not counted, while a
+    /// recording the user cancelled or that failed to transcribe still is.
+    pub fn record_use(&mut self) {
+        let now = Local::now();
+        if self.stats.first_used_at.is_none() {
+            self.stats.first_used_at = Some(now.to_rfc3339());
+        }
+        self.stats.total_uses += 1;
+        self.flush_stats();
+    }
+
     pub fn record_session_with_audio(
         &mut self,
         text: &str,
         audio_path: Option<String>,
         retry_of: Option<String>,
         polish: PolishRecord,
+        recording_ms: u64,
     ) {
         if text.is_empty() {
             return;
@@ -93,15 +160,7 @@ impl StatsService {
 
         let now = Local::now();
         let char_count = text.len();
-
-        if self.stats.first_used_at.is_none() {
-            self.stats.first_used_at = Some(now.to_rfc3339());
-        }
-        self.stats.total_sessions += 1;
-        self.stats.total_characters += char_count as u64;
-
-        let key = now.format("%Y-%m-%d").to_string();
-        *self.stats.daily_counts.entry(key.clone()).or_insert(0) += char_count as u64;
+        self.apply_usage(text, recording_ms, now);
 
         // Flush stats
         self.flush_stats();
@@ -171,6 +230,7 @@ impl StatsService {
         text: &str,
         audio_path: Option<String>,
         polish: PolishRecord,
+        recording_ms: u64,
     ) -> bool {
         if text.is_empty() {
             return false;
@@ -187,7 +247,7 @@ impl StatsService {
             entry.raw_text = polish.raw_text.clone();
         });
         if replaced {
-            self.record_usage(text);
+            self.record_usage(text, recording_ms);
         }
         replaced
     }
@@ -356,26 +416,37 @@ impl StatsService {
         }
     }
 
-    fn record_usage(&mut self, text: &str) {
+    fn record_usage(&mut self, text: &str, recording_ms: u64) {
         if text.is_empty() {
             return;
         }
+        self.apply_usage(text, recording_ms, Local::now());
+        self.flush_stats();
+    }
 
-        let now = Local::now();
+    /// Add one successful delivery to both the cumulative and per-day counters.
+    /// Callers pass real microphone time; retries without a fresh capture pass 0.
+    fn apply_usage(&mut self, text: &str, recording_ms: u64, now: chrono::DateTime<Local>) {
+        let char_count = text.len();
         if self.stats.first_used_at.is_none() {
             self.stats.first_used_at = Some(now.to_rfc3339());
         }
         self.stats.total_sessions += 1;
-        self.stats.total_characters += text.len() as u64;
+        self.stats.total_characters += char_count as u64;
+
         let key = now.format("%Y-%m-%d").to_string();
-        *self.stats.daily_counts.entry(key).or_insert(0) += text.len() as u64;
-        self.flush_stats();
+        *self.stats.daily_counts.entry(key.clone()).or_insert(0) += char_count as u64;
+        let day = self.stats.daily_stats.entry(key).or_default();
+        day.sessions += 1;
+        day.words += delivered_word_count(text);
+        day.recording_ms += recording_ms;
     }
 
     fn prune_daily_counts(&mut self) {
         let cutoff = Local::now() - chrono::Duration::days(MAX_DAILY_COUNTS_DAYS);
         let cutoff_key = cutoff.format("%Y-%m-%d").to_string();
         self.stats.daily_counts.retain(|k, _| k >= &cutoff_key);
+        self.stats.daily_stats.retain(|k, _| k >= &cutoff_key);
     }
 
     fn append_history(&self, entry: &HistoryEntry) {
@@ -471,7 +542,7 @@ mod tests {
     #[test]
     fn record_session_increments_counters() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("hello world", None, None, PolishRecord::default());
+        svc.record_session_with_audio("hello world", None, None, PolishRecord::default(), 0);
         let stats = svc.get_stats();
         assert_eq!(stats.total_sessions, 1);
         assert_eq!(stats.total_characters, 11); // "hello world".len()
@@ -481,7 +552,7 @@ mod tests {
     #[test]
     fn record_session_empty_text_ignored() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("", None, None, PolishRecord::default());
+        svc.record_session_with_audio("", None, None, PolishRecord::default(), 0);
         let stats = svc.get_stats();
         assert_eq!(stats.total_sessions, 0);
     }
@@ -489,8 +560,8 @@ mod tests {
     #[test]
     fn record_session_multiple_increments() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("first", None, None, PolishRecord::default());
-        svc.record_session_with_audio("second", None, None, PolishRecord::default());
+        svc.record_session_with_audio("first", None, None, PolishRecord::default(), 0);
+        svc.record_session_with_audio("second", None, None, PolishRecord::default(), 0);
         let stats = svc.get_stats();
         assert_eq!(stats.total_sessions, 2);
         assert_eq!(stats.total_characters, 11);
@@ -499,7 +570,7 @@ mod tests {
     #[test]
     fn daily_counts_populated() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("test", None, None, PolishRecord::default());
+        svc.record_session_with_audio("test", None, None, PolishRecord::default(), 0);
         let stats = svc.get_stats();
         assert_eq!(stats.daily_counts.len(), 1);
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -603,7 +674,8 @@ mod tests {
             &failure_ts,
             "重试成功",
             None,
-            PolishRecord::default()
+            PolishRecord::default(),
+            0
         ));
 
         let history = svc.get_history(365);
@@ -628,6 +700,7 @@ mod tests {
                 prompt_id: Some("polish".to_string()),
                 raw_text: Some("原始 转写 文本".to_string()),
             },
+            0,
         );
 
         let entry = svc.get_history(365).remove(0);
@@ -638,7 +711,7 @@ mod tests {
     #[test]
     fn unpolished_session_stores_no_provenance() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("主快捷键直接粘贴", None, None, PolishRecord::default());
+        svc.record_session_with_audio("主快捷键直接粘贴", None, None, PolishRecord::default(), 0);
 
         let entry = svc.get_history(365).remove(0);
         assert!(entry.prompt_id.is_none());
@@ -659,6 +732,7 @@ mod tests {
                 prompt_id: Some("prompt-general".to_string()),
                 raw_text: None,
             },
+            0,
         );
 
         let entry = svc.get_history(365).remove(0);
@@ -682,6 +756,7 @@ mod tests {
                     prompt_id: Some(prompt.to_string()),
                     raw_text: None,
                 },
+                0,
             );
         }
 
@@ -714,6 +789,7 @@ mod tests {
                 prompt_id: Some("polish".to_string()),
                 raw_text: None,
             },
+            0,
         );
         let ts = svc.get_history(365)[0].ts.clone();
         let sessions_before = svc.get_stats().total_sessions;
@@ -734,7 +810,7 @@ mod tests {
         // A main-hotkey entry was never polished; polishing it from the history
         // list must remember the template so the next re-polish reuses it.
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("原始转写", None, None, PolishRecord::default());
+        svc.record_session_with_audio("原始转写", None, None, PolishRecord::default(), 0);
         let ts = svc.get_history(365)[0].ts.clone();
 
         assert!(svc.update_history_polished_text(&ts, "润色后", "原始转写", "email"));
@@ -755,6 +831,7 @@ mod tests {
                 prompt_id: Some("polish".to_string()),
                 raw_text: Some("旧转写".to_string()),
             },
+            0,
         );
         let ts = svc.get_history(365)[0].ts.clone();
 
@@ -774,6 +851,7 @@ mod tests {
             Some("/tmp/kept.wav".to_string()),
             None,
             PolishRecord::default(),
+            0,
         );
         let ts = svc.get_history(365)[0].ts.clone();
         let sessions_before = svc.get_stats().total_sessions;
@@ -795,7 +873,7 @@ mod tests {
     #[test]
     fn update_history_text_missing_entry_returns_false() {
         let (mut svc, _dir) = new_stats_service();
-        svc.record_session_with_audio("only entry", None, None, PolishRecord::default());
+        svc.record_session_with_audio("only entry", None, None, PolishRecord::default(), 0);
         let ts = svc.get_history(365)[0].ts.clone();
         // A timestamp on the same day but not matching any entry.
         let other_ts = format!("{}9", &ts[..ts.len() - 1]);

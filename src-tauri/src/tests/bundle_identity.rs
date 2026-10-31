@@ -27,7 +27,7 @@ fn development() -> Value {
 fn production_identity_is_unchanged() {
     let config = production();
     assert_eq!(config["identifier"], "com.yolanda.voicepaste");
-    assert_eq!(config["productName"], "VoicePaste");
+    assert_eq!(config["productName"], "SayTypeTypeType");
 }
 
 #[test]
@@ -51,9 +51,9 @@ fn display_names_and_bundle_paths_differ() {
     let dev = development()["productName"].as_str().unwrap().to_string();
 
     assert_ne!(prod, dev);
-    assert_eq!(dev, "VoicePaste Dev");
+    assert_eq!(dev, "SayTypeTypeType Dev");
     // The `.app` bundle name is derived from productName, so different names
-    // guarantee separate output directories (…/VoicePaste.app vs …/VoicePaste Dev.app).
+    // guarantee separate output directories (…/SayTypeTypeType.app vs …/SayTypeTypeType Dev.app).
     assert!(dev.starts_with(&prod));
 }
 
@@ -73,7 +73,7 @@ fn development_build_keeps_production_updater_endpoints_untouched() {
     assert!(development().get("plugins").is_none());
     assert_eq!(
         production()["plugins"]["updater"]["endpoints"][0],
-        "https://github.com/that-yolanda/voicepaste/releases/latest/download/latest.json"
+        "https://github.com/no5ix/saytypetypetype/releases/latest/download/latest.json"
     );
 }
 

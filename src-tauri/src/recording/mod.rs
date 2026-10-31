@@ -38,6 +38,7 @@ pub(crate) async fn on_recording_start(
     app_handle: AppHandle,
     is_main: bool,
     mode: hotkey::HotkeyMode,
+    prompt_id: Option<String>,
 ) {
     // Defensive: the listener already routes keys away from the matcher while
     // the picker is open, but a queued action must never start a session behind
@@ -104,6 +105,17 @@ pub(crate) async fn on_recording_start(
     }
 
     let inner = app_handle.state::<Arc<app_state::AppInner>>();
+    // The template is fixed when a template shortcut starts the session. The
+    // main/voice stop key leaves it untouched, so pressing the main key to stop
+    // still finalizes with the template chosen at start.
+    if let Some(active) = app_handle.try_state::<ActivePromptId>() {
+        *active.0.lock().unwrap() = prompt_id.clone();
+    }
+    if let Some(id) = prompt_id.as_deref() {
+        if let Err(error) = inner.config_manager.remember_polish_prompt(id) {
+            log_rec!(warn, "Failed to remember polish template: {}", error);
+        }
+    }
     *inner.recording_mode.lock().await = mode;
     crate::overlay::invalidate_feedback(&inner);
     lifecycle::start_recording(app_handle.clone()).await;
@@ -141,8 +153,12 @@ pub(crate) async fn on_recording_stop(app_handle: AppHandle, prompt_id: Option<S
             log_rec!(warn, "Failed to remember polish template: {}", error);
         }
     }
-    if let Some(active) = app_handle.try_state::<ActivePromptId>() {
-        *active.0.lock().unwrap() = prompt_id;
+    // A main/voice stop (`None`) must not erase a template chosen when the
+    // session started through that template's shortcut.
+    if let Some(id) = prompt_id {
+        if let Some(active) = app_handle.try_state::<ActivePromptId>() {
+            *active.0.lock().unwrap() = Some(id);
+        }
     }
     lifecycle::stop_recording(app_handle).await;
 }

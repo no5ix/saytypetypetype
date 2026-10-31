@@ -19,6 +19,7 @@ import {
   Trash,
 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
+import { type Translate, useT } from "@/i18n";
 import type { ModelDownloadProgress } from "@/settings/bridge";
 import { Badge } from "@/settings/components/Badge";
 import { Button } from "@/settings/components/Button";
@@ -70,11 +71,17 @@ function formatNumber(value: number): string {
   return String(Number(value.toPrecision(6)));
 }
 
-/** Render the control matching a field's metadata. */
+/**
+ * Render the control matching a field's metadata.
+ *
+ * `t` localizes labels that live in the data-driven field metadata; callers
+ * outside a React tree (tests) may omit it and get the source text.
+ */
 export function renderControl(
   meta: FieldMeta,
   value: unknown,
   onChange: (value: unknown) => void,
+  t: Translate = (text) => text,
 ): ReactNode {
   const type: ControlType = meta.type ?? "text";
   switch (type) {
@@ -111,7 +118,7 @@ export function renderControl(
     case "segment":
       return (
         <SegmentedControl
-          options={meta.options ?? []}
+          options={(meta.options ?? []).map((opt) => ({ ...opt, label: t(opt.label) }))}
           value={String(value ?? "")}
           onChange={onChange}
         />
@@ -120,7 +127,7 @@ export function renderControl(
       return (
         <Input
           value={Array.isArray(value) ? value.join(", ") : ""}
-          placeholder={meta.placeholder}
+          placeholder={t(meta.placeholder ?? "")}
           onChange={(v) => onChange(parseLanguageList(v))}
           commitOnBlur
           className="w-full"
@@ -134,7 +141,7 @@ export function renderControl(
           className="w-full"
           textareaClassName="min-h-20"
           maxLength={meta.maxLength}
-          placeholder={meta.placeholder}
+          placeholder={t(meta.placeholder ?? "")}
           commitOnBlur
         />
       );
@@ -145,7 +152,7 @@ export function renderControl(
           className="w-full"
           value={String(value ?? "")}
           onChange={onChange}
-          placeholder={meta.placeholder}
+          placeholder={t(meta.placeholder ?? "")}
           commitOnBlur
         />
       );
@@ -179,6 +186,7 @@ export function ModelCard({
   onConfigChange,
   onResetConfig,
 }: ModelCardProps) {
+  const t = useT();
   const [configExpanded, setConfigExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -240,7 +248,7 @@ export function ModelCard({
             target="_blank"
             rel="noreferrer"
           >
-            如何获取 API 凭据？
+            {t("如何获取 API 凭据？")}
           </a>
           <Toggle checked={isActive} onChange={(v) => onToggleActive(model.id, v)} />
         </div>
@@ -265,7 +273,11 @@ export function ModelCard({
           </>
         ) : (
           <div className="flex items-center gap-2">
-            {fileStr && <span className="text-xs text-text-muted">模型文件 {fileStr}</span>}
+            {fileStr && (
+              <span className="text-xs text-text-muted">
+                {t("模型文件 {size}", { size: fileStr })}
+              </span>
+            )}
             <Button size="icon" onClick={() => onDownload(model.id)} disabled={isDownloading}>
               {isDownloading ? (
                 <LoaderCircle size={16} className="animate-spin" />
@@ -283,19 +295,24 @@ export function ModelCard({
 
   const renderField = (field: MergedField) => {
     const meta = fieldMeta(field);
-    const control = renderControl(meta, field.value, (value) => {
-      setConfigError(null);
-      Promise.resolve(onConfigChange(model.id, patchFromFlatKey(field.key, value))).catch((error) =>
-        setConfigError(error instanceof Error ? error.message : String(error)),
-      );
-    });
+    const control = renderControl(
+      meta,
+      field.value,
+      (value) => {
+        setConfigError(null);
+        Promise.resolve(onConfigChange(model.id, patchFromFlatKey(field.key, value))).catch(
+          (error) => setConfigError(error instanceof Error ? error.message : String(error)),
+        );
+      },
+      t,
+    );
     const fullWidth = field.key === "transcript_edit";
     return (
       <SectionItem
         key={field.key}
-        title={meta.label}
-        description={meta.description}
-        tooltip={meta.tooltip}
+        title={t(meta.label)}
+        description={meta.description ? t(meta.description) : undefined}
+        tooltip={meta.tooltip ? t(meta.tooltip) : undefined}
         action={fullWidth ? undefined : control}
       >
         {fullWidth ? control : undefined}
@@ -306,8 +323,8 @@ export function ModelCard({
   return (
     <Section>
       <SectionHeader
-        title={model.name}
-        subtitle={model.description}
+        title={t(model.name)}
+        subtitle={t(model.description ?? "")}
         action={renderHeaderAction()}
       />
       <SectionContent>
@@ -319,7 +336,7 @@ export function ModelCard({
                   size={16}
                   className={`text-surface ${model.capabilities?.[key] ? "fill-success" : "fill-text-muted"}`}
                 />
-                <span>{label}</span>
+                <span>{t(label)}</span>
               </Badge>
             ))}
           </div>
@@ -329,13 +346,13 @@ export function ModelCard({
         <div className="flex flex-wrap items-center gap-2">
           {model.tags?.map((tag) => (
             <Badge key={tag} variant="accent">
-              {tag}
+              {t(tag)}
             </Badge>
           ))}
           {memStr && model.category === "asr" && (
             <div className="flex gap-1 items-center text-text-muted">
               <ChartNoAxesCombined size={16} />
-              <span className="text-sm">内存峰值 {memStr}</span>
+              <span className="text-sm">{t("内存峰值 {size}", { size: memStr })}</span>
             </div>
           )}
 
@@ -343,7 +360,7 @@ export function ModelCard({
             <span className="ml-auto">
               <Button variant="ghost" onClick={() => setConfigExpanded((v) => !v)}>
                 <Cog size={16} />
-                参数配置
+                {t("参数配置")}
               </Button>
             </span>
           )}
@@ -370,7 +387,7 @@ export function ModelCard({
             <div className="flex justify-between">
               <Button variant="ghost" onClick={() => onResetConfig(model.id)}>
                 <RotateCcw size={16} />
-                恢复默认
+                {t("恢复默认")}
               </Button>
 
               {advancedFields.length > 0 && (
@@ -383,7 +400,7 @@ export function ModelCard({
                     size={16}
                     className={`transition-transform duration-300 ${advancedExpanded ? "rotate-0" : "rotate-180"}`}
                   />
-                  更多参数
+                  {t("更多参数")}
                 </Button>
               )}
             </div>

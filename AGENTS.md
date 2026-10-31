@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-VoicePaste contains a Tauri desktop app and an independent website.
+SayTypeTypeType contains a Tauri desktop app and an independent website.
 
 - `web/src/`: React/TypeScript desktop settings and Windows overlay; tests in `web/tests/`.
 - `src-tauri/src/`: Rust backend and native macOS overlay. Integration tests and fixtures live in `src-tauri/src/tests/`.

@@ -21,6 +21,7 @@
 
 import { Info } from "lucide-react";
 import type { ReactNode } from "react";
+import { useT } from "@/i18n";
 import { Tooltip } from "@/settings/components/Tooltip";
 
 export function PageLayout({ children }: { children: ReactNode }) {
@@ -138,6 +139,7 @@ export function SectionItem({
   last?: boolean;
   className?: string;
 }) {
+  const t = useT();
   return (
     <div
       className={`group flex flex-col gap-2 min-h-10 justify-center ${
@@ -149,7 +151,7 @@ export function SectionItem({
           <div className="flex items-center gap-1">
             <span>{title}</span>
             {tooltip && (
-              <Tooltip content={tooltip} label={`${title}说明`}>
+              <Tooltip content={tooltip} label={t("{title}说明", { title })}>
                 <Info size={14} aria-hidden="true" />
               </Tooltip>
             )}

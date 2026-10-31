@@ -132,7 +132,7 @@ pub(crate) async fn open_session(
         .map(|(index, prompt)| PickerOptionSpec {
             id: prompt_option_id(&prompt.id),
             title: if prompt.title.trim().is_empty() {
-                format!("模板 {}", index + 1)
+                format!("{} {}", crate::i18n::tr("模板", "Template"), index + 1)
             } else {
                 prompt.title.clone()
             },
@@ -208,9 +208,10 @@ pub(crate) async fn open_session(
             .await;
             let result = match outcome {
                 crate::llm::PolishOutcome::Polished(text) => PickerResult::Ready(text),
-                crate::llm::PolishOutcome::NotPolished => {
-                    PickerResult::Failed("该模板未配置提示词".to_string())
-                }
+                crate::llm::PolishOutcome::NotPolished => PickerResult::Failed(
+                    crate::i18n::tr("该模板未配置提示词", "This template has no prompt")
+                        .to_string(),
+                ),
                 crate::llm::PolishOutcome::Failed(error) => {
                     PickerResult::Failed(error.user_message())
                 }
@@ -250,6 +251,22 @@ where
     result
 }
 
+/// Pick the pid to paste into, given the app frontmost at selection time and
+/// the app captured when the session started.
+///
+/// The picker panel never becomes key, so the frontmost app is where the user
+/// is working *now* — which may differ from the session-start capture when
+/// they switched apps while the panel was open (dictated in Safari, Cmd+Tabbed
+/// to VS Code → the text belongs in VS Code). When the selection click itself
+/// activated us, fall back to the captured target.
+fn resolve_destination_pid(frontmost: Option<i32>, captured: Option<i32>) -> Option<i32> {
+    let ours = std::process::id() as i32;
+    match frontmost {
+        Some(pid) if pid != ours => Some(pid),
+        _ => captured,
+    }
+}
+
 /// Select an option. Safe to call from a shortcut and a click at the same time:
 /// the store reserves the option so delivery happens at most once.
 ///
@@ -281,21 +298,24 @@ pub(crate) async fn select(app: AppHandle, session_id: u64, option_id: String) {
     // when the animation is over; `finish_close` below is only the backstop.
     let close_ticket = begin_close(&app);
 
-    // A mouse click activates VoicePaste on macOS. Put the captured target app
+    // A mouse click activates VoicePaste on macOS. Put the destination app
     // back in front before the paste keystroke, otherwise the selected text
-    // would be inserted into the picker (or nowhere).
-    if let Some(pid) = selection
+    // would be inserted into the picker (or nowhere). The destination is the
+    // app frontmost *now* — the user may have switched apps while the panel
+    // was open — falling back to the app captured at session start.
+    let captured_pid = selection
         .target
         .as_ref()
         .and_then(|target| target.target.as_ref())
-        .map(|target| target.pid)
-    {
+        .map(|target| target.pid);
+    let destination = resolve_destination_pid(display::frontmost_app_pid(), captured_pid);
+    if let Some(pid) = destination {
         if display::activate_target_app(pid) {
             tokio::time::sleep(Duration::from_millis(90)).await;
         } else {
             log_rec!(
                 warn,
-                "Could not re-activate target app pid {}; pasting",
+                "Could not re-activate destination app pid {}; pasting",
                 pid
             );
         }
@@ -645,7 +665,7 @@ fn get_or_create_window(
     }
     let builder =
         WebviewWindowBuilder::new(handle, PICKER_LABEL, WebviewUrl::App("picker.html".into()))
-            .title("VoicePaste")
+            .title(crate::APP_NAME)
             .decorations(false)
             .transparent(true)
             .shadow(false)
@@ -981,6 +1001,37 @@ mod tests {
     #[test]
     fn exit_animation_stays_short() {
         assert!((120..=180).contains(&EXIT_ANIMATION_MS));
+    }
+
+    /// The paste destination follows the app frontmost at selection time, so
+    /// switching apps while the panel is open (dictated in Safari, Cmd+Tabbed
+    /// to VS Code) lands the text in VS Code. When our own app is frontmost
+    /// (the selection click activated us) or the frontmost cannot be resolved,
+    /// the app captured at session start is used instead.
+    #[test]
+    fn destination_prefers_the_app_frontmost_at_selection_time() {
+        let captured = 100;
+        let ours = std::process::id() as i32;
+        let other = ours + 1;
+
+        assert_eq!(
+            resolve_destination_pid(Some(other), Some(captured)),
+            Some(other)
+        );
+        assert_eq!(
+            resolve_destination_pid(Some(captured), Some(captured)),
+            Some(captured)
+        );
+        assert_eq!(
+            resolve_destination_pid(Some(ours), Some(captured)),
+            Some(captured)
+        );
+        assert_eq!(
+            resolve_destination_pid(None, Some(captured)),
+            Some(captured)
+        );
+        assert_eq!(resolve_destination_pid(Some(ours), None), None);
+        assert_eq!(resolve_destination_pid(None, None), None);
     }
 
     /// Keyboard-ownership invariant: release happens only after the paste

@@ -1,4 +1,4 @@
-// VoicePaste build & packaging script for Tauri v2.
+// SayTypeTypeType build & packaging script for Tauri v2.
 //
 // Usage:
 //   pnpm run pack                           # All platforms, unsigned
@@ -280,7 +280,7 @@ function collectArtifacts(platformKey: string, version: string): string[] {
       }
 
       // Updater artifact: copy under its canonical arch-scoped name so multiple
-      // macOS targets (aarch64 + x64) no longer collide as VoicePaste.app.tar.gz,
+      // macOS targets (aarch64 + x64) no longer collide as SayTypeTypeType.app.tar.gz,
       // and pair it with its .sig.
       if (updaterCfg?.srcPattern.test(entry.name)) {
         const destName = updaterCfg.dest(version);
@@ -320,23 +320,23 @@ const UPDATER_PLATFORMS: Record<string, UpdaterPlatformConfig> = {
   apple_aarch64: {
     id: "darwin-aarch64",
     srcPattern: /\.app\.tar\.gz$/,
-    dest: (v) => `VoicePaste_${v}_aarch64.app.tar.gz`,
+    dest: (v) => `SayTypeTypeType_${v}_aarch64.app.tar.gz`,
   },
   apple_x64: {
     id: "darwin-x86_64",
     srcPattern: /\.app\.tar\.gz$/,
-    dest: (v) => `VoicePaste_${v}_x64.app.tar.gz`,
+    dest: (v) => `SayTypeTypeType_${v}_x64.app.tar.gz`,
   },
   win_x64: {
     id: "windows-x86_64",
     srcPattern: /-setup\.exe$/,
-    dest: (v) => `VoicePaste_${v}_x64-setup.exe`,
+    dest: (v) => `SayTypeTypeType_${v}_x64-setup.exe`,
   },
 };
 
 function generateUpdaterArtifacts(version: string, beta: boolean): void {
   const distDir = path.join(__dirname, "..", "dist");
-  const repoUrl = "https://github.com/that-yolanda/voicepaste/releases/download";
+  const repoUrl = "https://github.com/no5ix/saytypetypetype/releases/download";
   const suffix = beta ? "-beta" : "";
   const jsonName = `latest${suffix}.json`;
   const jsonPath = path.join(distDir, jsonName);

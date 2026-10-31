@@ -126,6 +126,14 @@ pub async fn get_overlay_layout_metrics(
     ))
 }
 
+/// Current resolved UI language (`zh-CN` | `en`) for renderer-owned strings.
+/// Windows overlay and picker windows call this at startup and then follow
+/// `settings:event`/`language-changed` broadcasts.
+#[tauri::command]
+pub fn get_ui_language() -> &'static str {
+    crate::i18n::language().code()
+}
+
 /// Get audio config defaults used as runtime fallback.
 #[tauri::command]
 pub async fn get_audio_config_defaults() -> Result<serde_json::Value, String> {
@@ -208,6 +216,12 @@ pub async fn get_settings_data(state: State<'_, AppState>) -> Result<serde_json:
         .and_then(|v| v.as_str())
         .unwrap_or("system")
         .to_string();
+    let language_preference = parsed_config
+        .get("app")
+        .and_then(|v| v.get("language"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("system")
+        .to_string();
 
     Ok(serde_json::json!({
         "configPath": state.config_manager.config_path().to_string_lossy(),
@@ -223,6 +237,10 @@ pub async fn get_settings_data(state: State<'_, AppState>) -> Result<serde_json:
             "theme": {
                 "preference": theme_preference.clone(),
                 "resolved": resolve_theme(&theme_preference),
+            },
+            "language": {
+                "preference": language_preference.clone(),
+                "resolved": crate::i18n::resolve_code(&language_preference),
             },
         },
     }))
@@ -241,6 +259,9 @@ pub async fn save_config_object(
     // Sync hotkey mode from saved config
     let updated_config = state.config_manager.load_config()?;
     apply_app_theme(&app, &updated_config.app.theme);
+    let resolved_language = crate::i18n::resolve(&updated_config.app.language);
+    crate::i18n::set_language(resolved_language);
+    crate::refresh_tray_labels(&app);
 
     if let Some(hotkey_mode) = app.try_state::<HotkeyMode>() {
         *hotkey_mode.0.lock().unwrap() = updated_config.app.hotkey_mode.clone();
@@ -277,6 +298,20 @@ pub async fn save_config_object(
             "payload": {
                 "preference": updated_config.app.theme,
                 "resolved": resolve_theme(&updated_config.app.theme),
+            }
+        }),
+    );
+
+    // The language feeds every window (settings, picker, native overlay) and
+    // the tray. Announce the resolved value so already-open windows update
+    // immediately instead of waiting for their next data load.
+    let _ = app.emit(
+        "settings:event",
+        serde_json::json!({
+            "type": "language-changed",
+            "payload": {
+                "preference": updated_config.app.language,
+                "resolved": resolved_language.code(),
             }
         }),
     );

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "@/i18n";
 import { selectSoundFile } from "@/settings/bridge";
 import { Button } from "@/settings/components/Button";
 import { SegmentedControl } from "@/settings/components/SegmentedControl";
@@ -16,6 +17,7 @@ import { useSettings } from "@/settings/SettingsProvider";
 
 export function AppSettingsPage() {
   const { settings, scheduleSave } = useSettings();
+  const t = useT();
   const cfg = settings?.parsedConfig || ({} as Record<string, unknown>);
   const app = (cfg.app || {}) as Record<string, unknown>;
   const sound = (app.sound || {}) as Record<string, boolean | string>;
@@ -32,13 +34,30 @@ export function AppSettingsPage() {
 
   return (
     <PageLayout>
-      <PageHeader title="应用设置" description="启动行为与配置文件" />
+      <PageHeader title={t("应用设置")} description={t("启动行为与配置文件")} />
 
       <Section>
         <SectionContent>
           <SectionItemList>
             <SectionItem
-              title="开机自动启动"
+              title={t("界面语言")}
+              description={t("界面语言说明")}
+              action={
+                <SegmentedControl
+                  options={[
+                    { value: "system", label: t("跟随系统") },
+                    { value: "zh-CN", label: t("简体中文") },
+                    { value: "en", label: "English" },
+                  ]}
+                  value={(app.language as string) || "system"}
+                  onChange={(v) => scheduleSave({ app: { language: v } })}
+                />
+              }
+              className="shrink-0"
+            />
+
+            <SectionItem
+              title={t("开机自动启动")}
               action={
                 <Toggle checked={!!app.autoLaunch} onChange={(v) => setAppBool("autoLaunch", v)} />
               }
@@ -46,16 +65,16 @@ export function AppSettingsPage() {
 
             {isMac && (
               <SectionItem
-                title="悬浮窗外观"
-                tooltip={
-                  "通透：背景透出更多、液态感更强\n磨砂：磨砂感更明显\n跟随主题：传统毛玻璃、明暗跟随外观主题"
-                }
+                title={t("悬浮窗外观")}
+                tooltip={t(
+                  "通透：背景透出更多、液态感更强\n磨砂：磨砂感更明显\n跟随主题：传统毛玻璃、明暗跟随外观主题",
+                )}
                 action={
                   <SegmentedControl
                     options={[
-                      { value: "liquid", label: "通透" },
-                      { value: "liquid-standard", label: "磨砂" },
-                      { value: "vibrancy", label: "跟随主题" },
+                      { value: "liquid", label: t("通透") },
+                      { value: "liquid-standard", label: t("磨砂") },
+                      { value: "vibrancy", label: t("跟随主题") },
                     ]}
                     value={(app.overlay_style as string) || "liquid"}
                     onChange={(v) => scheduleSave({ app: { overlay_style: v } })}
@@ -65,7 +84,7 @@ export function AppSettingsPage() {
               />
             )}
 
-            <SectionItem last title="配置文件路径" description={configPath} />
+            <SectionItem last title={t("配置文件路径")} description={configPath} />
           </SectionItemList>
         </SectionContent>
       </Section>
@@ -74,7 +93,7 @@ export function AppSettingsPage() {
         <SectionContent>
           <SectionItemList>
             <SectionItem
-              title="提示音"
+              title={t("提示音")}
               action={
                 <Toggle
                   checked={sound.enabled !== false}
@@ -86,11 +105,11 @@ export function AppSettingsPage() {
             {sound.enabled !== false && (
               <>
                 <SectionItem
-                  title="就绪提示音"
+                  title={t("就绪提示音")}
                   action={
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-text-muted max-w-40 truncate">
-                        {soundFileName(startSound)}
+                        {t(soundFileName(startSound))}
                       </span>
                       <Button
                         onClick={async () => {
@@ -101,7 +120,7 @@ export function AppSettingsPage() {
                           }
                         }}
                       >
-                        选择文件
+                        {t("选择文件")}
                       </Button>
                       {startSound && (
                         <Button
@@ -111,7 +130,7 @@ export function AppSettingsPage() {
                             setSound({ start_sound: "" });
                           }}
                         >
-                          重置
+                          {t("重置")}
                         </Button>
                       )}
                     </div>
@@ -119,12 +138,12 @@ export function AppSettingsPage() {
                 />
 
                 <SectionItem
-                  title="完成提示音"
+                  title={t("完成提示音")}
                   last
                   action={
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-text-muted max-w-40 truncate">
-                        {soundFileName(endSound)}
+                        {t(soundFileName(endSound))}
                       </span>
                       <Button
                         onClick={async () => {
@@ -135,7 +154,7 @@ export function AppSettingsPage() {
                           }
                         }}
                       >
-                        选择文件
+                        {t("选择文件")}
                       </Button>
                       {endSound && (
                         <Button
@@ -145,7 +164,7 @@ export function AppSettingsPage() {
                             setSound({ end_sound: "" });
                           }}
                         >
-                          重置
+                          {t("重置")}
                         </Button>
                       )}
                     </div>
@@ -161,8 +180,8 @@ export function AppSettingsPage() {
         <SectionContent>
           <SectionItemList>
             <SectionItem
-              title="移除末尾句号"
-              tooltip="粘贴前自动移除识别结果末尾的句号"
+              title={t("移除末尾句号")}
+              tooltip={t("粘贴前自动移除识别结果末尾的句号")}
               action={
                 <Toggle
                   checked={app.remove_trailing_period !== false}
@@ -172,10 +191,10 @@ export function AppSettingsPage() {
             />
             {isMac && (
               <SectionItem
-                title="多版本转写选择"
-                tooltip={
-                  "识别完成后弹出选择面板：原文 + 每个处理模板的结果\n使用对应快捷键或点击卡片粘贴，Esc 取消\n关闭时保持原有的自动粘贴流程（需 macOS）"
-                }
+                title={t("多版本转写选择")}
+                tooltip={t(
+                  "识别完成后弹出选择面板：原文 + 每个处理模板的结果\n使用对应快捷键或点击卡片粘贴，Esc 取消\n关闭时保持原有的自动粘贴流程（需 macOS）",
+                )}
                 action={
                   <Toggle
                     checked={app.multi_version_picker === true}
@@ -185,8 +204,8 @@ export function AppSettingsPage() {
               />
             )}
             <SectionItem
-              title="保留剪贴板"
-              tooltip="粘贴后保留识别文字在剪贴板；关闭则恢复原剪贴板内容"
+              title={t("保留剪贴板")}
+              tooltip={t("粘贴后保留识别文字在剪贴板；关闭则恢复原剪贴板内容")}
               action={
                 <Toggle
                   checked={app.keep_clipboard !== false}
@@ -195,8 +214,8 @@ export function AppSettingsPage() {
               }
             />
             <SectionItem
-              title="保留录音"
-              tooltip="开启后保留最近 1 个月录音；关闭时仅保留失败录音用于重试"
+              title={t("保留录音")}
+              tooltip={t("开启后保留最近 1 个月录音；关闭时仅保留失败录音用于重试")}
               last
               action={
                 <Toggle

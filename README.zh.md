@@ -1,14 +1,14 @@
 <div align="center">
 
-![VoicePaste Demo](docs/screenshots/banner.png)
+![SayTypeTypeType Demo](docs/screenshots/banner.png)
 
-# VoicePaste
+# SayTypeTypeType
 
 macOS & Windows 语音输入工具 — 通过快捷键触发语音输入并自动粘贴。
 
-[![Downloads](https://img.shields.io/github/downloads/that-yolanda/voicepaste/total?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/releases/latest)
-[![Version](https://img.shields.io/github/v/release/that-yolanda/voicepaste?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/releases/latest)
-[![License](https://img.shields.io/github/license/that-yolanda/voicepaste?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/blob/master/LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/no5ix/saytypetypetype/total?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/releases/latest)
+[![Version](https://img.shields.io/github/v/release/no5ix/saytypetypetype?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/releases/latest)
+[![License](https://img.shields.io/github/license/no5ix/saytypetypetype?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/blob/master/LICENSE)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/thatyolanda)
 
 **[中文](README.zh.md)** | **[English](README.md)**
@@ -17,7 +17,7 @@ macOS & Windows 语音输入工具 — 通过快捷键触发语音输入并自�
 
 ## 效果演示
 
-![VoicePaste Demo](docs/screenshots/demo.gif)
+![SayTypeTypeType Demo](docs/screenshots/demo.gif)
 
 ## 功能特性
 
@@ -38,13 +38,13 @@ macOS & Windows 语音输入工具 — 通过快捷键触发语音输入并自�
 
 ### 下载地址
 
-前往 [GitHub Releases](https://github.com/that-yolanda/voicepaste/releases/latest) 下载对应平台的最新版本。
+前往 [GitHub Releases](https://github.com/no5ix/saytypetypetype/releases/latest) 下载对应平台的最新版本。
 
 | 平台                  | 安装包文件名                          |
 | --------------------- | ------------------------------------- |
-| macOS（Apple Silicon） | `VoicePaste_{version}_aarch64.dmg`           |
-| macOS（Intel）         | `VoicePaste_{version}_x64.dmg`               |
-| Windows（x64）         | `VoicePaste_{version}_x64-setup.exe` / `.msi` |
+| macOS（Apple Silicon） | `SayTypeTypeType_{version}_aarch64.dmg`           |
+| macOS（Intel）         | `SayTypeTypeType_{version}_x64.dmg`               |
+| Windows（x64）         | `SayTypeTypeType_{version}_x64-setup.exe` / `.msi` |
 
 ### 配置说明
 
@@ -69,7 +69,7 @@ macOS & Windows 语音输入工具 — 通过快捷键触发语音输入并自�
 **说明**
 
 - ✅️ 为模型原生支持，☑️ 为通过程序组合实现的能力
-- macOS 打包版空闲状态约 120 MB，按活动监视器中 VoicePaste 相关进程组的“内存”列统计；语音识别时按需加载模型。
+- macOS 打包版空闲状态约 120 MB，按活动监视器中 SayTypeTypeType 相关进程组的“内存”列统计；语音识别时按需加载模型。
 - 不支持原生流式输出的本地模型，通过内置 VAD（语音活动检测）进行音频分段，实现模拟流式输出；可选择性接入标点还原（Punctuation）模型。
 - 内存占用数据基于 Mac mini（Apple Silicon）本地实测，结果可能受系统负载、macOS 内存压缩、是否重启应用、推理后端和缓存状态影响。完整数据见 [性能测试报告](docs/tests/performance-report.md)。
 
@@ -90,12 +90,12 @@ macOS & Windows 语音输入工具 — 通过快捷键触发语音输入并自�
 
 ### macOS 上无法使用？
 
-VoicePaste 需要 **麦克风权限** 和 **辅助功能权限** 才能正常工作。
+SayTypeTypeType 需要 **麦克风权限** 和 **辅助功能权限** 才能正常工作。
 
 **麦克风权限**
 
 1. 配置页面 → 系统权限 → 点击「请求权限」
-2. 系统设置 → 隐私与安全 → 麦克风，确保 VoicePaste 已被授权
+2. 系统设置 → 隐私与安全 → 麦克风，确保 SayTypeTypeType 已被授权
 3. 若之前拒绝过，可通过终端重置权限后重新授权：
 
 ```bash
@@ -104,7 +104,7 @@ tccutil reset Microphone com.yolanda.voicepaste
 
 **辅助功能权限**
 
-1. 系统设置 → 隐私与安全 → 辅助功能，确保 VoicePaste 已被授权
+1. 系统设置 → 隐私与安全 → 辅助功能，确保 SayTypeTypeType 已被授权
 2. 若删除后重新安装，需重新添加
 
 ## 文档

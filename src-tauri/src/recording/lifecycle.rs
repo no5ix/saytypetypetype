@@ -115,6 +115,8 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
     app_inner.pending_audio.lock().await.clear();
     *app_inner.asr_session.lock().await = None;
     *app_inner.accumulated_text.lock().await = String::new();
+    *app_inner.capture_started_at.lock().unwrap() = None;
+    *app_inner.session_recording_ms.lock().unwrap() = 0;
 
     let (connect_tx, connect_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     *app_inner.connect_rx.lock().await = Some(connect_rx);
@@ -164,26 +166,29 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
         session::connect_and_attach(connect_handle, config, hotwords, my_epoch, connect_tx).await;
     });
 
-    // 6. Wait for the start cue to finish, then lower the output volume and
-    //    only afterwards start the microphone: music playing at dictation time
-    //    must not be streamed in while the output is still at the user's
-    //    volume, so the dim ramp has to be *complete* before any capture
-    //    happens. `dim_session` only schedules its glide on a detached thread,
-    //    so the follow-up `wait_for_ramp` is what actually proves completion.
-    //    Both steps are bounded so a wedged volume controller can never stall
-    //    the session; on a failed or late dim, capture still starts because
-    //    losing the recording is worse than louder background.
-    if let Some(cue) = start_cue {
-        cue.wait(START_CUE_VOLUME_WAIT).await;
-    }
+    // 6. The start cue and the volume dim begin concurrently: the sound must
+    //    not play at full volume for its whole duration before the ramp even
+    //    starts. Capture opens only after BOTH have completed — the cue tells
+    //    the user they may speak, and the dim keeps the microphone from
+    //    recording whatever the speakers are playing at the user's level.
+    //    `lower_output_volume_for` only schedules its glide on a detached
+    //    thread, so `wait_for_ramp` is what proves the dim actually finished.
+    //    Each wait is bounded; if either wedges, capture still starts because
+    //    losing the recording is worse than a late dim.
+    let cue_wait = async move {
+        if let Some(cue) = start_cue {
+            cue.wait(START_CUE_VOLUME_WAIT).await;
+        }
+    };
     let dim_to_completion = async {
         lower_output_volume_for(&app_inner, my_epoch).await;
         app_inner.volume_guard.wait_for_ramp().await;
     };
-    if tokio::time::timeout(DIM_COMPLETION_BOUND, dim_to_completion)
-        .await
-        .is_err()
-    {
+    let (_, dim_result) = tokio::join!(
+        cue_wait,
+        tokio::time::timeout(DIM_COMPLETION_BOUND, dim_to_completion)
+    );
+    if dim_result.is_err() {
         log_rec!(warn, "Volume dim deadline elapsed; starting capture anyway");
     }
     // The user can cancel while the cue plays or the volume glides down: a

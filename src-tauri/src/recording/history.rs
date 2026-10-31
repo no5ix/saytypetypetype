@@ -149,6 +149,7 @@ pub(crate) async fn record_success_and_apply_retention(
     text: &str,
     keep_recordings: bool,
     polish: crate::stats::PolishRecord,
+    recording_ms: u64,
 ) {
     let wav_path = app_inner.current_recording_wav.lock().await.take();
     let retry_of = app_inner.current_retry_of.lock().await.take();
@@ -164,7 +165,13 @@ pub(crate) async fn record_success_and_apply_retention(
     };
     let mut stats = app_inner.stats.lock().await;
     if let Some(retry_ts) = retry_of.as_ref() {
-        if stats.replace_history_with_success(retry_ts, text, audio_path.clone(), polish.clone()) {
+        if stats.replace_history_with_success(
+            retry_ts,
+            text,
+            audio_path.clone(),
+            polish.clone(),
+            recording_ms,
+        ) {
             drop(stats);
             // Always prune: a never-retried failure recording is only deleted on a
             // later success, otherwise it is reclaimed by the 31-day retention sweep,
@@ -173,7 +180,7 @@ pub(crate) async fn record_success_and_apply_retention(
             return;
         }
     }
-    stats.record_session_with_audio(text, audio_path, retry_of, polish);
+    stats.record_session_with_audio(text, audio_path, retry_of, polish, recording_ms);
     drop(stats);
 
     prune_old_recordings(app);

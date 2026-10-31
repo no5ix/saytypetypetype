@@ -429,7 +429,7 @@ fn unsupported_repository_error(siblings: &[HfSibling], missing: &[&str]) -> Str
         })
         .collect();
     let mut message = format!(
-        "无法导入：该仓库缺少 sherpa-ONNX 需要的 {} 文件。VoicePaste 只能直接加载 \
+        "无法导入：该仓库缺少 sherpa-ONNX 需要的 {} 文件。SayTypeTypeType 只能直接加载 \
          sherpa-ONNX 格式的 NeMo transducer 模型（encoder/decoder/joiner .onnx + tokens.txt）。",
         labels.join("、")
     );
@@ -646,7 +646,7 @@ async fn fetch_siblings(repo: &HfRepo, endpoints: &HfEndpoints) -> Result<Vec<Hf
         200 => {}
         401 | 403 => {
             return Err(format!(
-                "无法访问 {}：该仓库需要登录或授权，VoicePaste 只导入公开仓库",
+                "无法访问 {}：该仓库需要登录或授权，SayTypeTypeType 只导入公开仓库",
                 repo.id()
             ))
         }
@@ -789,7 +789,7 @@ pub(crate) fn finalize_import(
 
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("VoicePaste/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("SayTypeTypeType/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))

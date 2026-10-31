@@ -1,5 +1,6 @@
 import { AlertCircle, CircleCheck, Download, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useT } from "@/i18n";
 import {
   cancelHfModelImport,
   type HfImportResult,
@@ -10,6 +11,9 @@ import {
 import { Button } from "@/settings/components/Button";
 import { Input } from "@/settings/components/Input";
 import { Section, SectionContent, SectionHeader } from "@/settings/layout/PageLayout";
+
+/** Backend sentinel for a user-cancelled import; never shown to the user. */
+const CANCELLED = "导入已取消";
 
 type ImportState =
   | { kind: "idle" }
@@ -32,6 +36,7 @@ interface ImportProgress {
  * clear feedback — model management lives in the cards below.
  */
 export function HuggingFaceImport({ onImported }: { onImported: () => void | Promise<void> }) {
+  const t = useT();
   const [repoId, setRepoId] = useState("");
   const [state, setState] = useState<ImportState>({ kind: "idle" });
   const [progress, setProgress] = useState<ImportProgress | null>(null);
@@ -66,19 +71,19 @@ export function HuggingFaceImport({ onImported }: { onImported: () => void | Pro
       setState({
         kind: "success",
         text: result.already_imported
-          ? `${result.name} 已经导入，无需重复下载`
-          : `${result.name} 已导入，可在下方模型列表中选择`,
+          ? t("{name} 已经导入，无需重复下载", { name: result.name })
+          : t("{name} 已导入，可在下方模型列表中选择", { name: result.name }),
       });
       await onImported();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       setState(
-        text === "导入已取消" ? { kind: "idle" } : { kind: "error", text: text || "导入失败" },
+        text === CANCELLED ? { kind: "idle" } : { kind: "error", text: text || t("导入失败") },
       );
     } finally {
       setProgress(null);
     }
-  }, [busy, onImported, repoId]);
+  }, [busy, onImported, repoId, t]);
 
   const cancel = useCallback(async () => {
     if (state.kind !== "importing") return;
@@ -93,16 +98,16 @@ export function HuggingFaceImport({ onImported }: { onImported: () => void | Pro
   return (
     <Section>
       <SectionHeader
-        title="从 Hugging Face 导入"
-        subtitle="输入公开仓库 ID，下载并注册为本地模型"
+        title={t("从 Hugging Face 导入")}
+        subtitle={t("输入公开仓库 ID，下载并注册为本地模型")}
       />
       <SectionContent>
         <div className="flex items-center gap-2">
           <Input
             value={repoId}
             onChange={setRepoId}
-            placeholder="owner/model，例如 nvidia/parakeet-tdt-0.6b-v2"
-            aria-label="Hugging Face 仓库 ID"
+            placeholder={t("owner/model，例如 nvidia/parakeet-tdt-0.6b-v2")}
+            aria-label={t("Hugging Face 仓库 ID")}
             disabled={busy}
             className="flex-1"
             onKeyDown={(event) => {
@@ -115,7 +120,7 @@ export function HuggingFaceImport({ onImported }: { onImported: () => void | Pro
           {state.kind === "importing" ? (
             <Button variant="ghost" onClick={() => void cancel()}>
               <X size={16} />
-              停止
+              {t("停止")}
             </Button>
           ) : (
             <Button
@@ -124,14 +129,15 @@ export function HuggingFaceImport({ onImported }: { onImported: () => void | Pro
               disabled={busy || repoId.trim().length === 0}
             >
               <Download size={16} />
-              {state.kind === "cancelling" ? "正在停止…" : "下载并导入"}
+              {state.kind === "cancelling" ? t("正在停止…") : t("下载并导入")}
             </Button>
           )}
         </div>
 
         <p className="text-xs text-text-muted leading-relaxed">
-          仅支持 sherpa-ONNX 格式的公开仓库（encoder / decoder / joiner .onnx 与 tokens.txt）。NeMo
-          检查点、MLX 或 Transformers 权重需要先转换为 ONNX。
+          {t(
+            "仅支持 sherpa-ONNX 格式的公开仓库（encoder / decoder / joiner .onnx 与 tokens.txt）。NeMo 检查点、MLX 或 Transformers 权重需要先转换为 ONNX。",
+          )}
         </p>
 
         {busy && (
@@ -144,8 +150,11 @@ export function HuggingFaceImport({ onImported }: { onImported: () => void | Pro
             </div>
             <p className="truncate text-[11px] text-text-muted" aria-live="polite">
               {progress?.detail
-                ? `${progress.detail}（${progress.percent}%）`
-                : `正在下载并准备模型…（${progress?.percent ?? 0}%）`}
+                ? t("{detail}（{percent}%）", {
+                    detail: progress.detail,
+                    percent: progress.percent,
+                  })
+                : t("正在下载并准备模型…（{percent}%）", { percent: progress?.percent ?? 0 })}
             </p>
           </div>
         )}

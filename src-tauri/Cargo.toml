@@ -1,10 +1,10 @@
 [package]
 name = "voicepaste"
 version = "2.1.5"
-description = "Voice-to-text input tool — press a hotkey, speak, auto-paste."
+description = "SayTypeTypeType — voice-to-text input: press a hotkey, speak, auto-paste."
 authors = ["that-yolanda"]
 license = "MIT"
-repository = "https://github.com/that-yolanda/voicepaste"
+repository = "https://github.com/no5ix/saytypetypetype"
 edition = "2021"
 
 [lib]

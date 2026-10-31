@@ -1,6 +1,12 @@
 import { Check, Info } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useState } from "react";
-import { getOverlayLayoutMetrics, type OverlayLayoutMetrics } from "./bridge";
+import { normalizeLanguage, translate, type UiLanguage } from "@/i18n";
+import {
+  getOverlayLayoutMetrics,
+  getUiLanguage,
+  type OverlayLayoutMetrics,
+  onLanguageChanged,
+} from "./bridge";
 import type { OverlayState } from "./types";
 import { useOverlayLayout } from "./useOverlayLayout";
 import { useOverlayState } from "./useOverlayState";
@@ -33,17 +39,31 @@ const FALLBACK_METRICS: OverlayLayoutMetrics = {
   wave_settle_seconds: 0.18,
 };
 
+/**
+ * Language of the recording panel.
+ *
+ * The backend resolves the preference (system / zh-CN / en) and owns every
+ * string it sends; these are the few placeholders the renderer derives itself,
+ * kept aligned with `overlay::shared::visible_hint`. The value is module level
+ * because the panel updates it from an event rather than from props.
+ */
+let currentLanguage: UiLanguage = "zh-CN";
+
+function t(zh: string): string {
+  return translate(currentLanguage, zh);
+}
+
 // Visible hint text — aligned 1:1 with src-tauri/src/overlay/shared.rs::visible_hint.
 function visibleHintText(state: OverlayState): string {
   if (state.hintVariant === "success") return state.hintText;
-  if (state.appState === "connecting") return "准备中";
+  if (state.appState === "connecting") return t("准备中");
   if (state.appState === "finishing") {
     if (state.hintVariant === "retry") {
-      if (!state.finalText && !state.partialText) return "重试中";
+      if (!state.finalText && !state.partialText) return t("重试中");
       return "";
     }
-    if (state.hintVariant === "progress") return "润色中";
-    if (!state.hintText) return "识别中";
+    if (state.hintVariant === "progress") return t("润色中");
+    if (!state.hintText) return t("识别中");
   }
   return state.hintText;
 }
@@ -56,7 +76,23 @@ export function OverlayApp() {
   }, [state.shortcuts]);
   const displayedShortcuts = state.shortcuts.length > 0 ? state.shortcuts : lastShortcuts;
 
+  const [, forceLanguage] = useState(0);
   const [metrics, setMetrics] = useState<OverlayLayoutMetrics>(FALLBACK_METRICS);
+
+  // Language arrives from the backend (it owns the system-locale detection) and
+  // is re-read whenever the resolved value changes.
+  useEffect(() => {
+    getUiLanguage()
+      .then((language) => {
+        currentLanguage = normalizeLanguage(language);
+        forceLanguage((n) => n + 1);
+      })
+      .catch(() => {});
+    return onLanguageChanged((language) => {
+      currentLanguage = normalizeLanguage(language);
+      forceLanguage((n) => n + 1);
+    });
+  }, []);
   const refetch = useCallback(() => {
     getOverlayLayoutMetrics()
       .then(setMetrics)
@@ -131,7 +167,7 @@ export function OverlayApp() {
           >
             {showIcon &&
               (success ? (
-                <Check className="h-4 w-4 shrink-0" aria-label="输出成功" />
+                <Check className="h-4 w-4 shrink-0" aria-label={t("输出成功")} />
               ) : (
                 <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
               ))}

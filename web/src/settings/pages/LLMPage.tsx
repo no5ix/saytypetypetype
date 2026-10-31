@@ -1,5 +1,6 @@
 import { Trash } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "@/i18n";
 import { loadBuiltinPrompts, loadPrompts, savePrompts } from "@/settings/bridge";
 import { Button } from "@/settings/components/Button";
 import { Input } from "@/settings/components/Input";
@@ -78,6 +79,7 @@ function createPromptId(): string {
 }
 
 export function LLMPage() {
+  const t = useT();
   const { settings, scheduleSave } = useSettings();
   const cfg = settings?.parsedConfig || ({} as Record<string, unknown>);
   const llm = (cfg.llm || {}) as Record<string, unknown>;
@@ -159,15 +161,17 @@ export function LLMPage() {
   return (
     <PageLayout>
       <PageHeader
-        title="文本润色"
-        description="用于语音识别后的文本润色与文本结构化，触发请前往「快捷键」页面配置对应提示词的快捷键"
+        title={t("文本润色")}
+        description={t(
+          "用于语音识别后的文本润色与文本结构化，触发请前往「快捷键」页面配置对应提示词的快捷键",
+        )}
       />
       {/* API Config */}
       <Section>
-        <SectionHeader title="API 配置" />
+        <SectionHeader title={t("API 配置")} />
         <SectionContent>
           <SectionItemList>
-            <SectionItem title="模型">
+            <SectionItem title={t("模型")}>
               <div className="grid grid-cols-4 gap-2">
                 {LLM_PROVIDERS.map((p) => (
                   <Button
@@ -175,7 +179,7 @@ export function LLMPage() {
                     onClick={() => switchProvider(p.key)}
                     variant={providerKey === p.key ? "accent" : "ghost"}
                   >
-                    {p.label}
+                    {t(p.label)}
                   </Button>
                 ))}
               </div>
@@ -207,7 +211,7 @@ export function LLMPage() {
               }
             />
             <SectionItem
-              title="模型ID"
+              title={t("模型ID")}
               action={
                 <Input
                   className="w-full"
@@ -225,7 +229,7 @@ export function LLMPage() {
       {/* Prompts */}
       <Section>
         <SectionHeader
-          title="文本润色模板"
+          title={t("文本润色模板")}
           action={
             <div className="flex items-center gap-2">
               <Button
@@ -235,7 +239,7 @@ export function LLMPage() {
                     ...prompts,
                     {
                       id: createPromptId(),
-                      title: "新建润色模板",
+                      title: t("新建润色模板"),
                       hotkey: "",
                       hotkey_mode: "toggle",
                       prompt: "",
@@ -245,10 +249,10 @@ export function LLMPage() {
                   await savePromptsNow(updated);
                 }}
               >
-                + 添加模板
+                {t("+ 添加模板")}
               </Button>
               <Button variant="default" onClick={() => setBuiltinOpen(true)}>
-                常用润色提示词
+                {t("常用润色提示词")}
               </Button>
             </div>
           }
@@ -259,7 +263,7 @@ export function LLMPage() {
             {prompts.map((item, index) => (
               <SectionItem
                 key={item.id}
-                title="模板名称"
+                title={t("模板名称")}
                 last={index === prompts.length - 1}
                 action={
                   <div className="flex gap-2">
@@ -272,7 +276,7 @@ export function LLMPage() {
                         scheduleSavePrompts(updated);
                       }}
                       className="w-full"
-                      placeholder="模板名称"
+                      placeholder={t("模板名称")}
                       commitOnBlur
                     />
                     <Button
@@ -297,7 +301,7 @@ export function LLMPage() {
                     scheduleSavePrompts(updated);
                   }}
                   textareaClassName="h-32 resize-none"
-                  placeholder="输入系统提示词…"
+                  placeholder={t("输入系统提示词…")}
                   commitOnBlur
                 />
               </SectionItem>
@@ -328,6 +332,7 @@ interface BuiltinPromptsModalProps {
  * re-merged from the built-in library on a future app update.
  */
 function BuiltinPromptsModal({ open, onClose, onAdd }: BuiltinPromptsModalProps) {
+  const t = useT();
   const [items, setItems] = useState<PromptItem[]>([]);
 
   useEffect(() => {
@@ -338,17 +343,17 @@ function BuiltinPromptsModal({ open, onClose, onAdd }: BuiltinPromptsModalProps)
   }, [open]);
 
   return (
-    <Modal open={open} onClose={onClose} title="常用润色提示词">
+    <Modal open={open} onClose={onClose} title={t("常用润色提示词")}>
       <div className="space-y-3 overscroll-y-auto">
         {items.length === 0 ? (
-          <p className="text-text-muted">暂无内置润色模板。</p>
+          <p className="text-text-muted">{t("暂无内置润色模板。")}</p>
         ) : (
           items.map((item) => {
-            const preview = item.prompt || "（无内容）";
+            const preview = item.prompt || t("（无内容）");
             return (
               <Section key={item.id}>
                 <SectionHeader
-                  title={item.title || "未命名模板"}
+                  title={t(item.title || t("未命名模板"))}
                   action={
                     <Button
                       variant="accent"
@@ -357,7 +362,7 @@ function BuiltinPromptsModal({ open, onClose, onAdd }: BuiltinPromptsModalProps)
                         onClose();
                       }}
                     >
-                      添加
+                      {t("添加")}
                     </Button>
                   }
                 />

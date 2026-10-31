@@ -8,6 +8,7 @@ mod config;
 mod display;
 mod hotkey;
 mod hotword;
+mod i18n;
 mod llm;
 mod migration;
 mod model;
@@ -26,6 +27,11 @@ mod updater;
 
 use app_state::*;
 use tauri::{image::Image, tray::TrayIconBuilder, App, Listener, Manager, RunEvent};
+
+/// User-facing product name. Internal identifiers (bundle id, data directory,
+/// crate/binary names, update signing identity) deliberately keep the historical
+/// `voicepaste` spelling so upgrades continue to find the existing installation.
+pub const APP_NAME: &str = "SayTypeTypeType";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -121,6 +127,12 @@ pub fn run() {
                 .map(|c| c.app.theme.as_str())
                 .unwrap_or("system")
                 .to_string();
+            i18n::set_language(i18n::resolve(
+                startup_config
+                    .as_ref()
+                    .map(|c| c.app.language.as_str())
+                    .unwrap_or("system"),
+            ));
 
             let app_state =
                 create_app_state(config_manager, hotword_manager, log_path, stats_service);
@@ -154,6 +166,46 @@ pub fn run() {
                 }
             });
 
+            // Follow macOS language changes while the preference is "system".
+            // The settings/webview side cannot observe this without a native
+            // hook, so the backend polls the (cheap, cached) defaults domain and
+            // announces a resolved change to open windows.
+            let language_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    let Some(inner) = language_handle
+                        .try_state::<std::sync::Arc<AppInner>>()
+                        .map(|state| std::sync::Arc::clone(&state))
+                    else {
+                        continue;
+                    };
+                    let Ok(config) = inner.config_manager.load_config() else {
+                        continue;
+                    };
+                    if config.app.language != "system" {
+                        continue;
+                    }
+                    let next = i18n::detect_system_language();
+                    if next == i18n::language() {
+                        continue;
+                    }
+                    i18n::set_language(next);
+                    refresh_tray_labels(&language_handle);
+                    let _ = tauri::Emitter::emit(
+                        &language_handle,
+                        "settings:event",
+                        serde_json::json!({
+                            "type": "language-changed",
+                            "payload": {
+                                "preference": "system",
+                                "resolved": next.code(),
+                            }
+                        }),
+                    );
+                }
+            });
+
             // Setup system tray
             setup_tray(app)?;
 
@@ -173,6 +225,7 @@ pub fn run() {
             commands::select_picker_option,
             commands::cancel_picker,
             commands::get_audio_config_defaults,
+            commands::get_ui_language,
             commands::get_settings_data,
             commands::save_config_object,
             commands::load_prompts,
@@ -262,20 +315,44 @@ pub fn run() {
         });
 }
 
-/// Setup the system tray icon with menu items.
-fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+/// Build the tray menu in the active language.
+fn build_tray_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::menu::Menu<R>, tauri::Error> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
-    let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(
+        app,
+        "settings",
+        i18n::tr("设置", "Settings"),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&settings_item, &separator, &quit_item])?;
+    let quit_item = MenuItem::with_id(app, "quit", i18n::tr("退出", "Quit"), true, None::<&str>)?;
+    Menu::with_items(app, &[&settings_item, &separator, &quit_item])
+}
+
+/// Re-apply the tray labels after the language preference changes. The tray
+/// icon itself and its click handler stay untouched.
+pub(crate) fn refresh_tray_labels(app: &tauri::AppHandle) {
+    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+        let _ = tray.set_tooltip(Some(APP_NAME));
+        if let Ok(menu) = build_tray_menu(app) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+/// Setup the system tray icon with menu items.
+fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    let menu = build_tray_menu(app.handle())?;
     let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
 
     let tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
         .icon_as_template(true)
-        .tooltip("VoicePaste")
+        .tooltip(APP_NAME)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {

@@ -9,8 +9,16 @@ pub const HOLD_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyAction {
-    StartRecording { is_main: bool, mode: HotkeyMode },
-    StopRecording { prompt_id: Option<String> },
+    StartRecording {
+        is_main: bool,
+        mode: HotkeyMode,
+        /// Template chosen at start time, when a prompt shortcut began the
+        /// recording. `None` for the main/voice wake keys.
+        prompt_id: Option<String>,
+    },
+    StopRecording {
+        prompt_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -70,10 +78,11 @@ impl MatcherState {
         if self.blocked || !exact(&self.held, &binding) {
             return vec![];
         }
-        self.active = Some(binding);
+        self.active = Some(binding.clone());
         vec![HotkeyAction::StartRecording {
             is_main: false,
             mode: HotkeyMode::Hold,
+            prompt_id: binding.prompt_id,
         }]
     }
 
@@ -121,9 +130,18 @@ impl MatcherState {
                 // binding; a foreign key permanently invalidates this cycle.
                 let eligible = |b: &&HotkeyBinding| {
                     if is_recording {
-                        b.mode == HotkeyMode::Toggle && !b.wake_only
+                        // Only the curated main/voice stop keys finish a
+                        // recording. A template shortcut is a start-only
+                        // binding, so pressing one mid-recording (or ordinary
+                        // typing) can never stop the microphone by accident.
+                        b.mode == HotkeyMode::Toggle && b.prompt_id.is_none()
                     } else {
-                        b.wake_only || b.mode == HotkeyMode::Hold
+                        // Template toggles start their own recording, but a
+                        // bare-modifier chord never does: Shift/Ctrl taps are
+                        // constant during typing and would fire by accident.
+                        b.wake_only
+                            || b.mode == HotkeyMode::Hold
+                            || (b.prompt_id.is_some() && !bare_modifier_toggle(b))
                     }
                 };
                 if !bindings
@@ -172,16 +190,38 @@ impl MatcherState {
                                     prompt_id: binding.prompt_id,
                                 });
                             } else {
-                                self.active = Some(binding);
-                                self.active_stops = bindings
+                                // Lifecycle stop keys for this session: the
+                                // voice-input toggle bindings; if the user did
+                                // not configure one, the global main key itself
+                                // falls back to stopping what it (or a template
+                                // shortcut) started.
+                                let mut stops: Vec<HotkeyBinding> = bindings
                                     .iter()
-                                    .filter(|b| !b.wake_only && b.mode == HotkeyMode::Toggle)
+                                    .filter(|b| {
+                                        !b.wake_only
+                                            && b.mode == HotkeyMode::Toggle
+                                            && b.prompt_id.is_none()
+                                    })
                                     .cloned()
                                     .collect();
+                                if stops.is_empty() {
+                                    stops = bindings
+                                        .iter()
+                                        .filter(|b| {
+                                            b.wake_only
+                                                && b.mode == HotkeyMode::Toggle
+                                                && b.prompt_id.is_none()
+                                        })
+                                        .cloned()
+                                        .collect();
+                                }
+                                self.active_stops = stops;
                                 actions.push(HotkeyAction::StartRecording {
-                                    is_main: true,
+                                    is_main: binding.prompt_id.is_none(),
                                     mode: HotkeyMode::Toggle,
+                                    prompt_id: binding.prompt_id.clone(),
                                 });
+                                self.active = Some(binding);
                             }
                         }
                     }
@@ -238,9 +278,15 @@ impl MatcherState {
         bindings.iter().any(|b| {
             b.mode == HotkeyMode::Toggle
                 && (if self.active.is_some() {
-                    !b.wake_only
+                    // While recording, template shortcuts still swallow their
+                    // character (it must not leak into the focused app as they
+                    // are bound hotkeys) even though they never act on the
+                    // lifecycle; the voice stop key is likewise swallowed.
+                    b.prompt_id.is_some() || !b.wake_only
                 } else {
-                    b.wake_only
+                    // Template toggle keys start their own recording; their
+                    // characters must not also reach the focused app.
+                    b.wake_only || b.prompt_id.is_some()
                 })
                 && b.keys.contains(&key)
                 && b.keys.iter().all(|k| *k == key || held.contains(k))
@@ -254,6 +300,16 @@ impl MatcherState {
 
 fn exact(keys: &HashSet<Key>, binding: &HotkeyBinding) -> bool {
     keys.len() == binding.keys.len() && keys.iter().all(|k| binding.keys.contains(k))
+}
+
+/// A toggle binding consisting only of modifier keys (e.g. bare Shift). Such
+/// chords are constant during normal typing, so they never start a recording;
+/// the main wake key is exempt because it is the explicitly designated key.
+fn bare_modifier_toggle(binding: &HotkeyBinding) -> bool {
+    binding.mode == HotkeyMode::Toggle
+        && !binding.wake_only
+        && !binding.keys.is_empty()
+        && binding.keys.iter().all(|k| is_modifier(*k))
 }
 
 pub(super) fn is_modifier(key: Key) -> bool {
@@ -311,11 +367,20 @@ mod tests {
         HotkeyAction::StartRecording {
             is_main: mode == HotkeyMode::Toggle,
             mode,
+            prompt_id: None,
+        }
+    }
+
+    fn start_prompt(prompt: &str, mode: HotkeyMode) -> HotkeyAction {
+        HotkeyAction::StartRecording {
+            is_main: false,
+            mode,
+            prompt_id: Some(prompt.to_string()),
         }
     }
 
     #[test]
-    fn left_modifier_starts_and_shift_finishes_with_general_polish() {
+    fn left_modifier_starts_and_template_key_never_stops_the_session() {
         for main in [Key::MetaLeft, Key::ControlLeft] {
             let b = vec![
                 binding(&[main], HotkeyMode::Toggle, None, true),
@@ -329,7 +394,8 @@ mod tests {
             ];
             let mut m = MatcherState::new();
             let t = Instant::now();
-            // Shift is a stop key only; ordinary modifier chords remain usable.
+            // Shift is a template start key only; ordinary modifier chords
+            // remain usable and never terminate a running recording.
             for (ms, e) in [
                 down(Key::ShiftLeft),
                 up(Key::ShiftLeft),
@@ -359,24 +425,48 @@ mod tests {
             {
                 assert!(event(&mut m, &b, t, 20 + ms as u64, e).is_empty());
             }
+            // The template shortcut is still held to no effect while recording.
             assert!(event(&mut m, &b, t, 30, down(Key::ShiftLeft)).is_empty());
-            assert_eq!(
-                event(&mut m, &b, t, 31, up(Key::ShiftLeft)),
-                vec![HotkeyAction::StopRecording {
-                    prompt_id: Some("prompt-general".into())
-                }]
-            );
+            assert!(event(&mut m, &b, t, 31, up(Key::ShiftLeft)).is_empty());
+            assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
+            // Only the configured main stop key finishes it.
             event(&mut m, &b, t, 40, down(main));
             assert_eq!(
                 event(&mut m, &b, t, 41, up(main)),
-                vec![start(HotkeyMode::Toggle)]
+                vec![HotkeyAction::StopRecording { prompt_id: None }]
             );
             event(&mut m, &b, t, 50, down(main));
             assert_eq!(
                 event(&mut m, &b, t, 51, up(main)),
-                vec![HotkeyAction::StopRecording { prompt_id: None }]
+                vec![start(HotkeyMode::Toggle)]
             );
         }
+    }
+
+    #[test]
+    fn template_toggle_starts_its_own_recording_when_idle() {
+        let b = vec![
+            binding(&[Key::F13], HotkeyMode::Toggle, None, true),
+            binding(
+                &[Key::F14],
+                HotkeyMode::Toggle,
+                Some("prompt-polish"),
+                false,
+            ),
+        ];
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+        event(&mut m, &b, t, 0, down(Key::F14));
+        assert_eq!(
+            event(&mut m, &b, t, 1, up(Key::F14)),
+            vec![start_prompt("prompt-polish", HotkeyMode::Toggle)]
+        );
+        // The following main-key cycle stops it as usual.
+        event(&mut m, &b, t, 2, down(Key::F13));
+        assert_eq!(
+            event(&mut m, &b, t, 3, up(Key::F13)),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
     }
 
     #[test]
@@ -386,7 +476,10 @@ mod tests {
         let t = Instant::now();
         assert!(event(&mut m, &b, t, 0, down(Key::ControlLeft)).is_empty());
         assert!(m.tick(t + Duration::from_millis(499)).is_empty());
-        assert_eq!(m.tick(t + HOLD_DELAY), vec![start(HotkeyMode::Hold)]);
+        assert_eq!(
+            m.tick(t + HOLD_DELAY),
+            vec![start_prompt("polish", HotkeyMode::Hold)]
+        );
         assert!(m.tick(t + HOLD_DELAY).is_empty());
         assert_eq!(
             event(&mut m, &b, t, 501, up(Key::ControlLeft)),
@@ -408,7 +501,7 @@ mod tests {
         event(&mut m, &b, t, 1200, down(Key::ControlLeft));
         assert_eq!(
             m.tick(t + Duration::from_millis(1700)),
-            vec![start(HotkeyMode::Hold)]
+            vec![start_prompt("polish", HotkeyMode::Hold)]
         );
     }
     #[test]
@@ -425,7 +518,7 @@ mod tests {
                 .is_empty());
             assert_eq!(
                 m.tick(t + Duration::from_millis(prefix_ms + 500)),
-                vec![start(HotkeyMode::Hold)]
+                vec![start_prompt("polish", HotkeyMode::Hold)]
             );
         }
     }
@@ -447,7 +540,7 @@ mod tests {
         assert_eq!(
             event(&mut m, &b, t, 500, up(Key::ControlLeft)),
             vec![
-                start(HotkeyMode::Hold),
+                start_prompt("polish", HotkeyMode::Hold),
                 HotkeyAction::StopRecording {
                     prompt_id: Some("polish".into())
                 }
@@ -463,7 +556,7 @@ mod tests {
         event(&mut m, &b, t, 0, down(Key::ControlLeft));
         assert_eq!(
             event(&mut m, &b, t, 600, down(Key::C)),
-            vec![start(HotkeyMode::Hold)]
+            vec![start_prompt("polish", HotkeyMode::Hold)]
         );
         assert!(!m.should_swallow(Key::C, &b, &[]));
         assert_eq!(
@@ -523,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn longer_toggle_stop_wins_without_firing_short_stop() {
+    fn template_chord_does_not_hijack_main_stop() {
         let mut b = toggle();
         b.push(binding(
             &[Key::MetaRight, Key::ShiftLeft],
@@ -538,14 +631,15 @@ mod tests {
             event(&mut m, &b, t, 1, up(Key::MetaRight)),
             vec![start(HotkeyMode::Toggle)]
         );
-        event(&mut m, &b, t, 2, down(Key::MetaRight));
-        event(&mut m, &b, t, 3, down(Key::ShiftLeft));
-        assert!(event(&mut m, &b, t, 4, up(Key::ShiftLeft)).is_empty());
+        // Starting the second cycle with the template chord while recording is
+        // not a stop command; the template is only a start binding.
+        event(&mut m, &b, t, 2, down(Key::ShiftLeft));
+        assert!(event(&mut m, &b, t, 3, up(Key::ShiftLeft)).is_empty());
+        assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
+        event(&mut m, &b, t, 4, down(Key::MetaRight));
         assert_eq!(
             event(&mut m, &b, t, 5, up(Key::MetaRight)),
-            vec![HotkeyAction::StopRecording {
-                prompt_id: Some("long".into())
-            }]
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
         );
     }
     #[test]
@@ -604,7 +698,7 @@ mod tests {
         assert!(!m.recover_released(&[]));
         assert_eq!(
             m.tick(t + Duration::from_secs(3)),
-            vec![start(HotkeyMode::Hold)]
+            vec![start_prompt("polish", HotkeyMode::Hold)]
         );
         assert!(m.recover_released(&[Key::ControlLeft]));
         m.reset_recording();

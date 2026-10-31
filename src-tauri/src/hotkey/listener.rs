@@ -179,7 +179,11 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
         let mut finishing: Option<tauri::async_runtime::JoinHandle<()>> = None;
         while let Some((generation, action)) = actions_rx.recv().await {
             match action {
-                HotkeyAction::StartRecording { is_main, mode } => {
+                HotkeyAction::StartRecording {
+                    is_main,
+                    mode,
+                    prompt_id,
+                } => {
                     if action_config.read().unwrap().matcher.generation() != generation {
                         continue;
                     }
@@ -190,8 +194,13 @@ fn run_listener_loop(tap: &Tap, config: &HotkeyConfig, app_handle: &tauri::AppHa
                         action_config.write().unwrap().matcher.reset_recording();
                         continue;
                     }
-                    crate::recording::on_recording_start(action_handle.clone(), is_main, mode)
-                        .await;
+                    crate::recording::on_recording_start(
+                        action_handle.clone(),
+                        is_main,
+                        mode,
+                        prompt_id,
+                    )
+                    .await;
                     // Internal resets also occur on retry and failed startup;
                     // only tear down an actual microphone recording here.
                     if action_config.read().unwrap().matcher.generation() != generation

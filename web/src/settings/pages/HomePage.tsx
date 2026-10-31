@@ -1,5 +1,6 @@
 import { Copy, Loader2, Pause, Play, RefreshCw, RotateCw, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useI18n } from "@/i18n";
 import {
   deleteHistory,
   getHistory,
@@ -13,7 +14,7 @@ import {
   stopRecordingPreview,
 } from "@/settings/bridge";
 import { Button } from "@/settings/components/Button";
-import { Heatmap } from "@/settings/components/Heatmap";
+import { dayKey, formatRecording, Heatmap } from "@/settings/components/Heatmap";
 import { PromptMenu } from "@/settings/components/PromptMenu";
 import { Toast, useToast } from "@/settings/components/Toast";
 import {
@@ -26,19 +27,11 @@ import {
 } from "@/settings/layout/PageLayout";
 import { formatCompact } from "@/settings/lib/format";
 import type { PromptItem } from "@/settings/types/prompts";
+import type { DailyUsage, Stats } from "@/settings/types/stats";
 
 /* ---------- pure helpers ---------- */
 
-function formatDurationParts(s: number): { value: string; unit: string } {
-  const r = Math.round(s);
-  if (r < 60) return { value: String(r), unit: "秒" };
-  const m = Math.floor(r / 60);
-  if (m < 60) return { value: String(m), unit: "分钟" };
-  const h = r / 3600;
-  return { value: h < 10 ? h.toFixed(1) : String(Math.round(h)), unit: "小时" };
-}
-
-function greeting(): string {
+function greetingKey(): string {
   const h = new Date().getHours();
   if (h < 6) return "夜深了";
   if (h < 11) return "早上好";
@@ -47,21 +40,18 @@ function greeting(): string {
   return "晚上好";
 }
 
-function dateLabel(key: string, today: string, yesterday: string): string {
-  if (key === today) return "今天";
-  if (key === yesterday) return "昨天";
-  const d = new Date(key);
-  const w = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${w[d.getDay()]}`;
+const WEEKDAYS_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Localised label for a `YYYY-MM-DD` history date. */
+function dateLabel(key: string, today: string, yesterday: string, en: boolean): string {
+  if (key === today) return en ? "Today" : "今天";
+  if (key === yesterday) return en ? "Yesterday" : "昨天";
+  const d = new Date(`${key}T00:00:00`);
+  return en
+    ? `${WEEKDAYS_EN[d.getDay()]}, ${d.getMonth() + 1}/${d.getDate()}`
+    : `${d.getMonth() + 1}月${d.getDate()}日 ${["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()]}`;
 }
 
-/* ---------- types ---------- */
-
-interface Stats {
-  dailyCounts?: Record<string, number>;
-  totalSessions?: number;
-  totalCharacters?: number;
-}
 interface HistoryItem {
   ts: string;
   text: string;
@@ -76,6 +66,7 @@ interface HistoryItem {
 /* ---------- component ---------- */
 
 export function HomePage() {
+  const { language, t } = useI18n();
   const [stats, setStats] = useState<Stats | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [days, setDays] = useState(1);
@@ -146,78 +137,80 @@ export function HomePage() {
             prev.map((entry) => (entry.ts === ts ? { ...entry, text, promptId } : entry)),
           );
         }
-        showToast("润色完成");
+        showToast(t("润色完成"));
       } catch (error) {
         setRepolishErrors((prev) => ({ ...prev, [ts]: String(error) }));
-        showToast("润色失败", "error");
+        showToast(t("润色失败"), "error");
       } finally {
         setRepolishingTs(null);
       }
     },
-    [showToast],
+    [showToast, t],
   );
 
-  /* —— achievements —— */
-  const charTotal = stats?.totalCharacters || 0;
-  const saved = formatDurationParts(Math.round(charTotal * 0.67));
-  const cards = [
-    {
-      v: formatCompact(Object.keys(stats?.dailyCounts || {}).length),
-      u: "天",
-      label: "已经使用",
-    },
-    { v: formatCompact(stats?.totalSessions || 0), u: "次", label: "发起会话" },
-    { v: formatCompact(charTotal), u: "字", label: "总输入字数" },
-    { v: saved.value, u: saved.unit, label: "节省时间" },
-  ];
-
-  /* —— history —— */
+  /* —— cards —— */
   const today = new Date();
-  const tKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const tKey = dayKey(today);
   const y = new Date(today);
   y.setDate(y.getDate() - 1);
-  const yKey = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+  const yKey = dayKey(y);
+
+  const todayUsage: DailyUsage = stats?.dailyStats?.[tKey] ?? {
+    sessions: 0,
+    words: 0,
+    recordingMs: 0,
+  };
+  const charTotal = stats?.totalCharacters || 0;
+  const saved = formatDurationParts(Math.round(charTotal * 0.67));
+
+  // Today first: what the user actually did in this app today, measured from
+  // stored per-day usage. Microphone time excludes ASR/LLM/picker latency.
+  const dailyCards = [
+    { v: formatCompact(todayUsage.sessions), u: t("次"), label: t("今日会话次数") },
+    { v: formatCompact(todayUsage.words), u: t("字"), label: t("今日输入字数") },
+    {
+      v: formatRecording(todayUsage.recordingMs, t),
+      u: "",
+      label: t("今日录音时长"),
+    },
+  ];
+  const totalCards = [
+    { v: formatCompact(stats?.totalUses || 0), u: t("次"), label: t("总使用次数") },
+    { v: formatCompact(stats?.totalSessions || 0), u: t("次"), label: t("总会话次数") },
+    { v: formatCompact(charTotal), u: t("字"), label: t("总输入字数") },
+    { v: saved.value, u: t(saved.unit), label: t("总节省时间") },
+  ];
 
   /* ====== render ====== */
   return (
     <PageLayout>
-      <PageHeader title={greeting()} />
+      <PageHeader title={t(greetingKey())} />
 
-      {/* Achievements */}
-      <div className="grid grid-cols-4 gap-4">
-        {cards.map((c) => (
-          <div
-            key={c.label}
-            className="flex min-h-40 py-4 px-4 pb-5 bg-surface-card border border-border rounded-xl"
-          >
-            <div className="flex flex-1 flex-col justify-between min-w-0">
-              <div className="flex items-baseline gap-1 min-w-0">
-                <span className="text-xl font-bold leading-[1.05] text-text tracking-normal whitespace-nowrap">
-                  {c.v}
-                </span>
-                <span className="text-sm font-medium text-text whitespace-nowrap">{c.u}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-semibold text-text whitespace-nowrap leading-none">
-                  {c.label}
-                </span>
-              </div>
-            </div>
-          </div>
+      {/* Today */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {dailyCards.map((c) => (
+          <StatCard key={c.label} value={c.v} unit={c.u} label={c.label} />
+        ))}
+      </div>
+
+      {/* All-time */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {totalCards.map((c) => (
+          <StatCard key={c.label} value={c.v} unit={c.u} label={c.label} />
         ))}
       </div>
 
       {/* Heatmap */}
-      <Heatmap dailyCounts={stats?.dailyCounts || {}} />
+      <Heatmap dailyCounts={stats?.dailyCounts || {}} dailyStats={stats?.dailyStats} />
 
       {/* History */}
       <Section>
-        <SectionHeader title="输入记录" />
+        <SectionHeader title={t("输入记录")} />
         <SectionContent className="p-0!">
           <SectionItemList className="space-y-0">
             {history.length === 0 ? (
               <div className="flex justify-center items-center gap-3 p-4 min-h-10 text-xs text-text-muted">
-                暂无输入记录
+                {t("暂无输入记录")}
               </div>
             ) : (
               <>
@@ -225,7 +218,7 @@ export function HomePage() {
                   let last = "";
                   return history.map((item) => {
                     const d = new Date(item.ts);
-                    const dk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                    const dk = dayKey(d);
                     const show = dk !== last;
                     last = dk;
                     const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -237,14 +230,18 @@ export function HomePage() {
                     const menuOpen = polishMenu?.ts === item.ts;
                     const playing = playingTs === item.ts;
                     const displayText = failed
-                      ? `转写失败：${item.error || item.text || "请检查网络连接"}`
+                      ? t("转写失败：{error}", {
+                          error: item.error || item.text || t("请检查网络连接"),
+                        })
                       : item.text;
                     return (
                       <div key={item.ts} className="text-sm">
                         {show && (
                           <div className="flex items-center gap-2 p-2">
                             <div className="flex-1 h-px bg-border-subtle" />
-                            <span className="text-text-muted">{dateLabel(dk, tKey, yKey)}</span>
+                            <span className="text-text-muted">
+                              {dateLabel(dk, tKey, yKey, language === "en")}
+                            </span>
                             <div className="flex-1 h-px bg-border-subtle" />
                           </div>
                         )}
@@ -261,7 +258,7 @@ export function HomePage() {
                               </p>
                               {repolishError && (
                                 <p className="pb-1 text-xs leading-[1.4] text-warning">
-                                  润色失败：{repolishError}
+                                  {t("润色失败：{error}", { error: repolishError })}
                                 </p>
                               )}
                             </div>
@@ -277,7 +274,7 @@ export function HomePage() {
                               <Button
                                 size="icon"
                                 variant="accent"
-                                title={playing ? "暂停" : "播放"}
+                                title={playing ? t("暂停") : t("播放")}
                                 onClick={async () => {
                                   try {
                                     if (playing) {
@@ -324,9 +321,12 @@ export function HomePage() {
                                       );
                                     }
                                     await load();
-                                    showToast("重新转写完成");
+                                    showToast(t("重新转写完成"));
                                   } catch (error) {
-                                    showToast(`重新转写失败：${error}`, "error");
+                                    showToast(
+                                      t("重新转写失败：{error}", { error: String(error) }),
+                                      "error",
+                                    );
                                   } finally {
                                     setRetryingTs(null);
                                   }
@@ -344,7 +344,7 @@ export function HomePage() {
                                   <Button
                                     size="icon"
                                     variant="accent"
-                                    title="重新生成"
+                                    title={t("重新生成")}
                                     disabled={regenerating}
                                     onClick={async () => {
                                       setRegeneratingTs(item.ts);
@@ -361,9 +361,12 @@ export function HomePage() {
                                             ),
                                           );
                                         }
-                                        showToast("重新生成完成");
+                                        showToast(t("重新生成完成"));
                                       } catch (error) {
-                                        showToast(`重新生成失败：${error}`, "error");
+                                        showToast(
+                                          t("重新生成失败：{error}", { error: String(error) }),
+                                          "error",
+                                        );
                                       } finally {
                                         setRegeneratingTs(null);
                                       }
@@ -382,7 +385,7 @@ export function HomePage() {
                                 <Button
                                   size="icon"
                                   variant="accent"
-                                  title={item.promptId ? "重新润色" : "润色"}
+                                  title={item.promptId ? t("重新润色") : t("润色")}
                                   disabled={repolishing}
                                   onClick={(event) => {
                                     if (menuOpen) {
@@ -410,13 +413,13 @@ export function HomePage() {
                                 <Button
                                   size="icon"
                                   variant="accent"
-                                  title="复制"
+                                  title={t("复制")}
                                   onClick={async () => {
                                     try {
                                       await navigator.clipboard.writeText(item.text);
-                                      showToast("已复制");
+                                      showToast(t("已复制"));
                                     } catch {
-                                      showToast("复制失败", "error");
+                                      showToast(t("复制失败"), "error");
                                     }
                                   }}
                                 >
@@ -427,14 +430,14 @@ export function HomePage() {
                             <Button
                               size="icon"
                               variant="accent"
-                              title="删除"
+                              title={t("删除")}
                               onClick={async () => {
                                 try {
                                   await deleteHistory(item.ts);
                                   setHistory((p) => p.filter((h) => h.ts !== item.ts));
-                                  showToast("已删除");
+                                  showToast(t("已删除"));
                                 } catch {
-                                  showToast("删除失败", "error");
+                                  showToast(t("删除失败"), "error");
                                 }
                               }}
                             >
@@ -455,7 +458,7 @@ export function HomePage() {
                     loadHist(n);
                   }}
                 >
-                  加载更多
+                  {t("加载更多")}
                 </button>
               </>
             )}
@@ -465,4 +468,33 @@ export function HomePage() {
       <Toast toast={toast} />
     </PageLayout>
   );
+}
+
+/* ---------- card ---------- */
+
+function StatCard({ value, unit, label }: { value: string; unit: string; label: string }) {
+  return (
+    <div className="flex min-h-28 py-4 px-4 pb-5 bg-surface-card border border-border rounded-xl">
+      <div className="flex flex-1 flex-col justify-between min-w-0">
+        <div className="flex items-baseline gap-1 min-w-0">
+          <span className="text-xl font-bold leading-[1.05] text-text tracking-normal whitespace-nowrap">
+            {value}
+          </span>
+          {unit && <span className="text-sm font-medium text-text whitespace-nowrap">{unit}</span>}
+        </div>
+        <span className="text-xs font-semibold text-text whitespace-nowrap leading-none">
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function formatDurationParts(s: number): { value: string; unit: string } {
+  const r = Math.round(s);
+  if (r < 60) return { value: String(r), unit: "秒" };
+  const m = Math.floor(r / 60);
+  if (m < 60) return { value: String(m), unit: "分钟" };
+  const h = r / 3600;
+  return { value: h < 10 ? h.toFixed(1) : String(Math.round(h)), unit: "小时" };
 }

@@ -232,6 +232,9 @@ pub struct AppSettings {
     pub keep_recordings: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// UI language: "system" (default), "zh-CN" or "en".
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(default = "default_overlay_style")]
     pub overlay_style: String,
     #[serde(default)]
@@ -422,6 +425,9 @@ fn default_true() -> bool {
     true
 }
 fn default_theme() -> String {
+    "system".to_string()
+}
+fn default_language() -> String {
     "system".to_string()
 }
 fn default_overlay_style() -> String {
@@ -931,6 +937,7 @@ impl Default for AppConfig {
                 keep_clipboard: true,
                 keep_recordings: false,
                 theme: default_theme(),
+                language: default_language(),
                 overlay_style: default_overlay_style(),
                 sound: None,
                 multi_version_picker: false,

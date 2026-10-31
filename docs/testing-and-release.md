@@ -109,7 +109,7 @@ production app:
 
 | Setting | Production | Development |
 | --- | --- | --- |
-| `productName` | `VoicePaste` | `VoicePaste Dev` |
+| `productName` | `SayTypeTypeType` | `SayTypeTypeType Dev` |
 | `identifier` | `com.yolanda.voicepaste` | `com.yolanda.voicepaste.dev` |
 | updater artifacts | enabled | disabled |
 | app data | `~/Library/Application Support/com.yolanda.voicepaste` | `~/Library/Application Support/com.yolanda.voicepaste.dev` |
@@ -121,12 +121,12 @@ caches are intentionally **not** shared: each identity downloads its own models.
 `build_identity.rs` marks the `.dev` identifier as development; the updater
 commands refuse to run there, so a dev build can never install a production
 release over itself. macOS treats the two bundles as separate apps — Microphone
-and Accessibility must be granted to `VoicePaste Dev` separately. Never run
+and Accessibility must be granted to `SayTypeTypeType Dev` separately. Never run
 `tccutil reset` as part of a build, and never copy the dev bundle over
-`/Applications/VoicePaste.app`.
+`/Applications/SayTypeTypeType.app`.
 
 The unsigned build path is
-`src-tauri/target/release/bundle/macos/VoicePaste Dev.app`.
+`src-tauri/target/release/bundle/macos/SayTypeTypeType Dev.app`.
 
 ### Local ASR Models
 
@@ -191,7 +191,7 @@ The pack script sets environment variables for Tauri's bundler: `APPLE_SIGNING_I
 
 ## Update System
 
-VoicePaste uses `tauri-plugin-updater` with GitHub Releases as the update endpoint.
+SayTypeTypeType uses `tauri-plugin-updater` with GitHub Releases as the update endpoint.
 
 ### Update Channels
 
@@ -201,12 +201,12 @@ Two channels: stable and beta, controlled by `app.beta_updates` in `config.yaml`
 Stable Release (latest non-prerelease)
 ├── latest.json          → points to stable assets
 ├── latest-beta.json     → points to beta assets (in prerelease)
-├── VoicePaste_1.0.0_aarch64.dmg
-└── VoicePaste_1.0.0_aarch64.dmg.sig
+├── SayTypeTypeType_1.0.0_aarch64.dmg
+└── SayTypeTypeType_1.0.0_aarch64.dmg.sig
 
 Beta Release (--prerelease)
-├── VoicePaste_1.1.0-beta_aarch64.app.tar.gz
-└── VoicePaste_1.1.0-beta_aarch64.app.tar.gz.sig
+├── SayTypeTypeType_1.1.0-beta_aarch64.app.tar.gz
+└── SayTypeTypeType_1.1.0-beta_aarch64.app.tar.gz.sig
 ```
 
 **Why this architecture:**
@@ -221,7 +221,7 @@ Beta Release (--prerelease)
 
 ```mermaid
 sequenceDiagram
-    participant App as VoicePaste App
+    participant App as SayTypeTypeType App
     participant GH as GitHub Releases
 
     App->>App: Read app.beta_updates from config

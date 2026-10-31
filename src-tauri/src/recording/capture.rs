@@ -79,11 +79,18 @@ pub async fn start_capture(
         input_thread: Some(input_thread),
         forward_task,
     });
+    *app_inner.capture_started_at.lock().unwrap() = Some(std::time::Instant::now());
+    app_inner.stats.lock().await.record_use();
     log_audio!(info, "Native cpal microphone capture started");
     Ok(())
 }
 
 pub async fn stop_capture(app_inner: &Arc<app_state::AppInner>) {
+    // Freeze the microphone duration before joining the input thread: the
+    // stream is already closing, and the join must not inflate "recording time".
+    if let Some(started) = app_inner.capture_started_at.lock().unwrap().take() {
+        *app_inner.session_recording_ms.lock().unwrap() = started.elapsed().as_millis() as u64;
+    }
     let capture = app_inner.native_audio.lock().await.take();
     if let Some(capture) = capture {
         capture.stop().await;

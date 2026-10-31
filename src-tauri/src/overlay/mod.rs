@@ -18,6 +18,7 @@ use tauri::{App, AppHandle, Emitter, Manager};
 
 use crate::app_state;
 use crate::hotkey;
+use crate::i18n;
 
 // Updated only on the main thread; a later show invalidates pending hide completions.
 static VISIBILITY_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -112,7 +113,7 @@ pub(crate) fn setup_overlay_window(app: &App) {
     {
         use tauri::window::WindowBuilder;
         let _ = WindowBuilder::new(app, "overlay")
-            .title("VoicePaste")
+            .title(crate::APP_NAME)
             .inner_size(720.0, 300.0)
             .decorations(false)
             .transparent(true)
@@ -127,7 +128,7 @@ pub(crate) fn setup_overlay_window(app: &App) {
     {
         use tauri::{WebviewUrl, WebviewWindowBuilder};
         let _ = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
-            .title("VoicePaste")
+            .title(crate::APP_NAME)
             .inner_size(720.0, 300.0)
             .decorations(false)
             .transparent(true)
@@ -220,14 +221,6 @@ pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::A
         .as_ref()
         .map(|c| hotkey::compile_bindings(&c.app, &all_prompts).0)
         .unwrap_or_default();
-    let prompts: Vec<_> = all_prompts
-        .into_iter()
-        .filter(|p| {
-            enabled
-                .iter()
-                .any(|b| b.prompt_id.as_deref() == Some(&p.id))
-        })
-        .collect();
     let hotkey = config
         .as_ref()
         .filter(|c| toggle && c.app.hotkey_mode != "hold")
@@ -241,22 +234,13 @@ pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::A
         })
         .map(hotkey::format_hotkey_label)
         .unwrap_or_default();
-    let selected = select_hint_prompt(
-        &prompts,
-        config
-            .as_ref()
-            .and_then(|c| c.app.last_polish_prompt_id.as_deref()),
-        config.as_ref().and_then(|c| c.app.hotkey.as_str()),
-    );
-    let mut shortcuts = vec![shared::Shortcut::new("Esc", "取消")];
+    // Exactly two actions belong to the recording panel: cancel and finish.
+    // Template names are deliberately not shown here — a template is chosen
+    // when the recording starts (its own shortcut) or in the picker afterwards,
+    // not by reading a toolbar label mid-sentence.
+    let mut shortcuts = vec![shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel"))];
     if !hotkey.is_empty() {
-        shortcuts.push(shared::Shortcut::new(hotkey, "完成"));
-    }
-    if let Some(prompt) = selected.filter(|_| toggle) {
-        shortcuts.push(shared::Shortcut::new(
-            hotkey::format_hotkey_label(&prompt.hotkey),
-            &prompt.title,
-        ));
+        shortcuts.push(shared::Shortcut::new(hotkey, i18n::tr("完成", "Finish")));
     }
     *inner.recording_hints.lock().await = Some(shared::RecordingHints {
         toggle,
@@ -264,34 +248,6 @@ pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::A
         last_signal: std::time::Instant::now(),
         shown: false,
     });
-}
-
-fn select_hint_prompt<'a>(
-    prompts: &'a [crate::config::PromptItem],
-    recent: Option<&str>,
-    main_hotkey: Option<&str>,
-) -> Option<&'a crate::config::PromptItem> {
-    let main_keys = main_hotkey.and_then(hotkey::parse_hotkey_string);
-    let eligible = |(index, p): &(usize, &crate::config::PromptItem)| {
-        let Some(keys) = hotkey::parse_hotkey_string(&p.hotkey) else {
-            return false;
-        };
-        p.hotkey_mode != "hold"
-            && main_keys.as_ref() != Some(&keys)
-            && !prompts[..*index]
-                .iter()
-                .any(|earlier| hotkey::parse_hotkey_string(&earlier.hotkey).as_ref() == Some(&keys))
-    };
-    let candidates = || {
-        prompts
-            .iter()
-            .enumerate()
-            .filter(eligible)
-            .map(|(_, prompt)| prompt)
-    };
-    candidates()
-        .find(|p| Some(p.id.as_str()) == recent)
-        .or_else(|| candidates().next())
 }
 
 pub(crate) async fn show_restart_error(
@@ -320,7 +276,10 @@ pub(crate) async fn show_output_error(
             "type": "hint", "payload": { "text": text, "level": "error", "variant": "text" }
         }),
     );
-    emit_shortcuts(app, &[shared::Shortcut::new("Esc", "取消")]);
+    emit_shortcuts(
+        app,
+        &[shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel"))],
+    );
     show(app);
     schedule_retry_overlay_hide(app.clone(), Arc::clone(inner));
 }
@@ -354,11 +313,14 @@ pub(crate) async fn emit_retryable_error_hint(
 fn error_shortcuts(hotkey: &str, polish: bool) -> Vec<shared::Shortcut> {
     let mut shortcuts = Vec::new();
     if !hotkey.is_empty() {
-        shortcuts.push(shared::Shortcut::new(hotkey, "重试"));
+        shortcuts.push(shared::Shortcut::new(hotkey, i18n::tr("重试", "Retry")));
     }
-    shortcuts.push(shared::Shortcut::new("Esc", "取消"));
+    shortcuts.push(shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel")));
     if polish {
-        shortcuts.push(shared::Shortcut::new("Enter", "输出原文"));
+        shortcuts.push(shared::Shortcut::new(
+            "Enter",
+            i18n::tr("输出原文", "Raw text"),
+        ));
     }
     shortcuts
 }
@@ -377,7 +339,11 @@ pub(crate) async fn emit_polish_decision_hint(
         serde_json::json!({
             "type": "hint",
             "payload": {
-                "text": format!("{}\n5 秒后输出原文", text),
+                "text": format!(
+                    "{}\n{}",
+                    text,
+                    i18n::tr("5 秒后输出原文", "Sending raw text in 5 s")
+                ),
                 "level": "error",
                 "variant": "text",
                 "retryable": true,
@@ -486,58 +452,6 @@ mod macos;
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn prompt(id: &str, key: &str, mode: &str) -> crate::config::PromptItem {
-        serde_json::from_value(serde_json::json!({ "id": id, "hotkey": key, "hotkey_mode": mode }))
-            .unwrap()
-    }
-    #[test]
-    fn recent_hint_template_falls_back_to_first_usable_binding() {
-        let prompts = vec![
-            prompt("no-key", "", "toggle"),
-            prompt("hold", "ControlLeft", "hold"),
-            prompt("first", "F14", "toggle"),
-            prompt("recent", "F15", "toggle"),
-        ];
-        assert_eq!(
-            select_hint_prompt(&prompts, Some("recent"), Some("F13"))
-                .unwrap()
-                .id,
-            "recent"
-        );
-        assert_eq!(
-            select_hint_prompt(&prompts, Some("deleted"), Some("F13"))
-                .unwrap()
-                .id,
-            "first"
-        );
-        assert_eq!(
-            select_hint_prompt(&prompts, Some("hold"), Some("F13"))
-                .unwrap()
-                .id,
-            "first"
-        );
-        assert!(select_hint_prompt(&prompts[..2], None, Some("F13")).is_none());
-    }
-    #[test]
-    fn hint_template_cannot_claim_another_bindings_shortcut() {
-        let prompts = vec![
-            prompt("main-conflict", "F13", "toggle"),
-            prompt("first", "F14", "toggle"),
-            prompt("duplicate", "F14", "toggle"),
-        ];
-        assert_eq!(
-            select_hint_prompt(&prompts, Some("main-conflict"), Some("F13"))
-                .unwrap()
-                .id,
-            "first"
-        );
-        assert_eq!(
-            select_hint_prompt(&prompts, Some("duplicate"), Some("F13"))
-                .unwrap()
-                .id,
-            "first"
-        );
-    }
     #[test]
     fn error_actions_only_offer_raw_output_for_polish() {
         assert_eq!(

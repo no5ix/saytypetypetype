@@ -1,5 +1,6 @@
 import { CircleArrowUp, LoaderCircle, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { type Translate, useT } from "@/i18n";
 import {
   checkForUpdates,
   downloadUpdate,
@@ -11,17 +12,24 @@ import type { UpdateState } from "@/settings/types/update";
 
 type UpdateButtonVariant = "default" | "accent" | "danger" | "ghost";
 
+/**
+ * Shared update state.
+ *
+ * `status` and `label` hold translation keys (Simplified Chinese source text),
+ * never resolved copy: the module-level store outlives any single render, so
+ * translating at the edge keeps the labels in sync with the UI language.
+ */
 interface UpdateSnapshot {
   state: UpdateState;
   version: string;
-  statusText: string;
+  status: string;
   progress: number | null;
 }
 
 const initialSnapshot: UpdateSnapshot = {
   state: "idle",
   version: "",
-  statusText: "-",
+  status: "-",
   progress: null,
 };
 
@@ -49,7 +57,7 @@ function checkUpdate(force = false) {
   if (!force && hasChecked) return Promise.resolve();
   if (!force && checkPromise) return checkPromise;
   checkPromise = (async () => {
-    setSnapshot({ state: "checking", statusText: "正在检查…", progress: null });
+    setSnapshot({ state: "checking", status: "正在检查…", progress: null });
     try {
       const result = await checkForUpdates();
       if (result.available) {
@@ -57,17 +65,17 @@ function checkUpdate(force = false) {
         setSnapshot({
           state: "available",
           version,
-          statusText: version ? `新版本 ${version} 可用` : "新版本可用",
+          status: version ? "新版本 {version} 可用" : "新版本可用",
         });
       } else {
         setSnapshot({
           state: "not-available",
           version: "",
-          statusText: "已是最新版本",
+          status: "已是最新版本",
         });
       }
     } catch {
-      setSnapshot({ state: "error", statusText: "检查失败" });
+      setSnapshot({ state: "error", status: "检查更新失败" });
     } finally {
       hasChecked = true;
       checkPromise = null;
@@ -81,7 +89,7 @@ async function downloadAndInstallUpdate() {
   downloadPromise = (async () => {
     setSnapshot({
       state: "downloading",
-      statusText: "下载中…",
+      status: "下载中…",
       progress: null,
     });
     let finished = false;
@@ -90,7 +98,7 @@ async function downloadAndInstallUpdate() {
         finished = true;
         setSnapshot({
           state: "downloaded",
-          statusText: "下载完成",
+          status: "下载完成",
           progress: 100,
         });
       } else if (p.downloaded !== undefined && p.contentLength) {
@@ -100,7 +108,7 @@ async function downloadAndInstallUpdate() {
         );
         setSnapshot({
           state: "downloading",
-          statusText: `下载中 ${progress}%`,
+          status: "下载中 {progress}%",
           progress,
         });
       }
@@ -110,12 +118,12 @@ async function downloadAndInstallUpdate() {
       if (!finished) {
         setSnapshot({
           state: "downloaded",
-          statusText: "下载完成",
+          status: "下载完成",
           progress: 100,
         });
       }
     } catch {
-      setSnapshot({ state: "error", statusText: "下载失败" });
+      setSnapshot({ state: "error", status: "下载失败" });
     } finally {
       cleanup();
       downloadPromise = null;
@@ -125,11 +133,11 @@ async function downloadAndInstallUpdate() {
 }
 
 async function relaunchToInstall() {
-  setSnapshot({ state: "installing", statusText: "安装中…" });
+  setSnapshot({ state: "installing", status: "安装中…" });
   try {
     await installUpdate();
   } catch {
-    setSnapshot({ state: "error", statusText: "安装失败" });
+    setSnapshot({ state: "error", status: "安装失败" });
   }
 }
 
@@ -145,7 +153,10 @@ function useUpdateSnapshot() {
   return current;
 }
 
-function updateAction(current: UpdateSnapshot): {
+function updateAction(
+  current: UpdateSnapshot,
+  t: Translate,
+): {
   label: string;
   variant: UpdateButtonVariant;
   disabled: boolean;
@@ -154,42 +165,45 @@ function updateAction(current: UpdateSnapshot): {
   switch (current.state) {
     case "checking":
       return {
-        label: "正在检查",
+        label: t("正在检查"),
         variant: "default",
         disabled: true,
         onClick: () => {},
       };
     case "available":
       return {
-        label: "更新",
+        label: t("更新"),
         variant: "accent",
         disabled: false,
         onClick: downloadAndInstallUpdate,
       };
     case "downloading":
       return {
-        label: current.progress === null ? "下载中…" : `${current.progress}%`,
+        label:
+          current.progress === null
+            ? t("下载中…")
+            : t("{progress}%", { progress: current.progress }),
         variant: "default",
         disabled: true,
         onClick: () => {},
       };
     case "downloaded":
       return {
-        label: "重启安装",
+        label: t("重启安装"),
         variant: "accent",
         disabled: false,
         onClick: relaunchToInstall,
       };
     case "installing":
       return {
-        label: "安装中…",
+        label: t("安装中…"),
         variant: "default",
         disabled: true,
         onClick: () => {},
       };
     case "error":
       return {
-        label: "重试",
+        label: t("重试"),
         variant: "danger",
         disabled: false,
         onClick: () => checkUpdate(true),
@@ -198,7 +212,7 @@ function updateAction(current: UpdateSnapshot): {
     case "not-available":
     case "disabled":
       return {
-        label: "检查更新",
+        label: t("检查更新"),
         variant: "default",
         disabled: false,
         onClick: () => checkUpdate(true),
@@ -228,8 +242,10 @@ const compactVisibleStates = new Set<UpdateState>([
 ]);
 
 export function UpdateButton({ compact = false }: { compact?: boolean }) {
+  const t = useT();
   const current = useUpdateSnapshot();
-  const action = updateAction(current);
+  const action = updateAction(current, t);
+  const status = t(current.status, { version: current.version, progress: current.progress });
 
   if (compact) {
     if (!compactVisibleStates.has(current.state)) return null;
@@ -248,7 +264,7 @@ export function UpdateButton({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className="flex flex-row items-center gap-2">
-      <span className="text-xs text-text-muted">{current.statusText}</span>
+      <span className="text-xs text-text-muted">{status}</span>
       <Button variant={action.variant} onClick={action.onClick} disabled={action.disabled}>
         <UpdateIcon state={current.state} />
         <span>{action.label}</span>

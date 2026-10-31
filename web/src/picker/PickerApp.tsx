@@ -1,5 +1,6 @@
 import { AlertCircle, Check, ChevronRight, Loader2, Maximize2, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { normalizeLanguage, translate, type UiLanguage } from "@/i18n";
 import {
   cancelPicker,
   getPickerState,
@@ -40,10 +41,24 @@ function applyTheme(theme: string) {
   document.documentElement.dataset.theme = resolved;
 }
 
+/**
+ * Language of the current picker session.
+ *
+ * The panel is a separate window that receives its language with the session
+ * payload (the backend resolves the preference), so translations are read from
+ * this module value instead of a React context. Every state update carries it,
+ * and the render that consumes it happens right after.
+ */
+let currentLanguage: UiLanguage = "zh-CN";
+
+function t(zh: string, vars?: Record<string, string | number | null | undefined>): string {
+  return translate(currentLanguage, zh, vars);
+}
+
 function statusLabel(option: PickerOptionView): string {
-  if (option.status === "loading") return "处理中…";
-  if (option.status === "failed") return "处理失败";
-  return option.kind === "original" ? "识别原文" : "已生成";
+  if (option.status === "loading") return t("处理中…");
+  if (option.status === "failed") return t("处理失败");
+  return option.kind === "original" ? t("识别原文") : t("已生成");
 }
 
 export function PickerApp() {
@@ -64,6 +79,7 @@ export function PickerApp() {
       .then((initial) => {
         if (!mounted || !initial) return;
         sessionIdRef.current = initial.sessionId;
+        currentLanguage = normalizeLanguage(initial.language);
         setView(initial);
       })
       .catch(() => {});
@@ -74,6 +90,7 @@ export function PickerApp() {
         sessionIdRef.current = next.sessionId;
         setClosing(false);
       }
+      currentLanguage = normalizeLanguage(next.language);
       setView(next);
     });
     const unlistenClosing = onPickerClosing((signal) => {
@@ -179,7 +196,7 @@ export function PickerApp() {
       <div className="picker-root flex h-screen w-screen items-center justify-center p-2">
         <div className="picker-surface flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm text-text-dim backdrop-blur-2xl">
           <Loader2 className="size-4 animate-spin" />
-          等待转写…
+          {t("等待转写…")}
         </div>
       </div>
     );
@@ -203,16 +220,20 @@ export function PickerApp() {
             keeps the card hover lift from painting over it. */}
         <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border/50 bg-surface-card px-4 pt-3 pb-2.5">
           <div className="min-w-0">
-            <h1 className="truncate text-[13px] font-semibold text-text">选择要粘贴的版本</h1>
+            <h1 className="truncate text-[13px] font-semibold text-text">
+              {t("选择要粘贴的版本")}
+            </h1>
             <p className="truncate text-[11px] text-text-muted">
-              {view.targetApp ? `粘贴到 ${view.targetApp}` : "点击卡片或按对应快捷键插入"}
+              {view.targetApp
+                ? t("粘贴到 {app}", { app: view.targetApp })
+                : t("点击卡片或按对应快捷键插入")}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {view.allCompleted && (
               <span className="flex items-center gap-1 text-[11px] text-text-muted">
                 <Check className="size-3.5" />
-                全部完成
+                {t("全部完成")}
               </span>
             )}
             <button
@@ -220,7 +241,7 @@ export function PickerApp() {
               onClick={dismiss}
               className="rounded-lg border border-border/70 px-2 py-1 text-[11px] text-text-dim transition hover:border-border-hover hover:text-text"
             >
-              Esc 取消
+              {t("Esc 取消")}
             </button>
           </div>
         </header>
@@ -262,15 +283,15 @@ export function PickerApp() {
         </div>
 
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border/50 px-4 py-2 text-[10.5px] text-text-muted">
-          <span className="truncate">原文始终可用；模板独立处理，不会串联。</span>
+          <span className="truncate">{t("原文始终可用；模板独立处理，不会串联。")}</span>
           <span className="shrink-0">
             {busy ? (
               <span className="flex items-center gap-1.5 text-accent">
                 <Loader2 className="size-3 animate-spin" />
-                正在插入…
+                {t("正在插入…")}
               </span>
             ) : (
-              "Esc 不粘贴任何内容"
+              t("Esc 不粘贴任何内容")
             )}
           </span>
         </footer>
@@ -290,7 +311,7 @@ export function PickerApp() {
                 type="button"
                 onClick={() => setExpanded(null)}
                 className="rounded-lg p-1 text-text-dim transition hover:bg-fill-hover hover:text-text"
-                aria-label="关闭预览"
+                aria-label={t("关闭预览")}
               >
                 <X className="size-4" />
               </button>
@@ -301,14 +322,14 @@ export function PickerApp() {
               </p>
             </div>
             <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2">
-              <span className="text-[10.5px] text-text-muted">预览不会粘贴</span>
+              <span className="text-[10.5px] text-text-muted">{t("预览不会粘贴")}</span>
               <button
                 type="button"
                 disabled={busy || expandedOption.status !== "ready"}
                 onClick={() => select(expandedOption)}
                 className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-text-on-accent transition hover:bg-accent-hover disabled:opacity-50"
               >
-                选择此版本
+                {t("选择此版本")}
                 <ChevronRight className="size-3.5" />
               </button>
             </div>
@@ -365,7 +386,7 @@ function PickerCard({
               <span className="truncate text-[13px] font-semibold text-text">{option.title}</span>
               {option.kind === "original" && (
                 <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9.5px] font-medium text-accent">
-                  原文
+                  {t("原文")}
                 </span>
               )}
             </div>
@@ -379,19 +400,19 @@ function PickerCard({
           {option.status === "failed" && (
             <div className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-error">
               <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-              <span className="break-words">{option.error || "处理失败"}</span>
+              <span className="break-words">{option.error || t("处理失败")}</span>
             </div>
           )}
           {option.status === "ready" && (
             <p className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-text-dim">
-              {option.text || "（空）"}
+              {option.text || t("（空）")}
             </p>
           )}
         </div>
 
         {ready && (
           <div className="mt-2 flex items-center justify-end text-[10px] text-text-muted">
-            <span>点击插入</span>
+            <span>{t("点击插入")}</span>
             <ChevronRight className="size-3" />
           </div>
         )}
@@ -402,7 +423,7 @@ function PickerCard({
           type="button"
           onClick={onExpand}
           className="absolute top-2 right-2 rounded-md p-1 text-text-muted transition hover:bg-fill-hover hover:text-text"
-          aria-label={`展开 ${option.title}`}
+          aria-label={t("展开 {title}", { title: option.title })}
         >
           <Maximize2 className="size-3.5" />
         </button>
@@ -419,7 +440,7 @@ function LoadingPreview() {
       <div className="h-2.5 w-2/3 animate-pulse rounded bg-fill-subtle" />
       <div className="flex items-center gap-1.5 pt-1 text-[10.5px] text-text-muted">
         <Loader2 className="size-3 animate-spin" />
-        处理中…
+        {t("处理中…")}
       </div>
     </div>
   );

@@ -12,6 +12,28 @@ export interface OverlayEvent {
   payload: Record<string, unknown>;
 }
 
+/** Resolved UI language (`zh-CN` | `en`) for renderer-owned strings. */
+export async function getUiLanguage(): Promise<string> {
+  return invoke("get_ui_language");
+}
+
+/** Broadcast when the resolved language changes (manual switch or system). */
+export function onLanguageChanged(listener: (language: string) => void): () => void {
+  let active = true;
+  const unlisten = listen<{ type: string; payload: { resolved?: string } }>(
+    "settings:event",
+    (event) => {
+      if (active && event.payload?.type === "language-changed" && event.payload.payload?.resolved) {
+        listener(event.payload.payload.resolved);
+      }
+    },
+  );
+  return () => {
+    active = false;
+    unlisten.then((fn) => fn());
+  };
+}
+
 /**
  * Listen for overlay events from the backend.
  * Returns a cleanup function that unregisters the listener.

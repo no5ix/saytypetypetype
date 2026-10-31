@@ -1,5 +1,6 @@
 import { CircleCheck, Cog } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useT } from "@/i18n";
 import {
   deleteModel,
   downloadModel,
@@ -65,6 +66,7 @@ const ASR_DEFAULT_SECTIONS: { title: string; fields: string[] }[] = [
 ];
 
 export function AudioModelPage() {
+  const t = useT();
   const { settings, refresh } = useSettings();
   const cfg = (settings?.parsedConfig || {}) as Record<string, unknown>;
   const audio = (cfg.audio || {}) as Record<string, unknown>;
@@ -260,19 +262,19 @@ export function AudioModelPage() {
 
   return (
     <PageLayout>
-      <PageHeader title="音频模型" description={`当前：${currentName}`}>
+      <PageHeader title={t("音频模型")} description={t("当前：{name}", { name: t(currentName) })}>
         <div className="flex items-center gap-4 mt-2 text-text-muted">
           <span className="flex items-center gap-1">
             <Badge variant="ghost">
               <CircleCheck size={16} className="fill-success text-surface" />
             </Badge>
-            原生支持
+            {t("原生支持")}
           </span>
           <span className="flex items-center gap-1">
             <Badge variant="ghost">
               <CircleCheck size={16} className="fill-text-muted text-surface" />
             </Badge>
-            其他方式支持
+            {t("其他方式支持")}
           </span>
         </div>
       </PageHeader>
@@ -280,15 +282,15 @@ export function AudioModelPage() {
       <div className="flex items-center justify-between gap-3">
         <SegmentedControl
           options={[
-            { value: "online", label: "在线模型" },
-            { value: "offline", label: "本地模型" },
+            { value: "online", label: t("在线模型") },
+            { value: "offline", label: t("本地模型") },
           ]}
           value={tab}
           onChange={(value) => setTab(value === "offline" ? "offline" : "online")}
         />
         <Button variant="ghost" onClick={() => setCustomConfigOpen(true)}>
           <Cog size={16} />
-          自定义配置
+          {t("自定义配置")}
         </Button>
       </div>
 
@@ -312,14 +314,14 @@ export function AudioModelPage() {
             }}
           />
           {offlineAsrModels.length === 0 && (
-            <p className="text-sm text-text-muted">暂无可用本地模型</p>
+            <p className="text-sm text-text-muted">{t("暂无可用本地模型")}</p>
           )}
           {offlineAsrModels.map((m) => (
             <ModelCard key={m.id} model={m} {...cardProps(m)} />
           ))}
           {baseModels.length > 0 && (
             <div className="pt-2">
-              <h2 className="text-sm font-semibold text-text mb-3">基础模型</h2>
+              <h2 className="text-sm font-semibold text-text mb-3">{t("基础模型")}</h2>
               <div className="space-y-5">
                 {baseModels.map((m) => (
                   <ModelCard key={m.id} model={m} {...cardProps(m)} />
@@ -346,6 +348,7 @@ const CustomConfigModal = ({
   saveAsrDefaults: (updates: Record<string, unknown>) => Promise<void>;
   saveAsrVadDefaults: (updates: Record<string, unknown>) => Promise<void>;
 }) => {
+  const t = useT();
   const getValue = (flatKey: string): unknown => {
     if (!asrDefaults) return undefined;
     if (flatKey.startsWith("vad.")) {
@@ -364,11 +367,11 @@ const CustomConfigModal = ({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="自定义配置">
+    <Modal open={open} onClose={onClose} title={t("自定义配置")}>
       <div className="space-y-5">
         {ASR_DEFAULT_SECTIONS.map((section) => (
           <Section key={section.title}>
-            <SectionHeader title={section.title} />
+            <SectionHeader title={t(section.title)} />
             <SectionContent>
               <SectionItemList>
                 {section.fields.map((flatKey) => {
@@ -377,8 +380,8 @@ const CustomConfigModal = ({
                   return (
                     <SectionItem
                       key={flatKey}
-                      title={meta.label}
-                      action={renderControl(meta, value, (v) => handleChange(flatKey, v))}
+                      title={t(meta.label)}
+                      action={renderControl(meta, value, (v) => handleChange(flatKey, v), t)}
                     />
                   );
                 })}

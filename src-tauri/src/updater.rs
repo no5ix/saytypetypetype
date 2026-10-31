@@ -52,7 +52,7 @@ pub async fn check_for_update(
 
     let suffix = if beta { "-beta" } else { "" };
     let endpoint = format!(
-        "https://github.com/that-yolanda/voicepaste/releases/latest/download/latest{suffix}.json"
+        "https://github.com/no5ix/saytypetypetype/releases/latest/download/latest{suffix}.json"
     );
 
     log_update!(

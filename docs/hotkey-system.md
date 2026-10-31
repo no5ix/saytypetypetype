@@ -2,7 +2,7 @@
 
 ## Overview
 
-VoicePaste uses the `keytap` crate for global hotkey registration, replacing `tauri-plugin-global-shortcut`. This enables modifier-only hotkeys, left/right modifier distinction, and lower latency via raw keyboard event streaming.
+SayTypeTypeType uses the `keytap` crate for global hotkey registration, replacing `tauri-plugin-global-shortcut`. This enables modifier-only hotkeys, left/right modifier distinction, and lower latency via raw keyboard event streaming.
 
 ## Architecture
 

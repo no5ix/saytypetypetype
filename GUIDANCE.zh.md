@@ -9,7 +9,7 @@
 ## 系统权限
 
 - 首次启用语音输入时，系统会请求麦克风权限
-- macOS 需要额外手动添加辅助功能权限以允许语音输入后自动粘贴。可通过 设置 > 系统权限 > 辅助功能 > 前往授权 将 VoicePaste 加入允许列表；或直接从 系统设置 > 隐私与安全性 > 辅助功能 添加。
+- macOS 需要额外手动添加辅助功能权限以允许语音输入后自动粘贴。可通过 设置 > 系统权限 > 辅助功能 > 前往授权 将 SayTypeTypeType 加入允许列表；或直接从 系统设置 > 隐私与安全性 > 辅助功能 添加。
 
 ## ASR 模型选择
 
@@ -95,12 +95,12 @@
 - 登录 [ElevenLabs > ElevenAPI > API Keys](https://elevenlabs.io/app/api/api-keys)
 - 创建一个API Key，启用`Speech to Text`权限
 ![ElevenLabs API Key for ](docs/screenshots/elevenlabs.png)
-- 在VoicePaste配置页面填入凭证即可
+- 在SayTypeTypeType配置页面填入凭证即可
 
 
 ### 本地模型
 
-VoicePaste 本地模型基于 sherpa-onnx 接入，默认搭配 VAD 模型使用，可选配 Punctuation 模型做识别后处理（追加标点符号）。
+SayTypeTypeType 本地模型基于 sherpa-onnx 接入，默认搭配 VAD 模型使用，可选配 Punctuation 模型做识别后处理（追加标点符号）。
 
 #### 模型下载
 

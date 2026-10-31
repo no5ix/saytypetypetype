@@ -124,6 +124,12 @@ pub struct AppInner {
     /// When the current stop was requested. Used only for latency diagnostics;
     /// never contains audio or transcript content.
     pub stop_started_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// When microphone capture actually opened for this session. The dashboard's
+    /// "recording time" excludes ASR/LLM/picker latency and the startup cue.
+    pub capture_started_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Microphone time measured when capture closed. Read by the delivery path
+    /// (including a picker selection that happens much later).
+    pub session_recording_ms: std::sync::Mutex<u64>,
 }
 
 pub type AppHandle = Arc<AppInner>;
@@ -168,6 +174,8 @@ pub fn create_app_state(
         picker: crate::picker::model::PickerStore::default(),
         asr_models: Arc::new(crate::asr::SherpaModelCache::new()),
         stop_started_at: std::sync::Mutex::new(None),
+        capture_started_at: std::sync::Mutex::new(None),
+        session_recording_ms: std::sync::Mutex::new(0),
     })
 }
 

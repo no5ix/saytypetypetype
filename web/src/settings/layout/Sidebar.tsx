@@ -9,6 +9,7 @@ import {
   Settings2,
   ShieldCheck,
 } from "lucide-react";
+import { useT } from "@/i18n";
 import { openHelpGuide } from "@/settings/bridge";
 import { ThemeSelector } from "@/settings/components/ThemeSelector";
 import { Toast, useToast } from "@/settings/components/Toast";
@@ -40,6 +41,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ active, onNavigate }: SidebarProps) {
+  const t = useT();
   const { toast, showToast } = useToast();
 
   const navBtn = (id: SectionId, Icon: typeof Home, label: string) => (
@@ -59,31 +61,31 @@ export function Sidebar({ active, onNavigate }: SidebarProps) {
   );
 
   return (
-    <aside className="w-50 shrink-0 flex flex-col">
+    <aside className="w-44 xl:w-50 shrink-0 flex flex-col">
       {/* Header: icon + title + update button */}
       <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border-subtle">
-        <img src="./icon.png" alt="VoicePaste" className="w-7 h-7 rounded-md shrink-0" />
+        <img src="./icon.png" alt="SayTypeTypeType" className="w-7 h-7 rounded-md shrink-0" />
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text tracking-[-0.01em]">
-          VoicePaste
+          SayTypeTypeType
         </span>
         <UpdateButton compact />
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 py-3 px-2 space-y-1">
-        {NAV_ITEMS.map((item) => navBtn(item.id, item.icon, item.label))}
+        {NAV_ITEMS.map((item) => navBtn(item.id, item.icon, t(item.label)))}
         <div className="my-2 border-t border-border-subtle" />
         <button
           type="button"
           onClick={() => {
-            openHelpGuide().catch(() => showToast("无法打开帮助文档，请稍后重试", "error"));
+            openHelpGuide().catch(() => showToast(t("无法打开帮助文档，请稍后重试"), "error"));
           }}
           className="w-full flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-sm transition-colors text-text-dim hover:bg-fill-hover hover:text-text"
         >
           <BookOpen size={18} />
-          帮助说明
+          {t("帮助说明")}
         </button>
-        {navBtn("about", Info, "关于")}
+        {navBtn("about", Info, t("关于"))}
       </nav>
 
       <div className="p-3 border-t border-border-subtle">

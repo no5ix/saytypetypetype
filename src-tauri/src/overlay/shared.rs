@@ -161,39 +161,48 @@ pub struct Model {
 /// the Windows WebView keeps an aligned TS copy in `overlayText`.
 #[cfg(any(target_os = "macos", test))]
 pub fn visible_hint(model: &Model) -> String {
+    visible_hint_lang(model, crate::i18n::is_english())
+}
+
+/// Language-explicit form of [`visible_hint`], kept deterministic for tests.
+#[cfg(any(target_os = "macos", test))]
+pub fn visible_hint_lang(model: &Model, english: bool) -> String {
     if model.hint_variant == "success" {
         return model.hint_text.clone();
     }
     let visual_state = model.app_state.as_str();
-    let zh = true; // app is Chinese-first; matches the WebView's isZhLocale default.
     if visual_state == "connecting" {
-        return if zh {
-            "准备中".into()
-        } else {
+        return if english {
             "Preparing…".into()
+        } else {
+            "准备中".into()
         };
     }
     if visual_state == "finishing" && model.hint_variant == "retry" {
         // Placeholder shown only until the replayed transcript starts streaming
         // in; then yield to the live text below.
         if model.final_text.is_empty() && model.partial_text.is_empty() {
-            return if zh {
-                "重试中".into()
-            } else {
+            return if english {
                 "Retrying…".into()
+            } else {
+                "重试中".into()
             };
         }
         return String::new();
     }
     if visual_state == "finishing" && model.hint_variant == "progress" {
-        return if zh {
-            "润色中".into()
-        } else {
+        return if english {
             "Polishing…".into()
+        } else {
+            "润色中".into()
         };
     }
     if visual_state == "finishing" && model.hint_text.is_empty() {
-        return "识别中".into();
+        return if english {
+            "Transcribing…".into()
+        } else {
+            "识别中".into()
+        };
     }
     // Action shortcuts live above the pill; its body contains only the hint.
     model.hint_text.clone()
@@ -296,23 +305,35 @@ mod tests {
 
     #[test]
     fn visible_hint_state_placeholders() {
-        assert_eq!(visible_hint(&model("connecting", "", "text")), "准备中");
-        assert_eq!(visible_hint(&model("finishing", "", "progress")), "润色中");
+        assert_eq!(
+            visible_hint_lang(&model("connecting", "", "text"), false),
+            "准备中"
+        );
+        assert_eq!(
+            visible_hint_lang(&model("finishing", "", "progress"), false),
+            "润色中"
+        );
         // Retry placeholder only while no transcript has streamed in yet.
-        assert_eq!(visible_hint(&model("finishing", "", "retry")), "重试中");
+        assert_eq!(
+            visible_hint_lang(&model("finishing", "", "retry"), false),
+            "重试中"
+        );
         // Once transcript text arrives during a retry, yield to the live text.
         let mut m = model("finishing", "", "retry");
         m.final_text = "你好".into();
-        assert_eq!(visible_hint(&m), "");
+        assert_eq!(visible_hint_lang(&m, false), "");
     }
 
     #[test]
     fn visible_hint_falls_back_to_hint_text() {
         assert_eq!(
-            visible_hint(&model("recording", "录制中…", "text")),
+            visible_hint_lang(&model("recording", "录制中…", "text"), false),
             "录制中…"
         );
-        assert_eq!(visible_hint(&model("idle", "出错了", "text")), "出错了");
+        assert_eq!(
+            visible_hint_lang(&model("idle", "出错了", "text"), false),
+            "出错了"
+        );
     }
 
     #[test]
@@ -354,9 +375,15 @@ mod tests {
 
     #[test]
     fn visible_hint_does_not_mistake_an_empty_success_for_processing() {
-        assert_eq!(visible_hint(&model("idle", "", "success")), "");
-        assert_eq!(visible_hint(&model("finishing", "", "success")), "");
-        assert_eq!(visible_hint(&model("finishing", "", "text")), "识别中");
+        assert_eq!(visible_hint_lang(&model("idle", "", "success"), false), "");
+        assert_eq!(
+            visible_hint_lang(&model("finishing", "", "success"), false),
+            ""
+        );
+        assert_eq!(
+            visible_hint_lang(&model("finishing", "", "text"), false),
+            "识别中"
+        );
     }
 
     fn speech() -> Vec<f32> {

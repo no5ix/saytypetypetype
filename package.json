@@ -1,16 +1,16 @@
 {
   "name": "voicepaste",
   "version": "2.1.5",
-  "description": "Privacy-first voice input for macOS & Windows — global hotkey, speak, auto-paste. Your data stays local. Works offline with on-device ASR & LLM. Lightweight, open source, fully customizable.",
+  "description": "SayTypeTypeType — privacy-first voice input for macOS & Windows: global hotkey, speak, auto-paste. Your data stays local. Works offline with on-device ASR & LLM. Lightweight, open source, fully customizable.",
   "author": "that-yolanda",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/that-yolanda/voicepaste.git"
+    "url": "git+https://github.com/no5ix/saytypetypetype.git"
   },
-  "homepage": "https://github.com/that-yolanda/voicepaste#readme",
+  "homepage": "https://github.com/no5ix/saytypetypetype#readme",
   "bugs": {
-    "url": "https://github.com/that-yolanda/voicepaste/issues"
+    "url": "https://github.com/no5ix/saytypetypetype/issues"
   },
   "keywords": [
     "tauri",

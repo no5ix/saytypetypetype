@@ -10,6 +10,8 @@ vi.mock("@/overlay/bridge", () => ({
   },
   getOverlayLayoutMetrics: () => Promise.reject(new Error("fallback metrics")),
   completeOverlayHide: vi.fn(),
+  getUiLanguage: () => Promise.resolve("zh-CN"),
+  onLanguageChanged: () => () => {},
 }));
 
 import { OverlayApp } from "@/overlay/OverlayApp";

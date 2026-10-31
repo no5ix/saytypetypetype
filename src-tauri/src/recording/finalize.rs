@@ -368,12 +368,14 @@ pub(crate) async fn finish_delivered_text(
     // Record usage stats and retain/delete the WAV according to user settings.
     // The entry stores the original transcript, never the selected/polished text.
     let keep_recordings = config.map(|c| c.app.keep_recordings).unwrap_or(false);
+    let recording_ms = *app_inner.session_recording_ms.lock().unwrap();
     history::record_success_and_apply_retention(
         app_handle,
         app_inner,
         history_text,
         keep_recordings,
         polish,
+        recording_ms,
     )
     .await;
 

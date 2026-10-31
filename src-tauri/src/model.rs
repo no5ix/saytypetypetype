@@ -559,12 +559,12 @@ mod tests {
     }
 
     #[test]
-    fn embedded_registry_is_version_18() {
+    fn embedded_registry_is_version_19() {
         let registry: ModelRegistry =
             serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
         assert_eq!(
-            registry.version, 18,
-            "EMBEDDED_REGISTRY version should be 18, got {}",
+            registry.version, 19,
+            "EMBEDDED_REGISTRY version should be 19, got {}",
             registry.version
         );
         assert!(
@@ -584,8 +584,8 @@ mod tests {
         let fake_dir = std::path::Path::new("/nonexistent");
         let registry = bundled_registry(fake_dir);
         assert_eq!(
-            registry.version, 18,
-            "bundled_registry should return version 18 from embedded, got {}",
+            registry.version, 19,
+            "bundled_registry should return version 19 from embedded, got {}",
             registry.version
         );
     }
@@ -622,6 +622,62 @@ mod tests {
         assert!(!entry.capabilities.streaming);
         assert!(entry.capabilities.punctuation);
         assert!(!entry.capabilities.hotwords);
+    }
+
+    /// The built-in Parakeet v2 entry ships in the registry metadata only —
+    /// weights stay remote — but must be complete enough for the existing
+    /// download UI to offer it before anything is on disk.
+    #[test]
+    fn built_in_parakeet_v2_is_listed_and_downloadable() {
+        let registry: ModelRegistry =
+            serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
+        let entry = registry
+            .models
+            .iter()
+            .find(|m| m.id == "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8")
+            .expect("built-in Parakeet TDT v2 entry missing");
+
+        assert_eq!(entry.engine, "sherpa-onnx");
+        assert_eq!(entry.model_type, "offline");
+        assert_eq!(entry.architecture.as_deref(), Some("nemo_transducer"));
+        assert!(entry.is_downloadable());
+        assert!(entry.download_url.as_deref().unwrap().ends_with(".tar.bz2"));
+        for key in ["encoder", "decoder", "joiner", "tokens"] {
+            assert!(
+                entry.model_files.contains_key(key),
+                "missing model_files key {key}"
+            );
+        }
+        assert!(
+            entry.file_size.unwrap_or(0) > 0,
+            "download UI shows the size"
+        );
+    }
+
+    /// Existing installs hold an editable copy of the registry in app data; the
+    /// version-gated merge must surface the built-in v2 entry there too without
+    /// dropping models the user already has.
+    #[test]
+    fn merge_surfaces_built_in_parakeet_v2_in_existing_installs() {
+        let registry: ModelRegistry =
+            serde_json::from_str(EMBEDDED_REGISTRY).expect("EMBEDDED_REGISTRY should parse");
+        let mut previous = registry.clone();
+        previous.version = 18;
+        previous
+            .models
+            .retain(|m| m.id != "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8");
+        assert!(!previous
+            .models
+            .iter()
+            .any(|m| m.id == "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"));
+
+        let merged = merge_registry(previous, registry.clone());
+        assert_eq!(merged.version, 19);
+        assert!(merged
+            .models
+            .iter()
+            .any(|m| m.id == "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"));
+        assert_eq!(merged.models.len(), registry.models.len());
     }
 
     #[test]

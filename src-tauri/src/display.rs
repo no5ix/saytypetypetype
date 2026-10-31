@@ -396,6 +396,20 @@ pub(crate) fn activate_target_app(_pid: i32) -> bool {
     false
 }
 
+/// Pid of the application frontmost right now, when it can be determined.
+/// The picker resolves its paste destination with this at selection time, so
+/// text follows the app the user is actually working in even if focus moved
+/// while the panel was open.
+#[cfg(target_os = "macos")]
+pub(crate) fn frontmost_app_pid() -> Option<i32> {
+    macos::frontmost_pid()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn frontmost_app_pid() -> Option<i32> {
+    None
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use std::ffi::CStr;
@@ -552,6 +566,20 @@ mod macos {
             let name = localized_name(app);
             let window = window_bounds(pid);
             Some(TargetApp { pid, name, window })
+        }
+    }
+
+    pub(super) fn frontmost_pid() -> Option<i32> {
+        unsafe {
+            let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+            if workspace.is_null() {
+                return None;
+            }
+            let app: *mut AnyObject = msg_send![workspace, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            Some(msg_send![app, processIdentifier])
         }
     }
 

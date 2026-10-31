@@ -1,14 +1,14 @@
 <div align="center">
 
-![VoicePaste Demo](docs/screenshots/banner.png)
+![SayTypeTypeType Demo](docs/screenshots/banner.png)
 
-# VoicePaste
+# SayTypeTypeType
 
 A voice input tool for macOS & Windows — trigger with a hotkey, speak, auto-paste.
 
-[![Downloads](https://img.shields.io/github/downloads/that-yolanda/voicepaste/total?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/releases/latest)
-[![Version](https://img.shields.io/github/v/release/that-yolanda/voicepaste?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/releases/latest)
-[![License](https://img.shields.io/github/license/that-yolanda/voicepaste?style=flat&logo=github)](https://github.com/that-yolanda/voicepaste/blob/master/LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/no5ix/saytypetypetype/total?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/releases/latest)
+[![Version](https://img.shields.io/github/v/release/no5ix/saytypetypetype?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/releases/latest)
+[![License](https://img.shields.io/github/license/no5ix/saytypetypetype?style=flat&logo=github)](https://github.com/no5ix/saytypetypetype/blob/master/LICENSE)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/thatyolanda)
 
 **[中文](README.zh.md)** | **[English](README.md)**
@@ -17,7 +17,7 @@ A voice input tool for macOS & Windows — trigger with a hotkey, speak, auto-pa
 
 ## Demo
 
-![VoicePaste Demo](docs/screenshots/demo.gif)
+![SayTypeTypeType Demo](docs/screenshots/demo.gif)
 
 ## Features
 
@@ -38,13 +38,13 @@ A voice input tool for macOS & Windows — trigger with a hotkey, speak, auto-pa
 
 ### Download
 
-Go to [GitHub Releases](https://github.com/that-yolanda/voicepaste/releases/latest) and download the latest version for your platform.
+Go to [GitHub Releases](https://github.com/no5ix/saytypetypetype/releases/latest) and download the latest version for your platform.
 
 | Platform               | Installer Filename                                |
 | ---------------------- | ------------------------------------------------- |
-| macOS (Apple Silicon)  | `VoicePaste_{version}_aarch64.dmg`                |
-| macOS (Intel)          | `VoicePaste_{version}_x64.dmg`                    |
-| Windows (x64)          | `VoicePaste_{version}_x64-setup.exe` / `.msi`     |
+| macOS (Apple Silicon)  | `SayTypeTypeType_{version}_aarch64.dmg`                |
+| macOS (Intel)          | `SayTypeTypeType_{version}_x64.dmg`                    |
+| Windows (x64)          | `SayTypeTypeType_{version}_x64-setup.exe` / `.msi`     |
 
 ### Configuration Guide
 
@@ -69,7 +69,7 @@ Go to [GitHub Releases](https://github.com/that-yolanda/voicepaste/releases/late
 **Notes**
 
 - ✅️ Native model capability, ☑️ Achieved through software composition
-- Idle memory is ~120 MB on macOS packaged builds, measured from the Activity Monitor `Memory` column across the VoicePaste process group. Models are loaded on demand during recognition.
+- Idle memory is ~120 MB on macOS packaged builds, measured from the Activity Monitor `Memory` column across the SayTypeTypeType process group. Models are loaded on demand during recognition.
 - Local models without native streaming output use built-in VAD (Voice Activity Detection) for audio segmentation with simulated streaming; optional punctuation restoration model available.
 - Memory data was measured locally on Mac mini (Apple Silicon). Results may vary with system load, macOS memory compression, restart state, backend, and cache state. See the [performance test report](docs/tests/performance-report.md) for full details.
 
@@ -90,12 +90,12 @@ Go to [GitHub Releases](https://github.com/that-yolanda/voicepaste/releases/late
 
 ### Not working on macOS?
 
-VoicePaste requires **Microphone** and **Accessibility** permissions to function.
+SayTypeTypeType requires **Microphone** and **Accessibility** permissions to function.
 
 **Microphone Permission**
 
 1. Settings page → System Permissions → Click "Request Permission"
-2. System Settings → Privacy & Security → Microphone, ensure VoicePaste is authorized
+2. System Settings → Privacy & Security → Microphone, ensure SayTypeTypeType is authorized
 3. If previously denied, reset via Terminal and re-authorize:
 
 ```bash
@@ -104,7 +104,7 @@ tccutil reset Microphone com.yolanda.voicepaste
 
 **Accessibility Permission**
 
-1. System Settings → Privacy & Security → Accessibility, ensure VoicePaste is authorized
+1. System Settings → Privacy & Security → Accessibility, ensure SayTypeTypeType is authorized
 2. If reinstalled after deletion, re-add it manually
 
 ## Docs

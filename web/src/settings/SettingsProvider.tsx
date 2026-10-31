@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { I18nProvider, normalizeLanguage } from "@/i18n";
 import type { ConfigPayload, SettingsData } from "@/settings/bridge";
-import { getData, saveConfigObject } from "@/settings/bridge";
+import { getData, onEvent, saveConfigObject } from "@/settings/bridge";
 import { clonePlain } from "@/settings/lib/clone";
 import type { ParsedConfig } from "@/settings/types/config";
 
@@ -51,6 +52,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // configRef before merging the next patch.
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
 
+  const resolvedLanguage = normalizeLanguage(
+    (settings?.runtime?.language as { resolved?: string } | undefined)?.resolved,
+  );
+
   const load = useCallback(async () => {
     const data = await getData();
     const parsed = (data.parsedConfig || {}) as ConfigPayload;
@@ -62,6 +67,15 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // A system-language change while the preference is "system" is announced by
+  // the backend; reload so the resolved language (and every label) follows it.
+  useEffect(() => {
+    const unlisten = onEvent((event) => {
+      if (event.type === "language-changed") void load();
+    });
+    return unlisten;
   }, [load]);
 
   const scheduleSave = useCallback(
@@ -79,7 +93,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SettingsContext value={{ settings, config, loading, scheduleSave, refresh: load }}>
-      {children}
+      <I18nProvider language={resolvedLanguage}>{children}</I18nProvider>
     </SettingsContext>
   );
 }

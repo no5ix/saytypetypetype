@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { useT } from "@/i18n";
 import type { HotkeyRecordResult } from "@/settings/bridge";
 import { recordHotkey } from "@/settings/bridge";
 import { normalizeHotkeyToken } from "@/settings/lib/hotkey";
@@ -51,6 +52,7 @@ export function HotkeyInput({
   onStart,
   onDone,
 }: HotkeyInputProps) {
+  const t = useT();
   const [recording, setRecording] = useState(false);
   const [invalidPreview, setInvalidPreview] = useState<string | null>(null);
 
@@ -103,25 +105,25 @@ export function HotkeyInput({
     >
       <button
         type="button"
-        aria-label="快捷键"
+        aria-label={t("快捷键")}
         disabled={locked || busy || recording}
         onClick={handleClick}
         className={`flex flex-1 items-center gap-0.5 min-h-0 overflow-hidden bg-transparent text-left focus:outline-none ${locked || busy || recording ? "cursor-not-allowed" : "cursor-pointer"}`}
       >
         {recording ? (
-          <span className="text-text-muted">请按键…</span>
+          <span className="text-text-muted">{t("请按键…")}</span>
         ) : invalidPreview ? (
           renderHotkeyTokens(invalidPreview, isMac)
         ) : value ? (
           renderHotkeyTokens(value, isMac)
         ) : (
-          <span className="text-text-muted">{locked ? "未配置" : "按下快捷键"}</span>
+          <span className="text-text-muted">{locked ? t("未配置") : t("按下快捷键")}</span>
         )}
       </button>
       {canClear ? (
         <button
           type="button"
-          aria-label="清除快捷键"
+          aria-label={t("清除快捷键")}
           onClick={onClear}
           className="absolute right-0.5 top-0.5 ml-0.5 shrink-0 p-0.5 text-text-muted hover:text-text opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity"
         >

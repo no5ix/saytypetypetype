@@ -21,6 +21,8 @@ export interface PickerView {
   allCompleted: boolean;
   error?: string | null;
   theme: string;
+  /** Resolved UI language (`zh-CN` | `en`) for renderer-owned strings. */
+  language?: string;
   targetApp?: string | null;
   /**
    * Cards per row the native layout *asked for*, computed from the target

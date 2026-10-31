@@ -1,6 +1,6 @@
 ---
 name: github-release
-description: Publish validated VoicePaste releases from this repository. Use when the user wants to prepare a release, verify release readiness, create or update a GitHub Release, upload installers and update metadata, or generate release notes. Triggers on any mention of releasing, publishing, version bumps, or shipping a new version of VoicePaste.
+description: Publish validated SayTypeTypeType releases from this repository. Use when the user wants to prepare a release, verify release readiness, create or update a GitHub Release, upload installers and update metadata, or generate release notes. Triggers on any mention of releasing, publishing, version bumps, or shipping a new version of SayTypeTypeType.
 ---
 
 # GitHub Release
@@ -115,7 +115,7 @@ pnpm run pack -s
 pnpm run pack
 
 # 3. Copy Windows artifacts into the mac dist/:
-#      VoicePaste_<version>_x64-setup.exe, .exe.sig, _x64_en-US.msi
+#      SayTypeTypeType_<version>_x64-setup.exe, .exe.sig, _x64_en-US.msi
 
 # 4. macOS host — MUST run: rebuild latest.json from the merged dist/
 pnpm run pack --gen-json
@@ -124,7 +124,7 @@ pnpm run pack --gen-json
 `pack -s` notarizes + staples the dmg as well (Tauri only notarizes the .app). Verify before uploading:
 
 ```bash
-spctl -a -vvv -t install dist/VoicePaste_<version>_aarch64.dmg   # expect: source=Notarized Developer ID
+spctl -a -vvv -t install dist/SayTypeTypeType_<version>_aarch64.dmg   # expect: source=Notarized Developer ID
 ```
 
 Validate the full artifact set:
@@ -210,10 +210,10 @@ Mirror the historical GitHub Release style:
 
 | 平台 | 下载 |
 |------|------|
-| macOS (Apple Silicon) | [`VoicePaste_<version>_aarch64.dmg`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/VoicePaste_<version>_aarch64.dmg) |
-| macOS (Intel) | [`VoicePaste_<version>_x64.dmg`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/VoicePaste_<version>_x64.dmg) |
-| Windows (x64 NSIS) | [`VoicePaste_<version>_x64-setup.exe`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/VoicePaste_<version>_x64-setup.exe) |
-| Windows (x64 MSI) | [`VoicePaste_<version>_x64_en-US.msi`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/VoicePaste_<version>_x64_en-US.msi) |
+| macOS (Apple Silicon) | [`SayTypeTypeType_<version>_aarch64.dmg`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/SayTypeTypeType_<version>_aarch64.dmg) |
+| macOS (Intel) | [`SayTypeTypeType_<version>_x64.dmg`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/SayTypeTypeType_<version>_x64.dmg) |
+| Windows (x64 NSIS) | [`SayTypeTypeType_<version>_x64-setup.exe`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/SayTypeTypeType_<version>_x64-setup.exe) |
+| Windows (x64 MSI) | [`SayTypeTypeType_<version>_x64_en-US.msi`](https://github.com/that-yolanda/voicepaste/releases/download/v<version>/SayTypeTypeType_<version>_x64_en-US.msi) |
 
 **Full Changelog**: https://github.com/that-yolanda/voicepaste/compare/v<previous>...v<version>
 ```
@@ -224,7 +224,7 @@ Mirror the historical GitHub Release style:
 
 ## Update Channels
 
-VoicePaste uses two update channels served from the same GitHub repository. The key constraint is that **GitHub's `/releases/latest/` URL only resolves to the latest non-prerelease release** — there is no equivalent URL for prerelease releases.
+SayTypeTypeType uses two update channels served from the same GitHub repository. The key constraint is that **GitHub's `/releases/latest/` URL only resolves to the latest non-prerelease release** — there is no equivalent URL for prerelease releases.
 
 ### Architecture
 
@@ -232,13 +232,13 @@ VoicePaste uses two update channels served from the same GitHub repository. The 
 Stable Release (v1.3.0, --latest)
 ├── latest.json                         ← stable metadata (multi-platform)
 ├── latest-beta.json                    ← beta metadata (platforms point to beta release assets)
-├── VoicePaste_1.3.0_aarch64.dmg
+├── SayTypeTypeType_1.3.0_aarch64.dmg
 └── ...
 
 Beta Release (v1.3.1-beta, --prerelease)
-├── VoicePaste_1.3.1-beta_aarch64.dmg
-├── VoicePaste_1.3.1-beta_aarch64.app.tar.gz
-└── VoicePaste_1.3.1-beta_aarch64.app.tar.gz.sig
+├── SayTypeTypeType_1.3.1-beta_aarch64.dmg
+├── SayTypeTypeType_1.3.1-beta_aarch64.app.tar.gz
+└── SayTypeTypeType_1.3.1-beta_aarch64.app.tar.gz.sig
 ```
 
 ### Endpoint URLs
@@ -282,17 +282,17 @@ Always upload the platform installers and update metadata files required by `tau
 - **Updater metadata** (one file for all platforms):
   - `latest.json` (stable) or `latest-beta.json` (beta) — multi-platform JSON with `platforms` map
 - macOS (Apple Silicon):
-  - `VoicePaste_<version>_aarch64.dmg`
-  - `VoicePaste_<version>_aarch64.app.tar.gz`
-  - `VoicePaste_<version>_aarch64.app.tar.gz.sig`
+  - `SayTypeTypeType_<version>_aarch64.dmg`
+  - `SayTypeTypeType_<version>_aarch64.app.tar.gz`
+  - `SayTypeTypeType_<version>_aarch64.app.tar.gz.sig`
 - macOS (Intel):
-  - `VoicePaste_<version>_x64.dmg`
-  - `VoicePaste_<version>_x64.app.tar.gz`
-  - `VoicePaste_<version>_x64.app.tar.gz.sig`
+  - `SayTypeTypeType_<version>_x64.dmg`
+  - `SayTypeTypeType_<version>_x64.app.tar.gz`
+  - `SayTypeTypeType_<version>_x64.app.tar.gz.sig`
 - Windows (x64):
-  - `VoicePaste_<version>_x64-setup.exe` (NSIS installer; also the updater payload)
-  - `VoicePaste_<version>_x64-setup.exe.sig`
-  - `VoicePaste_<version>_x64_en-US.msi`
+  - `SayTypeTypeType_<version>_x64-setup.exe` (NSIS installer; also the updater payload)
+  - `SayTypeTypeType_<version>_x64-setup.exe.sig`
+  - `SayTypeTypeType_<version>_x64_en-US.msi`
 - Keep all assets for the same version in the same GitHub Release.
 
 ## Commands
@@ -341,6 +341,6 @@ For release-notes draft:
   - Supports `--platforms` flag for partial validation
   - Prints the exact files that should be uploaded
 - `render-release-notes.sh`
-  - Produces a release-notes draft in the preferred VoicePaste GitHub Release format
+  - Produces a release-notes draft in the preferred SayTypeTypeType GitHub Release format
   - Auto-detects previous version from git tags
   - Groups commits by conventional commit type

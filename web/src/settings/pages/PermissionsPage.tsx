@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useT } from "@/i18n";
 import type { SettingsEvent } from "@/settings/bridge";
 import {
   getAccessibilityStatus,
@@ -21,6 +22,7 @@ import { useSettings } from "@/settings/SettingsProvider";
 
 export function PermissionsPage() {
   const { settings } = useSettings();
+  const t = useT();
   const [micStatus, setMicStatus] = useState<string>("unknown");
   const [accStatus, setAccStatus] = useState<string>("unknown");
 
@@ -67,29 +69,29 @@ export function PermissionsPage() {
 
   return (
     <PageLayout>
-      <PageHeader title="系统权限" />
+      <PageHeader title={t("系统权限")} />
       <Section>
         <SectionContent>
           <SectionItemList>
             {isMac && (
               <SectionItem
-                title="辅助功能"
-                tooltip="用于将文字输入到其他应用"
+                title={t("辅助功能")}
+                tooltip={t("用于将文字输入到其他应用")}
                 action={
                   <div className="flex items-center gap-2">
                     <span
                       className={`w-2 h-2 rounded-full ${accStatus === "granted" ? "bg-success" : "bg-error"}`}
                     />
                     <span className="text-xs text-text-muted">
-                      {accStatus === "granted" ? "已授权" : "未授权"}
+                      {accStatus === "granted" ? t("已授权") : t("未授权")}
                     </span>
-                    <Button onClick={openAccessibilitySettings}>前往授权</Button>
+                    <Button onClick={openAccessibilitySettings}>{t("前往授权")}</Button>
                   </div>
                 }
               />
             )}
             <SectionItem
-              title="麦克风"
+              title={t("麦克风")}
               last
               action={
                 <div className="flex items-center gap-2">
@@ -104,10 +106,10 @@ export function PermissionsPage() {
                   />
                   <span className="text-xs text-text-muted">
                     {micStatus === "granted"
-                      ? "已授权"
+                      ? t("已授权")
                       : micStatus === "denied"
-                        ? "已拒绝"
-                        : "未授权"}
+                        ? t("已拒绝")
+                        : t("未授权")}
                   </span>
                   <Button
                     onClick={async () => {
@@ -115,7 +117,7 @@ export function PermissionsPage() {
                       check();
                     }}
                   >
-                    检测
+                    {t("检测")}
                   </Button>
                 </div>
               }
@@ -126,7 +128,9 @@ export function PermissionsPage() {
 
       <p className="text-xs text-text-muted">
         {isMac &&
-          "macOS 需要麦克风权限和辅助功能权限，可前往：系统设置 > 隐私与安全 > 麦克风 / 辅助功能"}
+          t(
+            "macOS 需要麦克风权限和辅助功能权限，可前往：系统设置 > 隐私与安全 > 麦克风 / 辅助功能",
+          )}
       </p>
     </PageLayout>
   );

@@ -1,4 +1,4 @@
-# VoicePaste Configuration Guide
+# SayTypeTypeType Configuration Guide
 
 ## Quick Start
 
@@ -9,7 +9,7 @@
 ## System Permissions
 
 - The system will request Microphone permission the first time you use voice input
-- macOS requires manually adding Accessibility permission to enable auto-paste after voice input. Go to Settings > System Permissions > Accessibility > Grant Access to add VoicePaste to the allow list; or directly add it via System Settings > Privacy & Security > Accessibility.
+- macOS requires manually adding Accessibility permission to enable auto-paste after voice input. Go to Settings > System Permissions > Accessibility > Grant Access to add SayTypeTypeType to the allow list; or directly add it via System Settings > Privacy & Security > Accessibility.
 
 ## ASR Model Selection
 
@@ -98,11 +98,11 @@ Refer to the [Volcengine Streaming ASR API Documentation](https://www.volcengine
 - Log in to [ElevenLabs > ElevenAPI > API Keys](https://elevenlabs.io/app/api/api-keys)
 - Create an API Key and enable `Speech to Text` access
 ![ElevenLabs API Key Permissions](docs/screenshots/elevenlabs.png)
-- Enter your API Key in the VoicePaste settings page
+- Enter your API Key in the SayTypeTypeType settings page
 
 ### Local Models
 
-VoicePaste local models are powered by sherpa-onnx, with VAD enabled by default and an optional Punctuation model for post-processing (adding punctuation marks).
+SayTypeTypeType local models are powered by sherpa-onnx, with VAD enabled by default and an optional Punctuation model for post-processing (adding punctuation marks).
 
 #### Model Download
 

@@ -1,4 +1,4 @@
-# VoicePaste 配置文件
+# SayTypeTypeType 配置文件
 #
 # 所有参数的默认值见 registry.json。
 # 本文件仅记录你修改过的参数，未列出的参数自动从 registry.json 读取默认值。
@@ -7,6 +7,8 @@
 app:
   # 默认全局主键：macOS 左 Command，Windows 左 Ctrl；省略时按平台自动选择。
   hotkey_mode: toggle             # 原文输入模式；全局主键始终用于免提唤起
+  # 界面语言：system（跟随系统）/ zh-CN / en；省略时等同 system。
+  language: system
   # voice_hotkey 默认跟随全局主键；hold 时需配置独立键，完整按住 500ms 后启动。
   remove_trailing_period: true    # 自动删除识别结果末尾的句号
   keep_clipboard: true            # 保留识别结果在剪贴板

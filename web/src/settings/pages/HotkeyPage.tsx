@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "@/i18n";
 import { loadPrompts, savePrompts, validateHotkeySettings } from "@/settings/bridge";
 import { HotkeyInput } from "@/settings/components/HotkeyInput";
 import { KeyCap } from "@/settings/components/KeyCap";
@@ -17,13 +18,11 @@ import { normalizeHotkeyToken } from "@/settings/lib/hotkey";
 import { useSettings } from "@/settings/SettingsProvider";
 import type { PromptItem } from "@/settings/types/prompts";
 
-const MODE_OPTIONS = [
-  { value: "toggle", label: "免提模式" },
-  { value: "hold", label: "按住说话" },
-];
+const MODE_VALUES = ["toggle", "hold"] as const;
 
 export function HotkeyPage() {
   const { settings, scheduleSave, refresh } = useSettings();
+  const t = useT();
   const cfg = settings?.parsedConfig || ({} as Record<string, unknown>);
   const app = (cfg.app || {}) as Record<string, string | undefined>;
   const isMac = settings?.runtime?.platform === "macos";
@@ -33,6 +32,11 @@ export function HotkeyPage() {
   const issues = (settings?.runtime?.hotkeyIssues ?? []) as { id: string; message: string }[];
   const hotkeyMode = (app.hotkey_mode as string) || "toggle";
   const { toast, showToast } = useToast();
+  // Rebuilt per render so the segmented labels follow the UI language.
+  const modeOptions = MODE_VALUES.map((value) => ({
+    value,
+    label: value === "toggle" ? t("免提模式") : t("按住说话"),
+  }));
 
   const [prompts, setPrompts] = useState<PromptItem[]>([]);
   // Which field is currently capturing — only one recorder runs at a time, so
@@ -60,8 +64,8 @@ export function HotkeyPage() {
       .map((issue) => issue.message)
       .filter((message) => !shownIssues.current.has(message));
     for (const message of messages) shownIssues.current.add(message);
-    if (messages.length > 0) showToast(messages.join("；"), "error");
-  }, [issues, showToast]);
+    if (messages.length > 0) showToast(messages.join(t("；")), "error");
+  }, [issues, showToast, t]);
 
   const updatePrompt = useCallback(
     async (index: number, patch: Partial<PromptItem>) => {
@@ -76,7 +80,7 @@ export function HotkeyPage() {
           if (patch.hotkey_mode === undefined) throw error;
           updated = updated.map((p, i) => (i === index ? { ...p, hotkey: "" } : p));
           await validateHotkeySettings(cfg, updated, targetId);
-          clearedReason = `${String(error)}；已清除该快捷键，请重新设置`;
+          clearedReason = t("{error}；已清除该快捷键，请重新设置", { error: String(error) });
         }
         await savePrompts(updated as unknown[]);
         setPrompts(updated);
@@ -86,7 +90,7 @@ export function HotkeyPage() {
         showToast(String(error), "error");
       }
     },
-    [cfg, prompts, refresh, showToast],
+    [cfg, prompts, refresh, showToast, t],
   );
 
   const updateApp = useCallback(
@@ -101,7 +105,7 @@ export function HotkeyPage() {
           if (patch.hotkey_mode === undefined) throw error;
           updates = { ...patch, voice_hotkey: "" };
           await validateHotkeySettings({ ...cfg, app: { ...app, ...updates } }, prompts, targetId);
-          clearedReason = `${String(error)}；已清除该快捷键，请重新设置`;
+          clearedReason = t("{error}；已清除该快捷键，请重新设置", { error: String(error) });
         }
         await scheduleSave({ app: updates });
         if (clearedReason) showToast(clearedReason, "error");
@@ -109,7 +113,7 @@ export function HotkeyPage() {
         showToast(String(error), "error");
       }
     },
-    [cfg, app, prompts, scheduleSave, showToast],
+    [cfg, app, prompts, scheduleSave, showToast, t],
   );
 
   // The recordable hotkey field for one prompt row — its "stop" key in toggle
@@ -134,12 +138,18 @@ export function HotkeyPage() {
 
   return (
     <PageLayout>
-      <PageHeader title="快捷键" description="为语音输入配置自定义快捷键。">
+      <PageHeader title={t("快捷键")} description={t("为语音输入配置自定义快捷键。")}>
         <div className="flex flex-col gap-1 mt-2 text-text-muted">
-          <p>免提模式：按全局主键开始，按语音输入或润色模板各自的结束键完成；</p>
-          <p>按住说话：完整按住对应快捷键 500ms 后开始，松开结束；启动后其他按键不改变本次录音。</p>
+          <p>{t("免提模式：按全局主键开始，按语音输入或润色模板各自的结束键完成；")}</p>
           <p>
-            录制快捷键时按 <KeyCap label={normalizeHotkeyToken("ESC", isMac).main} /> 取消
+            {t(
+              "按住说话：完整按住对应快捷键 500ms 后开始，松开结束；启动后其他按键不改变本次录音。",
+            )}
+          </p>
+          <p className="flex items-center gap-1">
+            {t("录制快捷键时按")}
+            <KeyCap label={normalizeHotkeyToken("ESC", isMac).main} />
+            {t("取消")}
           </p>
         </div>
       </PageHeader>
@@ -147,13 +157,15 @@ export function HotkeyPage() {
       {/* Section 1 — global main key (the hands-free wake key) */}
       <Section>
         <SectionHeader
-          title="全局语音主键"
-          subtitle="所有免提模式均以此键开始录音；按住说话需另设独立快捷键。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。"
+          title={t("全局语音主键")}
+          subtitle={t(
+            "所有免提模式均以此键开始录音；按住说话需另设独立快捷键。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。",
+          )}
         />
         <SectionContent>
           <SectionItemList>
             <SectionItem
-              title="语音唤起"
+              title={t("语音唤起")}
               last
               action={
                 <HotkeyInput
@@ -175,11 +187,11 @@ export function HotkeyPage() {
 
       {/* Section 2 — per-feature hotkeys (voice input + each polish prompt) */}
       <Section>
-        <SectionHeader title="快捷键" subtitle="点击输入框进入录制 → 按下快捷键" />
+        <SectionHeader title={t("快捷键")} subtitle={t("点击输入框进入录制 → 按下快捷键")} />
         <SectionContent>
           <SectionItemList>
             <SectionItem
-              title="语音输入"
+              title={t("语音输入")}
               action={
                 <div className="flex items-center gap-2">
                   {hotkeyMode === "toggle" ? (
@@ -212,7 +224,7 @@ export function HotkeyPage() {
                     />
                   )}
                   <SegmentedControl
-                    options={MODE_OPTIONS}
+                    options={modeOptions}
                     value={hotkeyMode}
                     onChange={(v) =>
                       updateApp({
@@ -251,7 +263,7 @@ export function HotkeyPage() {
                         />
                       )}
                       <SegmentedControl
-                        options={MODE_OPTIONS}
+                        options={modeOptions}
                         value={mode}
                         onChange={(v) => updatePrompt(idx, { hotkey_mode: v })}
                       />

@@ -51,6 +51,9 @@ pub(crate) struct PickerView {
     pub all_completed: bool,
     pub error: Option<String>,
     pub theme: String,
+    /// Resolved UI language (`zh-CN` | `en`) so the renderer localizes its own
+    /// strings; titles come from the backend already translated.
+    pub language: &'static str,
     pub target_app: Option<String>,
     /// Cards per row the native layout *asked for*, derived from the target
     /// display's work area with the same policy that sized the window. The
@@ -123,7 +126,7 @@ impl PickerStore {
         options.push(PickerOption {
             view: PickerOptionView {
                 id: ORIGINAL_OPTION_ID.to_string(),
-                title: "原始转写".to_string(),
+                title: crate::i18n::tr("原始转写", "Original transcript").to_string(),
                 hotkey: original_hotkey,
                 kind: "original".to_string(),
                 status: "ready".to_string(),
@@ -325,6 +328,7 @@ impl PickerSession {
                 .all(|option| option.view.status != "loading"),
             error: self.error.clone(),
             theme: self.theme.clone(),
+            language: crate::i18n::language().code(),
             target_app: self
                 .target
                 .as_ref()

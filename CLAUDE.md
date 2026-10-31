@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**VoicePaste** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default global wake key is left Command (`MetaLeft`) on macOS and left Ctrl (`ControlLeft`) on Windows (configurable); all toggle recordings start with it; pressing it again outputs raw text, while left Shift (`ShiftLeft`) finishes with the default general-cleanup template, while hold-to-talk uses independent shortcuts held for 500ms, and auto-pastes recognized text into the currently focused input field. Supports macOS and Windows.
+**SayTypeTypeType** — a Tauri v2 desktop app that provides voice-to-text input via a global hotkey. The default global wake key is left Command (`MetaLeft`) on macOS and left Ctrl (`ControlLeft`) on Windows (configurable); all toggle recordings start with it, and only the main/voice stop keys finish one — template shortcuts and ordinary keys never stop a running recording. A template shortcut starts its own recording with that prompt while idle; hold-to-talk uses independent shortcuts held for 500ms; recognized text auto-pastes into the app frontmost at selection time. Supports macOS and Windows.
 
 Uses ByteDance Doubao streaming ASR via WebSocket with a custom binary framing protocol (gzip-compressed JSON payloads).
 
@@ -209,7 +209,7 @@ For release work, use the project skill at `.claude/skills/github-release`. It i
 
 ### Beta Update Channel
 
-VoicePaste supports a beta update channel for prerelease testing. The architecture is critical to get right:
+SayTypeTypeType supports a beta update channel for prerelease testing. The architecture is critical to get right:
 
 - **`/releases/latest/` only resolves to the latest non-prerelease release** — there is no static URL for prerelease releases on GitHub
 - Both `latest.json` (stable) and `latest-beta.json` (beta) must be uploaded to the **stable release** so both URLs resolve
