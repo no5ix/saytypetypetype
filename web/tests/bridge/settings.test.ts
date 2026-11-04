@@ -35,6 +35,7 @@ import {
   loadPrompts,
   onEvent,
   onModelDownloadProgress,
+  onStatsChanged,
   onUpdateProgress,
   recordHotkey,
   reinitHotkey,
@@ -206,6 +207,32 @@ describe("settings bridge — event listeners", () => {
   it("onModelDownloadProgress calls listen with model:download:progress", () => {
     onModelDownloadProgress(() => {});
     expect(listen).toHaveBeenCalledWith("model:download:progress", expect.any(Function));
+  });
+
+  it("onStatsChanged fires only for stats-changed settings events", () => {
+    const seen: unknown[] = [];
+    const cleanup = onStatsChanged((payload) => seen.push(payload));
+    expect(listen).toHaveBeenCalledWith("settings:event", expect.any(Function));
+    const handler = vi.mocked(listen).mock.calls.at(-1)![1] as (e: { payload: unknown }) => void;
+    // Unrelated settings events must not refresh the dashboard.
+    handler({ payload: { type: "theme-changed", payload: {} } });
+    handler({ payload: { type: "stats-changed", payload: { reason: "session-delivered" } } });
+    expect(seen).toEqual([{ reason: "session-delivered" }]);
+    cleanup();
+  });
+
+  it("onStatsChanged cleanup stops delivering events", async () => {
+    const unlistenFn = vi.fn();
+    vi.mocked(listen).mockResolvedValueOnce(unlistenFn as unknown as () => void);
+    const listener = vi.fn();
+    const cleanup = onStatsChanged(listener);
+    const handler = vi.mocked(listen).mock.calls.at(-1)![1] as (e: { payload: unknown }) => void;
+    cleanup();
+    handler({ payload: { type: "stats-changed", payload: {} } });
+    expect(listener).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(unlistenFn).toHaveBeenCalled();
+    });
   });
 });
 

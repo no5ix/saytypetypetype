@@ -22,5 +22,8 @@ mod asr_parakeet;
 #[cfg(feature = "asr-integration")]
 mod asr_zipformer_zh_en;
 
+#[cfg(all(feature = "asr-integration", target_os = "macos"))]
+mod asr_memory;
+
 #[cfg(feature = "llm-integration")]
 mod llm_integration;

@@ -316,6 +316,30 @@ export function onEvent(listener: (event: SettingsEvent) => void): () => void {
   };
 }
 
+export interface StatsChangedPayload {
+  /** Why the counters changed ("session-delivered" for a completed dictation). */
+  reason?: string;
+}
+
+/**
+ * Fires after the backend has persisted a completed dictation into the usage
+ * counters, so the dashboard (Sessions / Words / Mic Time today) can refresh
+ * immediately instead of waiting for a page change or an app restart. The
+ * backend emits exactly one event per recorded success; failures never emit.
+ */
+export function onStatsChanged(listener: (payload: StatsChangedPayload) => void): () => void {
+  let active = true;
+  const unlisten = listen<SettingsEvent>("settings:event", (event) => {
+    if (active && event.payload && event.payload.type === "stats-changed") {
+      listener((event.payload.payload || {}) as StatsChangedPayload);
+    }
+  });
+  return () => {
+    active = false;
+    unlisten.then((fn) => fn());
+  };
+}
+
 // ---- Model management ----
 
 export async function getModelRegistry(): Promise<unknown[]> {

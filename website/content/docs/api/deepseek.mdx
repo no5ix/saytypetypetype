@@ -13,11 +13,11 @@ DeepSeek handles text translation and polishing in VoicePaste, not speech recogn
 ## 2. Configure VoicePaste
 
 1. Open Settings → Large Language Model and select DeepSeek.
-2. Enter the API key. You can use the app's preset endpoint, `https://api.deepseek.com/v1/chat/completions`.
+2. Enter the API key. You can use the app's preset base URL, `https://api.deepseek.com/v1`.
 3. Use a model identifier currently supported by the API. Start with the app preset.
 4. Finish editing the fields, then configure a text template.
 
-This field expects the full Chat Completions endpoint, not the website homepage or console URL.
+This field takes the API base URL; the app requests `<base>/chat/completions` itself. Configurations saved by older versions that already contain the full endpoint keep working unchanged. Do not enter the website homepage or console URL.
 
 ## 3. Verify translation or polishing
 

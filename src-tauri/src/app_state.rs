@@ -119,8 +119,13 @@ pub struct AppInner {
     /// from older sessions are rejected inside the store.
     pub picker: crate::picker::model::PickerStore,
     /// Recognizers kept alive across recordings while voice input is active.
-    /// Unloaded on app exit and whenever the ASR configuration changes.
+    /// Unloaded on app exit, whenever the ASR configuration changes, and after
+    /// a long idle stretch (see [`schedule_idle_model_unload`]).
     pub asr_models: Arc<crate::asr::SherpaModelCache>,
+    /// Generation guard for the pending idle model-unload task. Bumped on
+    /// every state transition so a scheduled unload only fires if the app
+    /// stayed Idle (no new recording) for the whole window.
+    pub model_idle_ticket: std::sync::atomic::AtomicU64,
     /// When the current stop was requested. Used only for latency diagnostics;
     /// never contains audio or transcript content.
     pub stop_started_at: std::sync::Mutex<Option<std::time::Instant>>,
@@ -173,6 +178,7 @@ pub fn create_app_state(
         session_target: Mutex::new(None),
         picker: crate::picker::model::PickerStore::default(),
         asr_models: Arc::new(crate::asr::SherpaModelCache::new()),
+        model_idle_ticket: std::sync::atomic::AtomicU64::new(0),
         stop_started_at: std::sync::Mutex::new(None),
         capture_started_at: std::sync::Mutex::new(None),
         session_recording_ms: std::sync::Mutex::new(0),
@@ -182,6 +188,50 @@ pub fn create_app_state(
 // ---------------------------------------------------------------------------
 // Recording state machine helpers
 // ---------------------------------------------------------------------------
+
+/// How long the app must stay Idle before the cached ASR recognizers are
+/// released. The parakeet-class model set is ~700 MB resident; an always-on
+/// tray app otherwise carries it through every idle hour. Reloading costs a
+/// few seconds, and audio captured while a cold session connects is buffered
+/// (up to ~30 s in `pending_audio`), so nothing the user says is lost.
+const ASR_MODEL_IDLE_UNLOAD_SECS: u64 = 300;
+
+/// Profiling/testing override for the idle unload window (seconds). Lower it
+/// to observe the release in a memory profile without waiting five minutes;
+/// unset keeps the production window.
+fn asr_model_idle_unload_secs() -> u64 {
+    std::env::var("VOICEPASTE_ASR_IDLE_UNLOAD_SECONDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(ASR_MODEL_IDLE_UNLOAD_SECS)
+}
+
+/// (Re)arm the idle model unload. Every state transition bumps the ticket, so
+/// an in-flight sleep either finds its ticket stale (a newer transition
+/// happened) or re-checks the live state before releasing anything. An active
+/// session holds its own `Arc` to the recognizer, so unloading the cache
+/// never yanks a model out from under a recording.
+pub(crate) fn schedule_idle_model_unload(app_inner: &Arc<AppInner>) {
+    use std::sync::atomic::Ordering;
+    let ticket = app_inner.model_idle_ticket.fetch_add(1, Ordering::SeqCst) + 1;
+    let inner = Arc::clone(app_inner);
+    tauri::async_runtime::spawn(async move {
+        let secs = asr_model_idle_unload_secs();
+        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+        if inner.model_idle_ticket.load(Ordering::SeqCst) != ticket {
+            // A newer state transition superseded this window.
+            return;
+        }
+        if *inner.state.lock().await != AppState::Idle {
+            return;
+        }
+        if inner.asr_session.lock().await.is_some() {
+            return;
+        }
+        inner.asr_models.unload(&format!("idle for {secs}s"));
+    });
+}
 
 /// Map an [`AppState`] to the string label emitted to the overlay and logged.
 pub(crate) fn app_state_name(state: &AppState) -> &'static str {
@@ -229,6 +279,16 @@ pub(crate) async fn set_app_state(
         *app_inner.wave_activity.lock().await = crate::overlay::shared::WaveActivity::default();
     }
     sync_escape_shortcut(app, &next_state);
+
+    // Model lifecycle follows the session lifecycle: starting a new state
+    // invalidates any pending idle unload; reaching Idle arms a fresh one.
+    if next_state == AppState::Idle {
+        schedule_idle_model_unload(app_inner);
+    } else {
+        app_inner
+            .model_idle_ticket
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 
     let _ = app.emit(
         "overlay:event",

@@ -29,6 +29,9 @@ audio:
 
 llm:
   provider: deepseek
+  # url 填 API 基础地址（如 https://api.deepseek.com/v1 或 http://127.0.0.1:8000/v1），
+  # 应用会自动拼接 /chat/completions；已填写完整端点的旧配置继续兼容。
   deepseek:
+    url: "https://api.deepseek.com/v1"
     api_key: ""
     model: deepseek-v4-flash

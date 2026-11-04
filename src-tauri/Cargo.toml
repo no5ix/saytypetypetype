@@ -65,6 +65,9 @@ llm-integration = []
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+# RSS sampling for the gated ASR memory profiling harness
+# (`tests/asr_memory.rs`); macOS-only use, dev builds only.
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

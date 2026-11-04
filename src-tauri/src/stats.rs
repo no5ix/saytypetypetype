@@ -402,9 +402,20 @@ impl StatsService {
         }
     }
 
+    /// Locate one history entry by timestamp.
+    ///
+    /// The entry's own timestamp names its day file, so this reads exactly one
+    /// JSONL file instead of materializing up to 365 days of records — the
+    /// retry/regenerate paths call this on every attempt, and history keeps
+    /// growing.
     pub fn find_history(&self, ts: &str) -> Option<HistoryEntry> {
-        self.get_history(365)
-            .into_iter()
+        let parsed = chrono::DateTime::parse_from_rfc3339(ts).ok()?;
+        let key = parsed.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let content = fs::read_to_string(self.history_dir.join(format!("{key}.jsonl"))).ok()?;
+        content
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str::<HistoryEntry>(line).ok())
             .find(|entry| entry.ts == ts)
     }
 
@@ -879,6 +890,24 @@ mod tests {
         let other_ts = format!("{}9", &ts[..ts.len() - 1]);
         assert!(!svc.update_history_text(&other_ts, "nope"));
         assert!(!svc.update_history_text(&ts, ""));
+    }
+
+    #[test]
+    fn find_history_reads_only_the_entrys_day_file() {
+        let (mut svc, dir) = new_stats_service();
+        svc.record_session_with_audio("一条记录", None, None, PolishRecord::default(), 0);
+        let ts = svc.get_history(365)[0].ts.clone();
+
+        let found = svc.find_history(&ts).expect("entry found");
+        assert_eq!(found.text, "一条记录");
+        assert!(svc.find_history("not-a-timestamp").is_none());
+        assert!(svc
+            .find_history(&format!("{}T00:00:00+00:00", "1999-01-01"))
+            .is_none());
+        // No full-history scan: only the entry's own day file exists on disk.
+        let history_dir = dir.path().join("history");
+        let files = std::fs::read_dir(&history_dir).unwrap().count();
+        assert_eq!(files, 1);
     }
 
     #[test]

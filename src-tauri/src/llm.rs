@@ -11,6 +11,10 @@ const DEFAULT_STRUCTURE_PROMPT: &str = "整理语音转写内容，仅输出最�
 
 #[derive(Debug, Clone)]
 struct ProviderDefaults {
+    /// Base URL for the provider's OpenAI-compatible surface. The chat
+    /// completions endpoint is derived from it by [`chat_completions_url`]
+    /// instead of being stored verbatim, so the settings UI and user configs
+    /// only ever carry the base address (e.g. `https://api.deepseek.com/v1`).
     default_url: &'static str,
     default_model: &'static str,
 }
@@ -18,37 +22,63 @@ struct ProviderDefaults {
 fn get_provider_defaults(provider: &str) -> ProviderDefaults {
     match provider {
         "deepseek" => ProviderDefaults {
-            default_url: "https://api.deepseek.com/v1/chat/completions",
+            default_url: "https://api.deepseek.com/v1",
             default_model: "deepseek-v4-flash",
         },
         "openai" => ProviderDefaults {
-            default_url: "https://api.openai.com/v1/chat/completions",
+            default_url: "https://api.openai.com/v1",
             default_model: "gpt-4.1-mini",
         },
+        // Anthropic's OpenAI-compatible surface lives under /v1; the request
+        // still authenticates with x-api-key (see `call_llm_once`).
         "anthropic" => ProviderDefaults {
-            default_url: "https://api.anthropic.com/v1/chat/completions",
+            default_url: "https://api.anthropic.com/v1",
             default_model: "claude-3-5-haiku-latest",
         },
+        // Gemini's OpenAI-compatible surface is versioned differently
+        // (/v1beta/openai) — the base keeps that prefix, so provider-specific
+        // path behavior is preserved rather than assuming every host uses /v1.
         "gemini" => ProviderDefaults {
-            default_url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            default_url: "https://generativelanguage.googleapis.com/v1beta/openai",
             default_model: "gemini-2.5-flash-lite",
         },
         "openrouter" => ProviderDefaults {
-            default_url: "https://openrouter.ai/api/v1/chat/completions",
+            default_url: "https://openrouter.ai/api/v1",
             default_model: "openai/gpt-4o-mini",
         },
         "siliconflow" => ProviderDefaults {
-            default_url: "https://api.siliconflow.cn/v1/chat/completions",
+            default_url: "https://api.siliconflow.cn/v1",
             default_model: "deepseek-ai/DeepSeek-V3",
         },
         "ollama" => ProviderDefaults {
-            default_url: "http://localhost:11434/v1/chat/completions",
+            default_url: "http://localhost:11434/v1",
             default_model: "llama3.1",
         },
         _ => ProviderDefaults {
             default_url: "",
             default_model: "",
         },
+    }
+}
+
+/// Build the chat-completions endpoint from a configured service URL.
+///
+/// The settings UI asks for a base URL (e.g. `http://127.0.0.1:8000/v1`) and
+/// every provider-specific path stays exactly as entered — this only appends
+/// the OpenAI-compatible `/chat/completions` suffix. Configurations written by
+/// older versions already contain the full endpoint; those pass through
+/// unchanged, so a base URL can never produce a doubled path such as
+/// `/v1/chat/completions/chat/completions`. Trailing slashes and surrounding
+/// whitespace are normalized.
+pub(crate) fn chat_completions_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
     }
 }
 
@@ -383,17 +413,19 @@ fn resolve_endpoint(config: &LlmConfig) -> Result<(String, String, String), Poli
         )));
     }
 
-    // The URL is the full chat-completions endpoint, stored verbatim so the
-    // settings UI shows exactly what we POST to. Fall back to the provider
-    // default endpoint only when the field is empty.
-    let url = if provider_url.trim().is_empty() {
+    // Users enter a base URL; the chat-completions path is constructed here —
+    // the single place endpoint assembly happens. Values saved by older
+    // versions (full endpoints) pass through unchanged. Fall back to the
+    // provider default base only when the field is empty.
+    let base = if provider_url.trim().is_empty() {
         if defaults.default_url.is_empty() {
             return Err(PolishError::config(format!("缺少 llm.{}.url", provider_id)));
         }
-        defaults.default_url.to_string()
+        defaults.default_url
     } else {
-        provider_url.trim().trim_end_matches('/').to_string()
+        provider_url.as_str()
     };
+    let url = chat_completions_url(base);
 
     Ok((url, api_key, model))
 }
@@ -1104,5 +1136,110 @@ mod tests {
     fn validate_provider_config_overrides_top_level() {
         let result = validate_llm_config(&make_openai_config());
         assert!(result.is_ok());
+    }
+
+    // ── base URL → chat-completions endpoint tests ─────────────────────────
+
+    #[test]
+    fn base_url_gets_chat_completions_appended() {
+        assert_eq!(
+            chat_completions_url("http://127.0.0.1:8000/v1"),
+            "http://127.0.0.1:8000/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_is_normalized_without_double_slash() {
+        assert_eq!(
+            chat_completions_url("http://127.0.0.1:8000/v1/"),
+            "http://127.0.0.1:8000/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("http://127.0.0.1:8000/"),
+            "http://127.0.0.1:8000/chat/completions"
+        );
+    }
+
+    #[test]
+    fn full_endpoint_from_older_config_passes_through_unchanged() {
+        // Backward compatibility: configs saved before base-URL support store
+        // the complete endpoint and must not grow a duplicated suffix.
+        let full = "http://127.0.0.1:8000/v1/chat/completions";
+        assert_eq!(chat_completions_url(full), full);
+        assert_eq!(chat_completions_url(&format!("{full}/")), full);
+    }
+
+    #[test]
+    fn host_only_base_gets_single_chat_completions_path() {
+        assert_eq!(
+            chat_completions_url("http://127.0.0.1:8000"),
+            "http://127.0.0.1:8000/chat/completions"
+        );
+    }
+
+    #[test]
+    fn whitespace_is_trimmed() {
+        assert_eq!(
+            chat_completions_url("  https://api.openai.com/v1  "),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn empty_base_yields_empty_endpoint() {
+        assert_eq!(chat_completions_url(""), "");
+        assert_eq!(chat_completions_url("/"), "");
+    }
+
+    #[test]
+    fn resolve_endpoint_builds_endpoint_from_base_url() {
+        let mut config = make_llm_config("openai_compatible");
+        config.openai_compatible = Some(ProviderConfig {
+            url: "http://127.0.0.1:8000/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "local-model".to_string(),
+        });
+        let (url, _, model) = resolve_endpoint(&config).unwrap();
+        assert_eq!(url, "http://127.0.0.1:8000/v1/chat/completions");
+        assert_eq!(model, "local-model");
+    }
+
+    #[test]
+    fn resolve_endpoint_keeps_legacy_full_endpoint() {
+        let mut config = make_llm_config("openai_compatible");
+        config.openai_compatible = Some(ProviderConfig {
+            url: "http://127.0.0.1:8000/v1/chat/completions".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "local-model".to_string(),
+        });
+        let (url, _, _) = resolve_endpoint(&config).unwrap();
+        assert_eq!(url, "http://127.0.0.1:8000/v1/chat/completions");
+    }
+
+    #[test]
+    fn resolve_endpoint_falls_back_to_provider_default_endpoint() {
+        // An empty url field uses the provider default base, which still gets
+        // the chat-completions path appended exactly once.
+        let config = make_llm_config("deepseek");
+        let (url, _, model) = resolve_endpoint(&config).unwrap();
+        assert_eq!(url, "https://api.deepseek.com/v1/chat/completions");
+        assert_eq!(model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_specific_paths_survive_endpoint_construction() {
+        // Gemini's OpenAI-compatible surface lives under /v1beta/openai, not
+        // /v1 — the base keeps that prefix and the endpoint stays correct.
+        let mut config = make_llm_config("gemini");
+        config.gemini = Some(ProviderConfig {
+            url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+            api_key: "key".to_string(),
+            model: "gemini-2.5-flash-lite".to_string(),
+        });
+        let (url, _, _) = resolve_endpoint(&config).unwrap();
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
     }
 }
