@@ -39,3 +39,15 @@ Follow English Conventional Commits, such as `fix(hotkey): prevent conflicting r
 ## Security & Agent Instructions
 
 Keep API keys, signing credentials, recordings, and local configuration out of commits. Use sanitized example files. Preserve separate desktop/website dependencies and follow `website/AGENTS.md` within that directory. Prefer `trash` over permanent deletion.
+
+## Minimal and Self-Explanatory UI
+
+Design principle: If the interface can explain itself through its structure and visual design, do not add paragraphs to explain it again.
+
+- Avoid unnecessary explanations: Do not add secondary labels, helper text, descriptions, or instructions when the purpose of an element is already clear from its label, appearance, context, or layout.
+- Let the layout do the explaining: Use clear visual hierarchy, intuitive grouping, consistent alignment, familiar controls, and meaningful spacing to communicate relationships and expected interactions.
+- Keep labels concise: Prefer short, descriptive labels over lengthy sentences. Do not repeat information already conveyed by the field label, placeholder, or surrounding interface.
+- Show guidance only when necessary: Add helper text only when users genuinely need additional context to make a decision or complete an unfamiliar or ambiguous task.
+- Prefer clarity over verbosity: Every UI element should serve a clear purpose. Remove decorative explanations, redundant wording, and unnecessary visual noise.
+- Use contextual feedback instead of permanent instructions: Prefer concise validation messages, meaningful error states, and just-in-time guidance over displaying instructions that most users do not need.
+- Do not sacrifice usability for minimalism: Keep essential accessibility labels, security warnings, important constraints, and genuinely useful guidance.
