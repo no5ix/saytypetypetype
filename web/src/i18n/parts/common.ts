@@ -168,6 +168,8 @@ export const EN_COMMON: Record<string, string> = {
   "用于语音识别后的文本润色与文本结构化，触发请前往「快捷键」页面配置对应提示词的快捷键":
     "Polishes and structures the transcript after recognition. Assign a trigger on the Shortcuts page",
   "API 配置": "API configuration",
+  "填写 API 基础地址（如 http://127.0.0.1:8000/v1），应用会自动拼接 /chat/completions；旧配置中的完整地址依然可用。":
+    "Enter the API base URL (e.g. http://127.0.0.1:8000/v1); the app appends /chat/completions automatically. Full endpoints saved by older versions still work.",
   模型: "Model",
   模型ID: "Model ID",
   硅基流动: "SiliconFlow",

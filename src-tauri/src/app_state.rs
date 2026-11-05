@@ -118,8 +118,11 @@ pub struct AppInner {
     /// Multi-version picker state for the active or most recent session. Results
     /// from older sessions are rejected inside the store.
     pub picker: crate::picker::model::PickerStore,
-    /// Recognizers kept alive across recordings while voice input is active.
-    /// Unloaded on app exit and whenever the ASR configuration changes.
+    /// Recognizers kept alive across recordings for the whole application
+    /// session. Unloaded only on app exit or when the ASR configuration
+    /// changes — never on idle. Immediate dictation startup is a product
+    /// requirement: a timed idle unload (5/10 min) must not be reintroduced
+    /// (see `asr_cache_stays_loaded_across_idle_windows` in `tests::asr_memory`).
     pub asr_models: Arc<crate::asr::SherpaModelCache>,
     /// When the current stop was requested. Used only for latency diagnostics;
     /// never contains audio or transcript content.
@@ -229,6 +232,13 @@ pub(crate) async fn set_app_state(
         *app_inner.wave_activity.lock().await = crate::overlay::shared::WaveActivity::default();
     }
     sync_escape_shortcut(app, &next_state);
+
+    // Model lifecycle: reaching `Idle` deliberately performs NO ASR model
+    // work. The cached recognizers stay resident for the entire application
+    // session so the first keypress of every dictation is warm; unloading
+    // them after 5-10 idle minutes was evaluated and rejected on product
+    // grounds (immediate dictation startup beats idle RAM savings). Do not
+    // schedule a timed unload from here.
 
     let _ = app.emit(
         "overlay:event",

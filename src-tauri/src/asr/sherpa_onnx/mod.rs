@@ -58,6 +58,14 @@ impl SherpaModelCache {
         self.online.unload(reason);
         self.punctuation.unload(reason);
     }
+
+    /// Test-only access to the offline slot so integration tests can load and
+    /// then assert model residency against a real recognizer
+    /// (`tests::asr_memory`).
+    #[cfg(all(test, feature = "asr-integration", target_os = "macos"))]
+    pub(crate) fn offline_slot(&self) -> &ModelSlot<Arc<sherpa_onnx::OfflineRecognizer>> {
+        &self.offline
+    }
 }
 
 // ---------------------------------------------------------------------------

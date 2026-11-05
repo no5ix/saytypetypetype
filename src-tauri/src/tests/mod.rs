@@ -13,6 +13,11 @@ mod asr_doubao;
 /// no network) — guards `tauri.conf.json` vs `tauri.dev.conf.json`.
 mod bundle_identity;
 
+/// ASR model lifecycle guard (no models, no network): scans the production
+/// sources to prove no timed/idle recognizer unload exists and that every
+/// unload names an explicit user action.
+mod model_lifecycle;
+
 #[cfg(feature = "asr-integration")]
 mod asr_integration;
 
@@ -21,6 +26,9 @@ mod asr_parakeet;
 
 #[cfg(feature = "asr-integration")]
 mod asr_zipformer_zh_en;
+
+#[cfg(all(feature = "asr-integration", target_os = "macos"))]
+mod asr_memory;
 
 #[cfg(feature = "llm-integration")]
 mod llm_integration;

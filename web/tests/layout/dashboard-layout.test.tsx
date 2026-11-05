@@ -45,6 +45,7 @@ vi.mock("@/settings/bridge", () => ({
   playRecordingPreview: vi.fn(async () => {}),
   stopRecordingPreview: vi.fn(async () => {}),
   onPreviewEnded: () => () => {},
+  onStatsChanged: () => () => {},
   regenerateHistoryTranscription: vi.fn(async () => {}),
   repolishHistoryEntry: vi.fn(async () => {}),
   retryHistoryTranscription: vi.fn(async () => {}),

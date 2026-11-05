@@ -1,5 +1,5 @@
 import { Copy, Loader2, Pause, Play, RefreshCw, RotateCw, Sparkles, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/i18n";
 import {
   deleteHistory,
@@ -7,6 +7,7 @@ import {
   getStats,
   loadPrompts,
   onPreviewEnded,
+  onStatsChanged,
   playRecordingPreview,
   regenerateHistoryTranscription,
   repolishHistoryEntry,
@@ -110,6 +111,32 @@ export function HomePage() {
     load();
     loadHist(1);
   }, [load, loadHist]);
+
+  // Live dashboard refresh: the backend broadcasts `stats-changed` right after
+  // a dictation is delivered and its counters are persisted (one event per
+  // success — failures never emit). Re-read stats and today's history so the
+  // three daily cards update without leaving the page or restarting the app.
+  // Bursts (e.g. a retry that also delivers) are coalesced into one reload.
+  const statsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const unlisten = onStatsChanged(() => {
+      if (statsReloadTimerRef.current) {
+        clearTimeout(statsReloadTimerRef.current);
+      }
+      statsReloadTimerRef.current = setTimeout(() => {
+        statsReloadTimerRef.current = null;
+        load();
+        loadHist(days);
+      }, 100);
+    });
+    return () => {
+      if (statsReloadTimerRef.current) {
+        clearTimeout(statsReloadTimerRef.current);
+        statsReloadTimerRef.current = null;
+      }
+      unlisten();
+    };
+  }, [load, loadHist, days]);
 
   // Reloaded each time the picker opens so templates edited on the LLM page show up.
   const openPolishMenu = useCallback(async (ts: string, anchor: HTMLElement) => {

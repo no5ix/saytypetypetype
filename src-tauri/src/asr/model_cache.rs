@@ -119,6 +119,13 @@ impl<T> ModelSlot<T> {
         self.lock().key.clone()
     }
 
+    /// Whether the slot currently holds a loaded value (test observability for
+    /// the model-residency integration tests in `tests::asr_memory`).
+    #[cfg(all(test, feature = "asr-integration", target_os = "macos"))]
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.lock().value.is_some()
+    }
+
     #[cfg(test)]
     fn load_count(&self) -> u64 {
         self.lock().loads

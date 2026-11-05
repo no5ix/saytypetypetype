@@ -13,11 +13,11 @@ DeepSeek 在 VoicePaste 中用于文本翻译与润色，不负责语音识别�
 ## 2. 配置 VoicePaste
 
 1. 打开「设置 → 大语言模型」，选择 DeepSeek。
-2. 填写 API Key。接口地址可使用应用预设的 `https://api.deepseek.com/v1/chat/completions`。
+2. 填写 API Key。接口地址可使用应用预设的基础地址 `https://api.deepseek.com/v1`。
 3. 模型名称需使用当前 API 支持的标识，可以先使用应用预设。
 4. 完成字段编辑后继续配置文本模板。
 
-这里的接口地址是完整的 Chat Completions 请求地址；不要把官网首页或控制台地址填入该字段。
+这里填写的是 API 基础地址，应用会自动请求 `<基础地址>/chat/completions`；旧版本已保存的完整端点地址依然兼容。不要把官网首页或控制台地址填入该字段。
 
 ## 3. 验证翻译或润色
 

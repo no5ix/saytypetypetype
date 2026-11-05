@@ -5549,6 +5549,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "keytap",
+ "libc",
  "log",
  "objc2",
  "objc2-app-kit",

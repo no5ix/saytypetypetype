@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::app_state;
 
@@ -143,6 +143,13 @@ pub(crate) async fn discard_recording_artifacts(app_inner: &Arc<app_state::AppIn
 /// Record a successful transcription into stats, honoring the keep-recordings
 /// setting (delete the WAV when off), and run the retention sweep. Replaces the
 /// retried history entry in place when this success retries a prior failure.
+///
+/// This is the single choke point where a delivered session's usage counters
+/// change (normal delivery, picker selection, deferred polish, and history
+/// retry all land here), so it is also where the dashboard refresh event is
+/// emitted: exactly one `stats-changed` broadcast per recorded success, after
+/// the counters are already persisted. Failures never reach this function, so
+/// they can never inflate the daily cards.
 pub(crate) async fn record_success_and_apply_retention(
     app: &AppHandle,
     app_inner: &Arc<app_state::AppInner>,
@@ -164,24 +171,42 @@ pub(crate) async fn record_success_and_apply_retention(
         None
     };
     let mut stats = app_inner.stats.lock().await;
-    if let Some(retry_ts) = retry_of.as_ref() {
-        if stats.replace_history_with_success(
+    let replaced_retry = if let Some(retry_ts) = retry_of.as_ref() {
+        stats.replace_history_with_success(
             retry_ts,
             text,
             audio_path.clone(),
             polish.clone(),
             recording_ms,
-        ) {
-            drop(stats);
-            // Always prune: a never-retried failure recording is only deleted on a
-            // later success, otherwise it is reclaimed by the 31-day retention sweep,
-            // even when keep_recordings is off (only failure WAVs persist then).
-            prune_old_recordings(app);
-            return;
-        }
+        )
+    } else {
+        false
+    };
+    if !replaced_retry {
+        stats.record_session_with_audio(text, audio_path, retry_of, polish, recording_ms);
     }
-    stats.record_session_with_audio(text, audio_path, retry_of, polish, recording_ms);
     drop(stats);
 
+    // The counters (sessions / words / mic time today) are persisted and live
+    // in memory; tell open settings windows to re-read them so the dashboard
+    // updates the moment the text lands, without navigation or polling.
+    emit_stats_changed(app);
+
+    // Always prune: a never-retried failure recording is only deleted on a
+    // later success, otherwise it is reclaimed by the 31-day retention sweep,
+    // even when keep_recordings is off (only failure WAVs persist then).
     prune_old_recordings(app);
+}
+
+/// Broadcast the `settings:event` that drives the dashboard's live refresh.
+/// Payload carries only metadata (never transcript content), and the settings
+/// renderer dedupes repeats by its own generation counter.
+pub(crate) fn emit_stats_changed(app: &AppHandle) {
+    let _ = app.emit(
+        "settings:event",
+        serde_json::json!({
+            "type": "stats-changed",
+            "payload": { "reason": "session-delivered" }
+        }),
+    );
 }

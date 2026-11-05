@@ -19,50 +19,52 @@ import { cloneBuiltinPrompt } from "@/settings/lib/prompts";
 import { useSettings } from "@/settings/SettingsProvider";
 import type { PromptItem } from "@/settings/types/prompts";
 
-// Defaults MUST mirror Rust `get_provider_defaults` (src-tauri/src/llm.rs):
-// when a field is left empty the backend fills it from that table, so the
-// values shown in the UI have to match what the backend actually requests.
+// Defaults MUST mirror Rust `get_provider_defaults` (src-tauri/src/llm.rs).
+// They are API *base* URLs: the backend appends `/chat/completions` itself
+// (see `chat_completions_url`), so a base URL like `http://127.0.0.1:8000/v1`
+// is what the user enters and what gets persisted. Values saved by older
+// versions may still hold the full endpoint — the backend accepts both.
 const LLM_PROVIDERS = [
   {
     key: "deepseek",
     label: "DeepSeek",
-    url: "https://api.deepseek.com/v1/chat/completions",
+    url: "https://api.deepseek.com/v1",
     model: "deepseek-v4-flash",
   },
   {
     key: "openai",
     label: "OpenAI",
-    url: "https://api.openai.com/v1/chat/completions",
+    url: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
   },
   {
     key: "openrouter",
     label: "OpenRouter",
-    url: "https://openrouter.ai/api/v1/chat/completions",
+    url: "https://openrouter.ai/api/v1",
     model: "openai/gpt-4o-mini",
   },
   {
     key: "siliconflow",
     label: "硅基流动",
-    url: "https://api.siliconflow.cn/v1/chat/completions",
+    url: "https://api.siliconflow.cn/v1",
     model: "deepseek-ai/DeepSeek-V3",
   },
   {
     key: "gemini",
     label: "Gemini",
-    url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    url: "https://generativelanguage.googleapis.com/v1beta/openai",
     model: "gemini-2.5-flash-lite",
   },
   {
     key: "anthropic",
     label: "Anthropic",
-    url: "https://api.anthropic.com/v1/chat/completions",
+    url: "https://api.anthropic.com/v1",
     model: "claude-3-5-haiku-latest",
   },
   {
     key: "ollama",
     label: "Ollama 本地",
-    url: "http://localhost:11434/v1/chat/completions",
+    url: "http://localhost:11434/v1",
     model: "llama3.1",
   },
   {
@@ -187,9 +189,13 @@ export function LLMPage() {
 
             <SectionItem
               title="URL"
+              description={t(
+                "填写 API 基础地址（如 http://127.0.0.1:8000/v1），应用会自动拼接 /chat/completions；旧配置中的完整地址依然可用。",
+              )}
               action={
                 <Input
                   className="w-full"
+                  placeholder="http://127.0.0.1:8000/v1"
                   value={savedProviderCfg.url || currentP.url}
                   onChange={(v) => setLlmField("url", v)}
                   commitOnBlur
