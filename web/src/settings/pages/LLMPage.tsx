@@ -9,6 +9,7 @@ import { Textarea } from "@/settings/components/Textarea";
 import {
   PageHeader,
   PageLayout,
+  SETTING_LABEL_COLUMN,
   Section,
   SectionContent,
   SectionHeader,
@@ -189,6 +190,7 @@ export function LLMPage() {
 
             <SectionItem
               title="URL"
+              labelClassName={SETTING_LABEL_COLUMN}
               description={t(
                 "填写 API 基础地址（如 http://127.0.0.1:8000/v1），应用会自动拼接 /chat/completions；旧配置中的完整地址依然可用。",
               )}
@@ -205,6 +207,7 @@ export function LLMPage() {
 
             <SectionItem
               title="API Key"
+              labelClassName={SETTING_LABEL_COLUMN}
               action={
                 <Input
                   className="w-full"
@@ -218,6 +221,7 @@ export function LLMPage() {
             />
             <SectionItem
               title={t("模型ID")}
+              labelClassName={SETTING_LABEL_COLUMN}
               action={
                 <Input
                   className="w-full"
