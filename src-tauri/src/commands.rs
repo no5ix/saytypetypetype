@@ -664,9 +664,11 @@ pub struct HotkeyRecordResult {
     pub invalid_reason: Option<String>,
 }
 
-/// Toast copy shown when a main-hotkey recording starts with a typing key.
+/// Toast copy shown when a main-hotkey recording is rejected: a typing key first
+/// would leak into the focused app, and a pure modifier chord (⌃⌘, ⇧⌥) is a
+/// system / IME shortcut that fires during ordinary typing.
 const MAIN_HOTKEY_FIRST_KEY_HINT: &str =
-    "为不影响键盘输入，主键第一个按键需为功能键、Tab 或修饰键（Ctrl/⌘/Shift/Option/Fn）";
+    "为不影响键盘输入，主键第一个按键需为功能键、Tab 或修饰键（Ctrl/⌘/Shift/Option/Fn），修饰键组合需搭配一个常规按键（如 ⌃⌘L）";
 
 /// Record a hotkey combination via events from the resident keytap listener.
 /// Unlike a DOM keydown listener this captures keys the WebView never
@@ -715,12 +717,13 @@ pub async fn record_hotkey(
     let validate_main = scope.as_deref() == Some("main");
     Ok(match result {
         Some(recorded) => {
-            let invalid_reason =
-                if validate_main && !crate::hotkey::is_valid_main_first_key(recorded.first_key) {
-                    Some(MAIN_HOTKEY_FIRST_KEY_HINT.to_string())
-                } else {
-                    None
-                };
+            let invalid_reason = if validate_main
+                && !crate::hotkey::is_valid_main_combination(&recorded.keys, recorded.first_key)
+            {
+                Some(MAIN_HOTKEY_FIRST_KEY_HINT.to_string())
+            } else {
+                None
+            };
             log_hotkey!(
                 info,
                 "recorder session={} stage=response combo={} first_key={:?} accepted={} invalid_reason={:?}",

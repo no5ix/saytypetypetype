@@ -28,14 +28,16 @@ const MODIFIER_ORDER: &[Key] = &[
 /// (the macOS Fn key surfaces as a FlagsChanged modifier) but excludes
 /// [`Key::CapsLock`], matching the frontend recorder's classification so a
 /// recorded Fn is treated as a modifier-only hotkey.
-fn is_modifier_key(key: Key) -> bool {
+pub(crate) fn is_modifier_key(key: Key) -> bool {
     MODIFIER_ORDER.contains(&key)
 }
 
-/// A finalized recording: the canonical config string plus the first key
-/// pressed, which main-hotkey callers validate (see [`is_valid_main_first_key`]).
+/// A finalized recording: the canonical config string, the keys behind it, and
+/// the first key pressed, which main-hotkey callers validate (see
+/// [`is_valid_main_combination`]).
 pub(crate) struct RecordedCombination {
     pub combo: String,
+    pub keys: BTreeSet<Key>,
     pub first_key: Key,
 }
 
@@ -47,6 +49,16 @@ pub(crate) struct RecordedCombination {
 /// recordings are not validated against this rule.
 pub(crate) fn is_valid_main_first_key(key: Key) -> bool {
     is_modifier_key(key) || key == Key::Tab || is_function_key(key)
+}
+
+/// Whether a recorded combination may be the main hotkey. On top of the
+/// first-key rule, a combination must land on a real key: ⌃⌘, ⇧⌥ and friends are
+/// system and IME chords that fire constantly during typing, so they would wake
+/// the microphone by accident. A single designated key (Right Command, F13, Tab)
+/// is still accepted on its own — that is the product default.
+pub(crate) fn is_valid_main_combination(keys: &BTreeSet<Key>, first_key: Key) -> bool {
+    is_valid_main_first_key(first_key)
+        && (keys.len() <= 1 || keys.iter().any(|key| !is_modifier_key(*key)))
 }
 
 /// Whether `key` is in the F row (F1–F24, matching what the recorder can
@@ -249,7 +261,11 @@ fn build_hotkey_string(pressed: &BTreeSet<Key>) -> Option<String> {
 /// combination itself has no parseable spelling.
 fn finalize(pressed: &BTreeSet<Key>, first: Option<Key>) -> Option<RecordedCombination> {
     match (build_hotkey_string(pressed), first) {
-        (Some(combo), Some(first_key)) => Some(RecordedCombination { combo, first_key }),
+        (Some(combo), Some(first_key)) => Some(RecordedCombination {
+            combo,
+            keys: pressed.clone(),
+            first_key,
+        }),
         _ => None,
     }
 }
@@ -655,6 +671,121 @@ mod tests {
     fn build_hotkey_string_single_main_key() {
         let pressed = BTreeSet::from([Key::F13]);
         assert_eq!(build_hotkey_string(&pressed).as_deref(), Some("F13"));
+    }
+
+    /// The main key accepts modifier combinations. Every supported shape records
+    /// the full chord in canonical order and passes the first-key rule.
+    #[test]
+    fn main_key_chords_record_the_full_combination() {
+        let cases: [(&[Key], &str); 3] = [
+            (
+                &[Key::ControlLeft, Key::MetaLeft, Key::L],
+                "ControlLeft+MetaLeft+L",
+            ),
+            (
+                &[Key::AltLeft, Key::ShiftLeft, Key::D],
+                "AltLeft+ShiftLeft+D",
+            ),
+            (
+                &[Key::ControlLeft, Key::AltLeft, Key::MetaLeft, Key::K],
+                "ControlLeft+AltLeft+MetaLeft+K",
+            ),
+        ];
+        for (keys, combo) in cases {
+            // Auto-repeat of every key is emitted while the chord is held.
+            let mut events = Vec::new();
+            for &key in keys.iter() {
+                events.push(EventKind::KeyDown(key));
+                events.push(EventKind::KeyRepeat(key));
+            }
+            events.push(EventKind::KeyUp(*keys.last().unwrap()));
+            let recorded = capture(&events).unwrap_or_else(|| panic!("{combo} did not record"));
+            assert_eq!(recorded.combo, combo);
+            assert_eq!(recorded.first_key, keys[0]);
+            assert!(
+                is_valid_main_first_key(recorded.first_key),
+                "{combo} starts with a modifier, so it is a legal main key"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_started_with_a_typing_key_is_flagged_for_the_main_key() {
+        // Recorded as a combination, rejected by the main-key first-key rule.
+        let recorded = capture(&[
+            EventKind::KeyDown(Key::L),
+            EventKind::KeyDown(Key::MetaLeft),
+            EventKind::KeyUp(Key::L),
+        ])
+        .unwrap();
+        assert_eq!(recorded.combo, "MetaLeft+L");
+        assert!(!is_valid_main_first_key(recorded.first_key));
+    }
+
+    /// A main-key combination needs a regular key: ⌃⌘, ⇧⌥ and friends are system
+    /// and IME chords, so they must not wake the microphone.
+    #[test]
+    fn main_combinations_need_a_regular_key() {
+        for (keys, first) in [
+            (
+                BTreeSet::from([Key::ControlLeft, Key::MetaLeft, Key::L]),
+                Key::ControlLeft,
+            ),
+            (
+                BTreeSet::from([Key::AltLeft, Key::ShiftLeft, Key::D]),
+                Key::AltLeft,
+            ),
+            (
+                BTreeSet::from([Key::ControlLeft, Key::AltLeft, Key::MetaLeft, Key::K]),
+                Key::ControlLeft,
+            ),
+        ] {
+            assert!(is_valid_main_combination(&keys, first), "{keys:?}");
+        }
+        for keys in [
+            BTreeSet::from([Key::ControlLeft, Key::MetaLeft]),
+            BTreeSet::from([Key::ShiftLeft, Key::AltRight]),
+            BTreeSet::from([Key::ControlLeft, Key::AltLeft, Key::MetaLeft]),
+        ] {
+            assert!(
+                !is_valid_main_combination(&keys, Key::ControlLeft),
+                "a pure modifier chord must not be a main key: {keys:?}"
+            );
+        }
+        // A single designated key keeps working; a single typing key does not.
+        assert!(is_valid_main_combination(
+            &BTreeSet::from([Key::MetaRight]),
+            Key::MetaRight
+        ));
+        assert!(is_valid_main_combination(
+            &BTreeSet::from([Key::F13]),
+            Key::F13
+        ));
+        assert!(!is_valid_main_combination(
+            &BTreeSet::from([Key::A]),
+            Key::A
+        ));
+        // The first-key rule still applies inside a combination.
+        assert!(!is_valid_main_combination(
+            &BTreeSet::from([Key::ControlLeft, Key::MetaLeft, Key::L]),
+            Key::L
+        ));
+    }
+
+    #[test]
+    fn a_pure_modifier_chord_records_but_is_rejected_for_the_main_key() {
+        let recorded = capture(&[
+            EventKind::KeyDown(Key::ControlLeft),
+            EventKind::KeyDown(Key::MetaLeft),
+            EventKind::KeyUp(Key::MetaLeft),
+            EventKind::KeyUp(Key::ControlLeft),
+        ])
+        .unwrap();
+        assert_eq!(recorded.combo, "ControlLeft+MetaLeft");
+        assert!(!is_valid_main_combination(
+            &recorded.keys,
+            recorded.first_key
+        ));
     }
 
     #[test]

@@ -942,6 +942,44 @@ mod tests {
             .any(|binding| binding.option_id == prompt_option_id("none")));
     }
 
+    /// A chord main key with no separate stop key contributes exactly one card
+    /// shortcut, and a template without a shortcut stays mouse-selectable.
+    #[test]
+    fn a_chord_main_key_selects_the_original_once() {
+        let mut config = AppConfig::default();
+        config.app.hotkey = "ControlLeft+MetaLeft+L".into();
+        config.app.voice_hotkey = Some(String::new());
+        let bindings = picker_key_bindings(
+            &config.app,
+            &[prompt("general", "ShiftLeft"), prompt("translate", "")],
+        );
+        let chord = std::collections::BTreeSet::from([
+            keytap::Key::ControlLeft,
+            keytap::Key::MetaLeft,
+            keytap::Key::L,
+        ]);
+        let original: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.option_id == ORIGINAL_OPTION_ID)
+            .collect();
+        assert_eq!(
+            original.len(),
+            1,
+            "the wake key and its implicit stop alias are one card shortcut"
+        );
+        assert_eq!(original[0].keys, chord);
+        assert!(bindings.iter().any(|binding| {
+            binding.option_id == prompt_option_id("general")
+                && binding.keys.contains(&keytap::Key::ShiftLeft)
+        }));
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.option_id == prompt_option_id("translate")),
+            "a card without a shortcut must not consume any key"
+        );
+    }
+
     /// The deferred hide must be cancellable: otherwise a re-open that lands while
     /// the pop-out is still running would be hidden by the previous session.
     #[test]

@@ -81,6 +81,66 @@ describe("HotkeyPage", () => {
     await waitFor(() => expect(mocks.save).toHaveBeenCalledWith({ app: { voice_hotkey: "F3" } }));
     expect(mocks.validate).toHaveBeenCalled();
   });
+  it("records a modifier combination for the global main key and saves it", async () => {
+    mocks.settings.runtime.platform = "macos";
+    mocks.settings.parsedConfig.app.hotkey = "ControlLeft+MetaLeft+L";
+    mocks.record.mockResolvedValue({
+      keys: ["ControlLeft+AltLeft+MetaLeft+K"],
+      displayString: "ControlLeft+AltLeft+MetaLeft+K",
+      hotkey: "ControlLeft+AltLeft+MetaLeft+K",
+    });
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    const main = screen.getAllByLabelText("快捷键")[0];
+    expect(main).toHaveTextContent("⌃+⌘+L");
+    fireEvent.click(main);
+    await waitFor(() => expect(mocks.record).toHaveBeenCalledWith("main"));
+    await waitFor(() =>
+      expect(mocks.save).toHaveBeenCalledWith({
+        app: { hotkey: "ControlLeft+AltLeft+MetaLeft+K" },
+      }),
+    );
+  });
+  it("keeps the main key as start and stop when the optional stop key is cleared", async () => {
+    mocks.settings.runtime.platform = "macos";
+    mocks.settings.parsedConfig.app.hotkey = "ControlLeft+MetaLeft+L";
+    mocks.settings.parsedConfig.app.voice_hotkey = "";
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    const fields = screen.getAllByLabelText("快捷键");
+    // The global key stays editable (it is the whole start/stop shortcut), the
+    // row keeps its locked start reference, and an empty stop key is a normal
+    // unbound state rather than an error.
+    expect(fields[0]).toBeEnabled();
+    expect(fields[0]).toHaveTextContent("⌃+⌘+L");
+    expect(fields[1]).toBeDisabled();
+    expect(fields[2]).toHaveTextContent("按下快捷键");
+  });
+  it("keeps the alias stop key in sync when the global main key is re-recorded", async () => {
+    // The default configuration uses the main key as its own stop key. Recording
+    // a new main key must not leave the old key behind as the only way to stop.
+    mocks.settings.parsedConfig.app.hotkey = "F13";
+    mocks.settings.parsedConfig.app.voice_hotkey = "F13";
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    fireEvent.click(screen.getAllByLabelText("快捷键")[0]);
+    await waitFor(() =>
+      expect(mocks.save).toHaveBeenCalledWith({ app: { hotkey: "F3", voice_hotkey: "F3" } }),
+    );
+  });
+  it("leaves a deliberately custom stop key alone when the main key changes", async () => {
+    mocks.settings.parsedConfig.app.hotkey = "F13";
+    mocks.settings.parsedConfig.app.voice_hotkey = "ShiftRight";
+    render(<HotkeyPage />);
+    await screen.findByText("润色");
+    fireEvent.click(screen.getAllByLabelText("快捷键")[0]);
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledWith({ app: { hotkey: "F3" } }));
+  });
+  it("explains that the global main key ends the recording it started", async () => {
+    render(<HotkeyPage />);
+    expect(await screen.findByText(/再按一次同一主键结束/)).toBeInTheDocument();
+    expect(await screen.findByText(/修饰键组合/)).toBeInTheDocument();
+  });
   it("rejects a conflicting edit with a toast and leaves the old key", async () => {
     mocks.validate.mockRejectedValue("快捷键存在包含关系");
     render(<HotkeyPage />);

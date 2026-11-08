@@ -31,6 +31,64 @@ pub(crate) use regenerate::regenerate_history_transcription;
 pub(crate) use retry::{retry_history_transcription, retry_latest_failed_transcription};
 pub(crate) use wav::audio_chunk_has_signal;
 
+/// Reason a hotkey start must not open a microphone session. Split out of
+/// `on_recording_start` so the state contract is unit-testable without a live
+/// Tauri app: idle starts, anything in flight is ignored, and the result picker
+/// owns the keyboard while it is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartGate {
+    /// Idle with nothing in flight: open the microphone.
+    Proceed,
+    /// The result panel is open: a press must never start a second session.
+    PickerOpen,
+    /// Connecting, recording, finishing, or a polish retry in flight.
+    Busy,
+}
+
+/// Evaluate the start gate from a state snapshot. `busy` covers every non-idle
+/// application state — including a recording started by another shortcut, which
+/// keeps a second session from opening on top of it.
+fn start_gate(picker_open: bool, retry_active: bool, state: &app_state::AppState) -> StartGate {
+    if picker_open {
+        StartGate::PickerOpen
+    } else if retry_active || !matches!(state, app_state::AppState::Idle) {
+        StartGate::Busy
+    } else {
+        StartGate::Proceed
+    }
+}
+
+/// Reason a hotkey stop must be swallowed (see `on_recording_stop`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopGate {
+    /// Finalize the recording.
+    Proceed,
+    /// A retry owns the outcome; a stray stop would tear down its overlay.
+    RetryInFlight,
+    /// The result panel already owns the session; its keys choose an option.
+    PickerOpen,
+}
+
+fn stop_gate(retry_active: bool, picker_open: bool) -> StopGate {
+    if retry_active {
+        StopGate::RetryInFlight
+    } else if picker_open {
+        StopGate::PickerOpen
+    } else {
+        StopGate::Proceed
+    }
+}
+
+/// A hands-free session needs a key that can end it. With no separate stop key
+/// configured, `compile_bindings` registers the global main key as its own stop
+/// alias, so a toggle-mode wake key always has a stop. In hold-only setups the
+/// main key deliberately has none and therefore must not start a session.
+fn has_toggle_stop(bindings: &[hotkey::HotkeyBinding]) -> bool {
+    bindings
+        .iter()
+        .any(|b| !b.wake_only && b.mode == hotkey::HotkeyMode::Toggle)
+}
+
 /// Begin a neutral recording triggered by the hotkey matcher — the prompt is
 /// decided later, on stop. If the main hotkey was used while a retryable
 /// failure is shown, retry that failure instead of starting a new recording.
@@ -43,21 +101,27 @@ pub(crate) async fn on_recording_start(
     // Defensive: the listener already routes keys away from the matcher while
     // the picker is open, but a queued action must never start a session behind
     // the modal picker.
-    if let Some(hc) = app_handle.try_state::<hotkey::HotkeyConfig>() {
-        if hotkey::picker_session_id(&hc).is_some() {
-            log_rec!(info, "Picker is open; ignoring recording start");
-            reset_matcher_recording(&app_handle);
-            return;
-        }
-    }
-    {
+    let picker_open = app_handle
+        .try_state::<hotkey::HotkeyConfig>()
+        .is_some_and(|hc| hotkey::picker_session_id(&hc).is_some());
+    let gate = {
         let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
         // A polish retry is in flight: ignore the press entirely. ESC/Enter are
         // the ways out of a retry; starting a recording mid-request would race
         // the retry's delivery.
-        if polish::is_retry_active(&app_inner)
-            || !matches!(*app_inner.state.lock().await, app_state::AppState::Idle)
-        {
+        let state = app_inner.state.lock().await;
+        let gate = start_gate(picker_open, polish::is_retry_active(&app_inner), &state);
+        drop(state);
+        gate
+    };
+    match gate {
+        StartGate::Proceed => {}
+        StartGate::PickerOpen => {
+            log_rec!(info, "Picker is open; ignoring recording start");
+            reset_matcher_recording(&app_handle);
+            return;
+        }
+        StartGate::Busy => {
             log_rec!(info, "Finalization in flight; ignoring hotkey start");
             reset_matcher_recording(&app_handle);
             return;
@@ -93,10 +157,9 @@ pub(crate) async fn on_recording_start(
     if is_main {
         let inner = app_handle.state::<Arc<app_state::AppInner>>();
         let can_stop = inner.config_manager.load_config().is_ok_and(|config| {
-            hotkey::compile_bindings(&config.app, &inner.config_manager.load_prompts())
-                .0
-                .iter()
-                .any(|b| !b.wake_only && b.mode == hotkey::HotkeyMode::Toggle)
+            has_toggle_stop(
+                &hotkey::compile_bindings(&config.app, &inner.config_manager.load_prompts()).0,
+            )
         });
         if !can_stop {
             reset_matcher_recording(&app_handle);
@@ -131,21 +194,20 @@ pub(crate) async fn on_recording_start(
 /// stop chord. Sets ActivePromptId just before stopping so the finishing
 /// pipeline knows whether to polish.
 pub(crate) async fn on_recording_stop(app_handle: AppHandle, prompt_id: Option<String>) {
-    {
-        // Swallow stray stops born in the window between a diverted start and
-        // its matcher reset: the retry that start spawned has no recording
-        // session, so a stop here would tear down the overlay under it.
-        let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
-        if polish::is_retry_active(&app_inner) {
+    let picker_open = app_handle
+        .try_state::<hotkey::HotkeyConfig>()
+        .is_some_and(|hc| hotkey::picker_session_id(&hc).is_some());
+    // Swallow stray stops born in the window between a diverted start and
+    // its matcher reset: the retry that start spawned has no recording
+    // session, so a stop here would tear down the overlay under it.
+    let app_inner = app_handle.state::<Arc<app_state::AppInner>>();
+    match stop_gate(polish::is_retry_active(&app_inner), picker_open) {
+        StopGate::Proceed => {}
+        StopGate::RetryInFlight => return,
+        StopGate::PickerOpen => {
+            log_rec!(info, "Picker is open; ignoring recording stop");
             return;
         }
-    }
-    if app_handle
-        .try_state::<hotkey::HotkeyConfig>()
-        .is_some_and(|hc| hotkey::picker_session_id(&hc).is_some())
-    {
-        log_rec!(info, "Picker is open; ignoring recording stop");
-        return;
     }
     if let Some(id) = prompt_id.as_deref() {
         let inner = app_handle.state::<Arc<app_state::AppInner>>();
@@ -325,4 +387,94 @@ pub(super) fn is_current_epoch(app_inner: &app_state::AppInner, my_epoch: u64) -
 /// never promoted to final text, including on errors.
 pub(super) async fn current_session_text(app_inner: &app_state::AppInner) -> String {
     app_inner.latest_transcript.lock().await.0.clone()
+}
+
+// ---------------------------------------------------------------------------
+// State contract tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crate::config::AppConfig;
+    use crate::hotkey::{compile_bindings, HotkeyMode};
+    use keytap::Key;
+
+    fn raw_stop_bindings(app: &AppConfig) -> Vec<hotkey::HotkeyBinding> {
+        compile_bindings(&app.app, &[])
+            .0
+            .into_iter()
+            .filter(|b| b.prompt_id.is_none())
+            .collect()
+    }
+
+    /// The Global Main Key is the whole start/stop contract: idle starts a
+    /// session, every processing state ignores the press, and the result panel
+    /// never gets a second recording started behind it.
+    #[test]
+    fn only_an_idle_application_starts_a_recording() {
+        for state in [
+            AppState::Idle,
+            AppState::Connecting,
+            AppState::Recording,
+            AppState::Finishing,
+        ] {
+            let gate = start_gate(false, false, &state);
+            assert_eq!(
+                gate,
+                if state == AppState::Idle {
+                    StartGate::Proceed
+                } else {
+                    StartGate::Busy
+                },
+                "{state:?} must map to a deterministic start decision"
+            );
+        }
+    }
+
+    #[test]
+    fn the_picker_blocks_starts_and_a_retry_blocks_stops() {
+        assert_eq!(
+            start_gate(true, false, &AppState::Idle),
+            StartGate::PickerOpen
+        );
+        assert_eq!(
+            start_gate(true, true, &AppState::Finishing),
+            StartGate::PickerOpen
+        );
+        assert_eq!(start_gate(false, true, &AppState::Idle), StartGate::Busy);
+        assert_eq!(stop_gate(false, false), StopGate::Proceed);
+        assert_eq!(stop_gate(true, false), StopGate::RetryInFlight);
+        assert_eq!(stop_gate(false, true), StopGate::PickerOpen);
+        assert_eq!(stop_gate(true, true), StopGate::RetryInFlight);
+    }
+
+    /// With no separate stop key, the global main key is compiled into a wake
+    /// binding plus an alias stop binding, so a toggle session is always ended
+    /// by pressing the same key (or chord) a second time.
+    #[test]
+    fn the_main_key_is_its_own_stop_key_in_toggle_mode() {
+        let app = AppConfig::default();
+        assert!(has_toggle_stop(&raw_stop_bindings(&app)), "default alias");
+
+        let mut chord_app = AppConfig::default();
+        chord_app.app.hotkey = "ControlLeft+MetaLeft+L".into();
+        chord_app.app.voice_hotkey = Some(String::new());
+        let bindings = raw_stop_bindings(&chord_app);
+        assert!(has_toggle_stop(&bindings), "a chord toggles by itself");
+        let chord = std::collections::BTreeSet::from([Key::ControlLeft, Key::MetaLeft, Key::L]);
+        assert!(bindings.iter().any(|b| b.wake_only && b.keys == chord));
+        assert!(bindings
+            .iter()
+            .any(|b| !b.wake_only && b.mode == HotkeyMode::Toggle && b.keys == chord));
+
+        let mut hold_only = AppConfig::default();
+        hold_only.app.hotkey_mode = "hold".into();
+        hold_only.app.voice_hotkey = Some(String::new());
+        assert!(
+            !has_toggle_stop(&raw_stop_bindings(&hold_only)),
+            "a wake key with no stop key must not start a session that cannot end"
+        );
+    }
 }

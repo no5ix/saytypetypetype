@@ -115,14 +115,14 @@ export const EN_COMMON: Record<string, string> = {
   "为语音输入配置自定义快捷键。": "Set your own shortcuts for dictation.",
   免提模式: "Hands-free",
   按住说话: "Hold to talk",
-  "免提模式：按全局主键开始，按语音输入或润色模板各自的结束键完成；":
-    "Hands-free: the global main key starts, each feature's own stop key finishes;",
+  "免提模式：按全局主键开始录音，再按一次同一主键结束；已设独立结束键时也可用它结束；":
+    "Hands-free: the global main key starts recording, pressing the same key again finishes it; a configured stop key works too;",
   "按住说话：完整按住对应快捷键 500ms 后开始，松开结束；启动后其他按键不改变本次录音。":
     "Hold to talk: hold the shortcut for 500 ms to start, release to finish; other keys never change a running recording.",
   录制快捷键时按: "While recording a shortcut, press",
   全局语音主键: "Global main key",
-  "所有免提模式均以此键开始录音；按住说话需另设独立快捷键。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。":
-    "Every hands-free mode starts recording with this key; hold-to-talk needs its own shortcut. Use a chord that starts with a modifier (Ctrl, Shift, Tab…) or a function key such as F1.",
+  "免提录音以此键开始，再按一次结束。可使用修饰键组合（如 ⌃⌘L），首个按键需为修饰键、Tab 或 F1 等功能键。":
+    "Hands-free recording starts with this key and ends when you press it again. Modifier combinations such as ⌃⌘L are supported; the first key must be a modifier, Tab, or a function key like F1.",
   语音唤起: "Wake key",
   语音输入: "Dictation",
   "点击输入框进入录制 → 按下快捷键": "Click the field, then press your shortcut",

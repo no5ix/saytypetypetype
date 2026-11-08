@@ -213,6 +213,33 @@ pub(crate) fn emit_shortcuts(app: &AppHandle, shortcuts: &[shared::Shortcut]) {
     );
 }
 
+/// The key that ends a toggle recording, formatted for the recording panel.
+/// `voice_hotkey` names it when configured; with no separate stop key the global
+/// main key is its own stop (the compiled alias), and that is what the panel has
+/// to show. A key that the binding compiler disabled (conflict, invalid, hold
+/// mode) yields an empty label, so the panel never advertises a dead shortcut.
+fn finish_key_label(app: &crate::config::AppSettings, enabled: &[hotkey::HotkeyBinding]) -> String {
+    let voice = app.voice_hotkey.as_deref().unwrap_or("").trim();
+    let key = if voice.is_empty() {
+        app.hotkey.as_str().unwrap_or("")
+    } else {
+        voice
+    };
+    if key.is_empty() {
+        return String::new();
+    }
+    let is_stop = hotkey::parse_hotkey_string(key).is_some_and(|keys| {
+        enabled
+            .iter()
+            .any(|b| !b.wake_only && b.prompt_id.is_none() && b.keys == keys)
+    });
+    if is_stop {
+        hotkey::format_hotkey_label(key)
+    } else {
+        String::new()
+    }
+}
+
 pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::AppInner) {
     let config = inner.config_manager.load_config().ok();
     let toggle = *inner.recording_mode.lock().await == hotkey::HotkeyMode::Toggle;
@@ -224,15 +251,7 @@ pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::A
     let hotkey = config
         .as_ref()
         .filter(|c| toggle && c.app.hotkey_mode != "hold")
-        .and_then(|c| c.app.voice_hotkey.as_deref().or(c.app.hotkey.as_str()))
-        .filter(|key| {
-            enabled.iter().any(|b| {
-                !b.wake_only
-                    && b.prompt_id.is_none()
-                    && Some(&b.keys) == hotkey::parse_hotkey_string(key).as_ref()
-            })
-        })
-        .map(hotkey::format_hotkey_label)
+        .map(|c| finish_key_label(&c.app, &enabled))
         .unwrap_or_default();
     // Exactly two actions belong to the recording panel: cancel and finish.
     // Template names are deliberately not shown here — a template is chosen
@@ -466,5 +485,54 @@ mod tests {
             error_shortcuts("", false),
             vec![shared::Shortcut::new("Esc", "取消")]
         );
+    }
+
+    /// The recording panel advertises the key that really ends the recording:
+    /// the configured stop key, otherwise the global main key that stops itself.
+    #[test]
+    fn the_finish_hint_names_the_key_that_ends_the_recording() {
+        use crate::config::AppConfig;
+        let compiled = |app: &AppConfig| hotkey::compile_bindings(&app.app, &[]).0;
+
+        let default_app = AppConfig::default();
+        assert_eq!(
+            finish_key_label(&default_app.app, &compiled(&default_app)),
+            hotkey::format_hotkey_label(crate::config::DEFAULT_HOTKEY)
+        );
+
+        // No separate stop key: the main chord is its own stop, and the label is
+        // the combination, not the stale empty field.
+        let mut chord = AppConfig::default();
+        chord.app.hotkey = "ControlLeft+MetaLeft+L".into();
+        chord.app.voice_hotkey = Some(String::new());
+        if cfg!(target_os = "macos") {
+            assert_eq!(finish_key_label(&chord.app, &compiled(&chord)), "⌃ ⌘ L");
+        } else {
+            assert_eq!(
+                finish_key_label(&chord.app, &compiled(&chord)),
+                "Ctrl Win L"
+            );
+        }
+
+        // A configured stop key keeps the label.
+        let mut stop = AppConfig::default();
+        stop.app.voice_hotkey = Some("ShiftRight".into());
+        if cfg!(target_os = "macos") {
+            assert_eq!(finish_key_label(&stop.app, &compiled(&stop)), "R ⇧");
+        } else {
+            assert_eq!(finish_key_label(&stop.app, &compiled(&stop)), "R Shift");
+        }
+
+        // A binding the compiler disabled (here: the main key is a system chord)
+        // must never be advertised.
+        let mut disabled = AppConfig::default();
+        disabled.app.hotkey = "ControlLeft+MetaLeft".into();
+        disabled.app.voice_hotkey = Some(String::new());
+        assert_eq!(finish_key_label(&disabled.app, &compiled(&disabled)), "");
+
+        let mut unbound = AppConfig::default();
+        unbound.app.hotkey = "".into();
+        unbound.app.voice_hotkey = Some(String::new());
+        assert_eq!(finish_key_label(&unbound.app, &compiled(&unbound)), "");
     }
 }

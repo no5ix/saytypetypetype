@@ -27,6 +27,34 @@ describe("HotkeyInput", () => {
     expect(field).toHaveTextContent("Shift");
   });
 
+  it("shows a modifier combination without L/R noise", () => {
+    render(<HotkeyInput value="ControlLeft+MetaLeft+L" isMac />);
+    // "⌃ + ⌘ + L": three tokens, and no L superscript on the modifiers.
+    expect(screen.getByLabelText("快捷键").textContent).toBe("⌃+⌘+L");
+  });
+
+  it("keeps the side badge for a single sided modifier", () => {
+    render(<HotkeyInput value="MetaRight" isMac />);
+    const field = screen.getByLabelText("快捷键");
+    expect(field).toHaveTextContent("⌘");
+    expect(field.querySelector("sup")).toHaveTextContent("R");
+  });
+
+  it("records a modifier combination for the global main key", async () => {
+    mockRecordHotkey.mockResolvedValue({
+      keys: ["ControlLeft+MetaLeft+L"],
+      displayString: "ControlLeft+MetaLeft+L",
+      hotkey: "ControlLeft+MetaLeft+L",
+    });
+    const onCommit = vi.fn();
+    render(<HotkeyInput value="F13" isMac validateFirstKey onCommit={onCommit} />);
+
+    fireEvent.click(screen.getByLabelText("快捷键"));
+
+    await waitFor(() => expect(mockRecordHotkey).toHaveBeenCalledWith("main"));
+    expect(onCommit).toHaveBeenCalledWith("ControlLeft+MetaLeft+L", "ControlLeft+MetaLeft+L");
+  });
+
   it("shows the capture placeholder when unbound", () => {
     render(<HotkeyInput value="" isMac={false} />);
     expect(screen.getByText("按下快捷键")).toBeInTheDocument();

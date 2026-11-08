@@ -86,6 +86,25 @@ share the global key. Other duplicate bindings are invalid; containment is
 allowed only between toggle bindings. Hold shortcuts require a non-typing key
 (function row, Tab or modifier), matching the recorder's first-key restriction.
 
+The global main key is a complete toggle on its own: in toggle mode the binding
+compiler registers the main key as an alias stop binding (`main:toggle-stop`), so a
+second press of the key that started the recording ends it. A separately
+configured `voice_hotkey` works alongside that alias; when it already equals the
+main key (the shipped default) the alias is registered once. Settings keeps a
+default alias in sync when the main key is re-recorded, and leaves a deliberately
+custom stop key untouched.
+
+The main key accepts any modifier combination (`ControlLeft+MetaLeft+L`,
+`AltLeft+ShiftLeft+D`, `ControlLeft+AltLeft+MetaLeft+K`); the recorder keeps the
+combination in canonical modifier order, the parser reads it back, and
+`is_valid_main_first_key` requires the first pressed key to be a modifier, Tab or a
+function key so an ordinary typing key can never wake the app. A wake
+*combination* must also contain a regular key: ⌃⌘ and ⇧⌥ are system / IME chords
+that fire during typing, so `compile_bindings` disables them as the main key (a
+single designated key such as Right Command stays valid). A pure modifier chord
+with no wake binding registers no stop alias, and the app layer never starts a
+recording it cannot end.
+
 For hold mode, the 500ms deadline begins when the **entire configured chord**
 is pressed. Holding Ctrl for 200ms or 600ms before pressing C does not count
 against the Ctrl+C deadline. An extra key or an early release cancels the
@@ -101,9 +120,12 @@ bindings remain in effect for the active session across settings changes.
 Actions carry explicit modes. A single dispatcher orders microphone startup
 before a queued release; ASR/LLM finalization runs separately, and new starts
 while it is in progress are rejected. Cancel generations revoke queued starts.
-The global key retains the existing retry behavior on retryable failures. If no
-toggle stop binding is enabled, it only retries failures and cannot start a new
-recording that has no normal stop key.
+The global key retains the existing retry behavior on retryable failures. A wake
+key that has no stop binding — only possible in a hold-only setup, because toggle
+mode always has the main-key alias — cannot start a recording, so no session is
+left with no way to end it. `KeyRepeat` is ignored by the matcher, the recorder,
+the picker and the ESC/Enter gates, so keyboard auto-repeat is one press and can
+never start a second session, stop a session twice, or select twice.
 
 After two seconds without keyboard events, native key-state queries may reclaim
 **confirmed released** keys. Silence alone never clears a key. Unknown states
@@ -184,6 +206,27 @@ Recorded combinations render through the `KeyCap` component (`settings/component
 - **Windows**: Ctrl, Alt, Shift, Win (Super)
 
 The symbol set is chosen per-platform so the on-screen keycaps match the user's physical keyboard labels.
+
+Inside a multi-key combination the L/R badge is dropped ("ControlLeft+MetaLeft+L"
+is "⌃ ⌘ L" / "Ctrl Win L" in `format_hotkey_label`, and `formatHotkeyTokens` does
+the same in settings): three side badges read as three separate keys. A lone
+sided key keeps its badge, because "R ⌥" is a real choice between two physical keys.
+
+### Result Panel Modal Keys
+
+While the multi-version result panel is open, the listener routes the keyboard to
+`PickerKeyState` instead of the recording matcher, and `on_recording_start` /
+`on_recording_stop` reject anything that arrives behind the modal — the main key
+never starts a second recording there. A configured option shortcut (the global
+main key for the original transcript, each template's own shortcut) selects its
+card, `Esc` dismisses it, and mouse clicks always work for cards that have no
+shortcut. Keys held when the panel opens must be released first, so the chord that
+stopped the recording cannot select an option on its way out.
+
+Panel keys are swallowed only where they are the command: `Esc`, `Enter`, a
+single-key shortcut, and the non-modifier trigger of a chord. The chord's
+modifiers stay with the foreground application, so a ⌃⌘L main key does not break
+Ctrl/Cmd+C in the target app while the panel is open.
 
 ## Hot Reload
 

@@ -28,7 +28,7 @@ pub use label::{current_hotkey_label, format_hotkey_label};
 pub use listener::{ensure_hotkey_active, reset_recording};
 pub use matcher::MatcherState;
 pub use parse::parse_hotkey_string;
-pub(crate) use recorder::{is_valid_main_first_key, record_combination};
+pub(crate) use recorder::{is_valid_main_combination, record_combination};
 
 // ---------------------------------------------------------------------------
 // Picker modal keys
@@ -292,12 +292,18 @@ pub fn clear_picker_bindings(config: &HotkeyConfig) {
 /// shortcuts plus ESC and both Enter variants must not leak into the target
 /// application while the picker is open; ordinary typing always passes through
 /// so a stuck picker can never lock the keyboard.
+///
+/// A modifier chord consumes only its non-modifier trigger. The modifiers of a
+/// chord (⌃ ⌘ ⇧ ⌥) stay with the foreground application — matching how the
+/// recording matcher treats them — so a configured ⌃⌘L main key never breaks
+/// copy & paste in the target app while the panel is open.
 pub(super) fn picker_consumes_key(picker: &PickerKeyState, key: Key) -> bool {
-    matches!(key, Key::Escape | Key::Enter | Key::NumpadEnter)
-        || picker
-            .bindings
-            .iter()
-            .any(|binding| binding.keys.contains(&key))
+    if matches!(key, Key::Escape | Key::Enter | Key::NumpadEnter) {
+        return true;
+    }
+    picker.bindings.iter().any(|binding| {
+        binding.keys.contains(&key) && (binding.keys.len() == 1 || !matcher::is_modifier(key))
+    })
 }
 
 /// The picker session currently owning the keyboard, if any.
@@ -461,6 +467,81 @@ mod picker_tests {
         );
         assert!(process_picker_event(&mut cfg, EventKind::KeyRepeat(keytap::Key::T)).is_none());
         assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::T)).is_none());
+    }
+
+    /// A modifier chord selects its card only as a whole, and auto-repeat of the
+    /// chord's last key can never deliver twice.
+    #[test]
+    fn a_modifier_chord_selects_once_and_repeat_cannot_replay_it() {
+        let chord = [
+            keytap::Key::ControlLeft,
+            keytap::Key::MetaLeft,
+            keytap::Key::L,
+        ];
+        let mut cfg = state(vec![binding("__original__", &chord)], true);
+        // Half the chord is ordinary typing.
+        process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::ControlLeft));
+        assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::L)).is_none());
+        process_picker_event(&mut cfg, EventKind::KeyUp(keytap::Key::L));
+        process_picker_event(&mut cfg, EventKind::KeyUp(keytap::Key::ControlLeft));
+        // The full chord selects the original transcript, exactly once.
+        process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::ControlLeft));
+        process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::MetaLeft));
+        assert_eq!(
+            process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::L)),
+            Some((7, "__original__".to_string()))
+        );
+        assert!(process_picker_event(&mut cfg, EventKind::KeyRepeat(keytap::Key::L)).is_none());
+        assert!(process_picker_event(&mut cfg, EventKind::KeyDown(keytap::Key::L)).is_none());
+        // Released, a fresh press of the same chord selects again.
+        for key in chord.iter().rev() {
+            process_picker_event(&mut cfg, EventKind::KeyUp(*key));
+        }
+        assert!(cfg.picker.as_ref().unwrap().armed);
+        for key in chord {
+            process_picker_event(&mut cfg, EventKind::KeyDown(key));
+        }
+    }
+
+    /// A chord must not swallow the target application's modifiers: the panel
+    /// consumes the chord's trigger key, ESC and Enter, and leaves ⌃/⌘ usable.
+    #[test]
+    fn a_chord_binding_consumes_its_trigger_not_its_modifiers() {
+        let picker = PickerKeyState {
+            session_id: 7,
+            bindings: vec![binding(
+                "__original__",
+                &[
+                    keytap::Key::ControlLeft,
+                    keytap::Key::MetaLeft,
+                    keytap::Key::L,
+                ],
+            )],
+            held: HashSet::new(),
+            armed: true,
+        };
+        assert!(picker_consumes_key(&picker, keytap::Key::L));
+        assert!(picker_consumes_key(&picker, keytap::Key::Escape));
+        assert!(picker_consumes_key(&picker, keytap::Key::Enter));
+        for key in [
+            keytap::Key::ControlLeft,
+            keytap::Key::MetaLeft,
+            keytap::Key::C,
+            keytap::Key::V,
+        ] {
+            assert!(
+                !picker_consumes_key(&picker, key),
+                "{key:?} must stay available to the target app"
+            );
+        }
+        // A single-key binding is the whole command, so it is always consumed.
+        let single = PickerKeyState {
+            session_id: 7,
+            bindings: vec![binding("prompt:translate", &[keytap::Key::ShiftRight])],
+            held: HashSet::new(),
+            armed: true,
+        };
+        assert!(picker_consumes_key(&single, keytap::Key::ShiftRight));
     }
 
     /// The picker is modal only for its own commands. After delivery the same

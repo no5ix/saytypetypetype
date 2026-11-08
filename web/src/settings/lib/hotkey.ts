@@ -77,6 +77,26 @@ export function normalizeHotkeyToken(key: string, isMac = true): HotkeyToken {
 }
 
 /**
+ * Split a `+`-joined accelerator into its display tokens.
+ *
+ * A lone key keeps its left/right badge ("R ⌥" is a real choice between two
+ * physical keys). Inside a combination the badge is noise — "L ⌃ + L ⌘ + L"
+ * reads as three L keys — so a chord renders as "⌃ + ⌘ + L" / "Ctrl + Win + L",
+ * matching the native `format_hotkey_label` used by the result panel.
+ */
+export function formatHotkeyTokens(value: string, isMac = true): HotkeyToken[] {
+  const raw = value
+    .split("+")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  const chord = raw.length > 1;
+  return raw.map((token) => {
+    const parsed = normalizeHotkeyToken(token, isMac);
+    return chord ? { main: parsed.main } : parsed;
+  });
+}
+
+/**
  * Format a prompt hotkey (array of physical key name strings, e.g.
  * ["Control", "Shift", "A"]) into a " + "-joined display string. Non-string
  * entries are dropped (defensive against malformed stored data).

@@ -745,4 +745,163 @@ mod tests {
         assert!(m.should_swallow(Key::F, &b, &[]));
         assert!(!m.should_swallow(Key::F, &b, &[(Key::ControlLeft, true)]));
     }
+
+    /// The bindings `compile_bindings` produces for a main key with no separate
+    /// stop key: a wake chord and its stop alias. The chord starts a recording,
+    /// the same chord pressed again stops it, and a third press starts a new one.
+    fn chord_toggle() -> Vec<HotkeyBinding> {
+        let chord = [Key::ControlLeft, Key::MetaLeft, Key::L];
+        vec![
+            binding(&chord, HotkeyMode::Toggle, None, true),
+            binding(&chord, HotkeyMode::Toggle, None, false),
+        ]
+    }
+
+    fn press_all(m: &mut MatcherState, b: &[HotkeyBinding], t: Instant, keys: [Key; 3], at: u64) {
+        for (i, key) in keys.into_iter().enumerate() {
+            event(m, b, t, at + i as u64, down(key));
+        }
+    }
+
+    fn release_all(
+        m: &mut MatcherState,
+        b: &[HotkeyBinding],
+        t: Instant,
+        keys: [Key; 3],
+        at: u64,
+    ) -> Vec<HotkeyAction> {
+        let mut actions = vec![];
+        for (i, key) in keys.into_iter().rev().enumerate() {
+            actions.extend(event(m, b, t, at + i as u64, up(key)));
+        }
+        actions
+    }
+
+    #[test]
+    fn a_modifier_chord_toggles_between_start_and_stop() {
+        let b = chord_toggle();
+        let chord = [Key::ControlLeft, Key::MetaLeft, Key::L];
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+
+        press_all(&mut m, &b, t, chord, 0);
+        assert_eq!(
+            release_all(&mut m, &b, t, chord, 10),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
+
+        press_all(&mut m, &b, t, chord, 20);
+        assert_eq!(
+            release_all(&mut m, &b, t, chord, 30),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
+        assert_eq!(m.recording_mode(), None);
+
+        press_all(&mut m, &b, t, chord, 40);
+        assert_eq!(
+            release_all(&mut m, &b, t, chord, 50),
+            vec![start(HotkeyMode::Toggle)]
+        );
+    }
+
+    /// Keyboard auto-repeat is one press: it never starts, stops, or duplicates a
+    /// recording session, however long the chord is held.
+    #[test]
+    fn chord_auto_repeat_is_a_single_press() {
+        let b = chord_toggle();
+        let chord = [Key::ControlLeft, Key::MetaLeft, Key::L];
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+
+        press_all(&mut m, &b, t, chord, 0);
+        for ms in 5..15u64 {
+            assert!(event(&mut m, &b, t, ms, EventKind::KeyRepeat(Key::L)).is_empty());
+        }
+        assert_eq!(
+            release_all(&mut m, &b, t, chord, 20),
+            vec![start(HotkeyMode::Toggle)]
+        );
+
+        press_all(&mut m, &b, t, chord, 30);
+        for ms in 35..45u64 {
+            assert!(event(&mut m, &b, t, ms, EventKind::KeyRepeat(Key::L)).is_empty());
+        }
+        assert_eq!(
+            release_all(&mut m, &b, t, chord, 50),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
+    }
+
+    #[test]
+    fn a_partial_chord_never_starts_or_stops() {
+        let b = chord_toggle();
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+
+        // Two of the three keys are ordinary typing.
+        for (ms, e) in [
+            down(Key::ControlLeft),
+            down(Key::L),
+            up(Key::L),
+            up(Key::ControlLeft),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(event(&mut m, &b, t, ms as u64, e).is_empty());
+        }
+
+        press_all(&mut m, &b, t, [Key::ControlLeft, Key::MetaLeft, Key::L], 10);
+        assert_eq!(
+            release_all(&mut m, &b, t, [Key::ControlLeft, Key::MetaLeft, Key::L], 20),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        // Releasing part of the chord mid-recording does not end the session.
+        for (ms, e) in [
+            down(Key::ControlLeft),
+            down(Key::L),
+            up(Key::L),
+            up(Key::ControlLeft),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                event(&mut m, &b, t, 30 + ms as u64, e).is_empty(),
+                "partial chord must not stop a recording"
+            );
+        }
+        assert_eq!(m.recording_mode(), Some(HotkeyMode::Toggle));
+    }
+
+    /// A separately configured stop key keeps working for a chord main key, and
+    /// ordinary typing never reaches a stop binding.
+    #[test]
+    fn a_configured_stop_key_stops_a_chord_recording() {
+        let b = vec![
+            binding(
+                &[Key::ControlLeft, Key::MetaLeft, Key::L],
+                HotkeyMode::Toggle,
+                None,
+                true,
+            ),
+            binding(&[Key::ShiftRight], HotkeyMode::Toggle, None, false),
+        ];
+        let mut m = MatcherState::new();
+        let t = Instant::now();
+
+        press_all(&mut m, &b, t, [Key::ControlLeft, Key::MetaLeft, Key::L], 0);
+        assert_eq!(
+            release_all(&mut m, &b, t, [Key::ControlLeft, Key::MetaLeft, Key::L], 10),
+            vec![start(HotkeyMode::Toggle)]
+        );
+        event(&mut m, &b, t, 20, down(Key::C));
+        assert!(event(&mut m, &b, t, 21, up(Key::C)).is_empty());
+        event(&mut m, &b, t, 30, down(Key::ShiftRight));
+        assert_eq!(
+            event(&mut m, &b, t, 31, up(Key::ShiftRight)),
+            vec![HotkeyAction::StopRecording { prompt_id: None }]
+        );
+    }
 }

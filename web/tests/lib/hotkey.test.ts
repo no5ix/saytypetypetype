@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatHotkeyTokens,
   formatPromptHotkey,
   normalizeHotkeyLabel,
   normalizeHotkeyToken,
@@ -127,5 +128,37 @@ describe("normalizeHotkeyToken", () => {
   });
   it("trims surrounding whitespace", () => {
     expect(normalizeHotkeyToken(" ControlLeft ")).toEqual({ main: "⌃", side: "L" });
+  });
+});
+
+describe("formatHotkeyTokens", () => {
+  it("keeps the side badge for a single key", () => {
+    expect(formatHotkeyTokens("AltRight")).toEqual([{ main: "⌥", side: "R" }]);
+    expect(formatHotkeyTokens("F13", false)).toEqual([{ main: "F13" }]);
+  });
+  it("drops the side badges inside a modifier combination", () => {
+    expect(formatHotkeyTokens("ControlLeft+MetaLeft+L")).toEqual([
+      { main: "⌃" },
+      { main: "⌘" },
+      { main: "L" },
+    ]);
+    expect(formatHotkeyTokens("AltRight+ShiftRight+D", false)).toEqual([
+      { main: "Alt" },
+      { main: "Shift" },
+      { main: "D" },
+    ]);
+    expect(formatHotkeyTokens("ControlLeft+AltLeft+MetaLeft+K", false)).toEqual([
+      { main: "Ctrl" },
+      { main: "Alt" },
+      { main: "Win" },
+      { main: "K" },
+    ]);
+  });
+  it("trims the tokens of a + joined string", () => {
+    expect(formatHotkeyTokens(" ControlLeft + ShiftLeft ")).toEqual([{ main: "⌃" }, { main: "⇧" }]);
+  });
+  it("returns nothing for an unbound shortcut", () => {
+    expect(formatHotkeyTokens("")).toEqual([]);
+    expect(formatHotkeyTokens("  ")).toEqual([]);
   });
 });

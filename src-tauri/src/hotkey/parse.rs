@@ -278,6 +278,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_main_key_modifier_combinations() {
+        // The combinations the settings UI is expected to accept for the global
+        // main key, in the canonical order the backend recorder writes.
+        let tests = vec![
+            (
+                "ControlLeft+MetaLeft+L",
+                BTreeSet::from([Key::ControlLeft, Key::MetaLeft, Key::L]),
+            ),
+            (
+                "AltLeft+ShiftLeft+D",
+                BTreeSet::from([Key::AltLeft, Key::ShiftLeft, Key::D]),
+            ),
+            (
+                "ControlLeft+AltLeft+MetaLeft+K",
+                BTreeSet::from([Key::ControlLeft, Key::AltLeft, Key::MetaLeft, Key::K]),
+            ),
+            // Bare aliases keep working, so a hand-written config is valid too.
+            (
+                "Ctrl+Cmd+L",
+                BTreeSet::from([Key::ControlLeft, Key::MetaLeft, Key::L]),
+            ),
+            (
+                "Option+Shift+D",
+                BTreeSet::from([Key::AltLeft, Key::ShiftLeft, Key::D]),
+            ),
+        ];
+        for (input, expected) in tests {
+            assert_eq!(parse_hotkey_string(input), Some(expected), "input: {input}");
+        }
+    }
+
+    #[test]
     fn parse_spaces_around_plus() {
         let keys = parse_hotkey_string("Control + Shift + A").unwrap();
         assert_eq!(

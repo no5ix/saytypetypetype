@@ -116,6 +116,19 @@ export function HotkeyPage() {
     [cfg, app, prompts, scheduleSave, showToast, t],
   );
 
+  // The shipped default stop key is an alias of the global main key. Re-recording
+  // the main key keeps that alias in sync, so the same key (or chord) that starts
+  // a recording also ends it; a deliberately different stop key is left alone.
+  const commitMainHotkey = useCallback(
+    (hotkey: string) =>
+      updateApp(
+        hotkey && voiceHotkey !== hotkeyStr && voiceHotkey.length > 0
+          ? { hotkey }
+          : { hotkey, voice_hotkey: hotkey },
+      ),
+    [hotkeyStr, voiceHotkey, updateApp],
+  );
+
   // The recordable hotkey field for one prompt row — its "stop" key in toggle
   // mode, its single key in hold mode. The "start" side is rendered separately
   // as the locked global main key.
@@ -140,7 +153,11 @@ export function HotkeyPage() {
     <PageLayout>
       <PageHeader title={t("快捷键")} description={t("为语音输入配置自定义快捷键。")}>
         <div className="flex flex-col gap-1 mt-2 text-text-muted">
-          <p>{t("免提模式：按全局主键开始，按语音输入或润色模板各自的结束键完成；")}</p>
+          <p>
+            {t(
+              "免提模式：按全局主键开始录音，再按一次同一主键结束；已设独立结束键时也可用它结束；",
+            )}
+          </p>
           <p>
             {t(
               "按住说话：完整按住对应快捷键 500ms 后开始，松开结束；启动后其他按键不改变本次录音。",
@@ -159,7 +176,7 @@ export function HotkeyPage() {
         <SectionHeader
           title={t("全局语音主键")}
           subtitle={t(
-            "所有免提模式均以此键开始录音；按住说话需另设独立快捷键。使用以辅助键（如 Ctrl、Shift、Tab 等）或 F1 等功能键为首的按键作为主键。",
+            "免提录音以此键开始，再按一次结束。可使用修饰键组合（如 ⌃⌘L），首个按键需为修饰键、Tab 或 F1 等功能键。",
           )}
         />
         <SectionContent>
@@ -174,7 +191,7 @@ export function HotkeyPage() {
                   busy={isBusyFor("main")}
                   onStart={() => setActiveRecorder("main")}
                   onDone={() => setActiveRecorder(null)}
-                  onCommit={(hk) => updateApp({ hotkey: hk })}
+                  onCommit={commitMainHotkey}
                   onClear={() => updateApp({ hotkey: "" })}
                   validateFirstKey
                   onInvalid={(reason) => showToast(reason, "error")}

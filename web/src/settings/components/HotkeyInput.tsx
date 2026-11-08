@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useT } from "@/i18n";
 import type { HotkeyRecordResult } from "@/settings/bridge";
 import { recordHotkey } from "@/settings/bridge";
-import { normalizeHotkeyToken } from "@/settings/lib/hotkey";
+import { formatHotkeyTokens } from "@/settings/lib/hotkey";
 
 interface HotkeyInputProps {
   /** `+`-joined physical key names, e.g. "ControlLeft+ShiftLeft" or "F13". Empty = unbound. */
@@ -135,19 +135,21 @@ export function HotkeyInput({
 }
 
 /** Render a `+`-joined accelerator as per-platform key tokens, mirroring `KeyCap`
- *  but inline (main label + optional L/R superscript) so it fits an input box. */
+ *  but inline (main label + optional L/R superscript) so it fits an input box.
+ *  Chords drop the side badge — see `formatHotkeyTokens`. */
 function renderHotkeyTokens(value: string, isMac: boolean): ReactNode {
-  const tokens = value.split("+");
-  return tokens.map((raw, i) => {
-    const token = normalizeHotkeyToken(raw, isMac);
-    return (
-      // Keys within one hotkey are distinct physical keys, so the token text
-      // itself is a stable key (no index needed).
-      <span key={raw.trim()} className="inline-flex items-baseline">
-        {i > 0 ? <span className="mx-0.5">+</span> : null}
-        <span>{token.main}</span>
-        {token.side ? <sup className="ml-0.5 text-[9px]">{token.side}</sup> : null}
-      </span>
-    );
-  });
+  // One hotkey is a set of distinct physical keys, so the raw token of each
+  // position is a stable, unique React key.
+  const raws = value
+    .split("+")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  const tokens = formatHotkeyTokens(value, isMac);
+  return raws.map((raw, i) => (
+    <span key={raw} className="inline-flex items-baseline">
+      {i > 0 ? <span className="mx-0.5">+</span> : null}
+      <span>{tokens[i].main}</span>
+      {tokens[i].side ? <sup className="ml-0.5 text-[9px]">{tokens[i].side}</sup> : null}
+    </span>
+  ));
 }
