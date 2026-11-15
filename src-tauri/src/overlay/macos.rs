@@ -933,7 +933,7 @@ fn set_glass_hairline(view: &NSView, radius: f64, color: &NSColor) {
     }
 }
 
-fn dictation_hairline_color(mtm: MainThreadMarker) -> Retained<NSColor> {
+fn dictation_hairline_color() -> Retained<NSColor> {
     // A low-contrast white hairline is visible on both dark and light glass
     // without looking like a hard panel outline.
     let color = NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -942,7 +942,6 @@ fn dictation_hairline_color(mtm: MainThreadMarker) -> Retained<NSColor> {
         1.0,
         0.22,
     );
-    let _ = mtm;
     color
 }
 
@@ -1361,7 +1360,7 @@ fn render(app: &AppHandle, model: &mut Model) {
         set_glass_hairline(
             views.glass.view(),
             views.radius,
-            &dictation_hairline_color(mtm),
+            &dictation_hairline_color(),
         );
 
         // --- Content ---
