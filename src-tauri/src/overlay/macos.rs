@@ -602,6 +602,14 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         // Clip overflowing transcript lines (multi-line keeps only the latest lines).
         container.setWantsLayer(true);
         set_clip(&container);
+        unsafe {
+            let layer: *mut AnyObject = msg_send![&*container, layer];
+            let tint = pill_tint_color();
+            let cg: *mut AnyObject = msg_send![&*tint, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+            let _: () = msg_send![layer, setCornerRadius: 20.0f64];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
         container.addSubview(&indicator);
         container.addSubview(&label);
 
@@ -645,12 +653,6 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         };
         let host = NSView::new(mtm);
         host.setWantsLayer(true);
-        unsafe {
-            let layer: *mut AnyObject = msg_send![&*host, layer];
-            let tint = pill_tint_color();
-            let cg: *mut AnyObject = msg_send![&*tint, CGColor];
-            let _: () = msg_send![layer, setBackgroundColor: cg];
-        }
         unsafe {
             let supports: bool = msg_send![&*host, respondsToSelector: sel!(setClipsToBounds:)];
             if supports { let _: () = msg_send![&*host, setClipsToBounds: false]; }
