@@ -178,6 +178,11 @@ describe("overlay presentation", () => {
     expect(row?.getAttribute("data-visible")).toBe("true");
     expect(row?.querySelectorAll("kbd")).toHaveLength(1);
   });
+  it("keeps the dictation pill border scoped to the visible pill, not the transparent window", () => {
+    const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
+    expect(css).toContain("border: 1px solid rgba(255, 255, 255, 0.09)");
+    expect(css).toContain(".pill,");
+  });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
     emit("transcript", { finalText: "旧识别文本" });
