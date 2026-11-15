@@ -185,6 +185,7 @@ describe("overlay presentation", () => {
     const native = readFileSync(resolve(process.cwd(), "src-tauri/src/overlay/macos.rs"), "utf8");
     expect(native).toContain("set_glass_hairline");
     expect(native).toContain("setBorderWidth: 1.0f64");
+    expect(native).toContain("set_glass_hairline(");
     expect(native).not.toContain("setBorderWidth: 1.0f64]; // window");
   });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
