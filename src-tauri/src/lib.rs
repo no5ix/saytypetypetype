@@ -206,6 +206,9 @@ pub fn run() {
                 }
             });
 
+            // Keep the application visible in the Dock without a menu-bar extra.
+            platform::use_dock_only();
+
             // Setup system tray
             setup_tray(app)?;
 
