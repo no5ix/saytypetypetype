@@ -261,7 +261,6 @@ pub async fn save_config_object(
     apply_app_theme(&app, &updated_config.app.theme);
     let resolved_language = crate::i18n::resolve(&updated_config.app.language);
     crate::i18n::set_language(resolved_language);
-    crate::refresh_tray_labels(&app);
 
     if let Some(hotkey_mode) = app.try_state::<HotkeyMode>() {
         *hotkey_mode.0.lock().unwrap() = updated_config.app.hotkey_mode.clone();
