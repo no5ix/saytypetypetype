@@ -11,8 +11,8 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSEvent, NSEventMask};
-use objc2_foundation::MainThreadMarker;
+use objc2_app_kit::{NSEvent, NSEventMask, NSWindow};
+use objc2_foundation::{MainThreadMarker, NSPoint};
 use tauri::{AppHandle, Manager};
 
 use super::PICKER_LABEL;
@@ -69,17 +69,22 @@ fn tick(app: &AppHandle) {
         return;
     }
     // SAFETY: Tauri owns the live picker NSWindow for the app lifetime.
-    let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+    let ns_window: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
     if !ns_window.isVisible() {
         return;
     }
+
     let frame = ns_window.frame();
     let mouse = NSEvent::mouseLocation();
     let x = mouse.x - frame.origin.x;
     let y = frame.size.height - (mouse.y - frame.origin.y);
-    let script = format!(
-        "window.__pickerNativePointer={{x:{x},y:{y}}};window.__pickerNativeHoverTick?.()"
-    );
+    let script = if x >= 0.0 && y >= 0.0 && x <= frame.size.width && y <= frame.size.height {
+        format!(
+            "window.__pickerNativePointer={{x:{x},y:{y}}};window.__pickerNativeHoverTick?.()"
+        )
+    } else {
+        "window.__pickerNativePointer=null;window.__pickerNativeHoverTick?.()".to_string()
+    };
     let _ = window.eval(&script);
 }
 
