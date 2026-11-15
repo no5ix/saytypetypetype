@@ -30,10 +30,10 @@ body,
   /* Borderless neutral canvas; card colors create the visual grouping. */
   --picker-border: transparent;
   --picker-panel-bg: rgba(24, 24, 23, 0.97);
-  --picker-card-original: rgba(57, 43, 35, 0.98);
-  --picker-card-polish: rgba(38, 53, 67, 0.98);
-  --picker-card-native: rgba(51, 43, 66, 0.98);
-  --picker-card-translate: rgba(36, 59, 51, 0.98);
+  --picker-card-original: rgba(68, 45, 34, 0.99);
+  --picker-card-polish: rgba(35, 57, 76, 0.99);
+  --picker-card-native: rgba(54, 43, 76, 0.99);
+  --picker-card-translate: rgba(35, 66, 53, 0.99);
   /* Shared scale factor for the pop-in/pop-out motion (see below). */
   --picker-pop-scale: 0.975;
   --picker-pop-in: 150ms;
@@ -54,10 +54,10 @@ body,
   /* Light mode keeps the same borderless hierarchy with pale card tints. */
   --picker-border: transparent;
   --picker-panel-bg: rgba(246, 244, 239, 0.98);
-  --picker-card-original: rgba(245, 235, 226, 0.98);
-  --picker-card-polish: rgba(229, 239, 248, 0.98);
-  --picker-card-native: rgba(239, 232, 248, 0.98);
-  --picker-card-translate: rgba(229, 242, 235, 0.98);
+  --picker-card-original: rgba(232, 210, 194, 0.99);
+  --picker-card-polish: rgba(218, 233, 246, 0.99);
+  --picker-card-native: rgba(231, 221, 244, 0.99);
+  --picker-card-translate: rgba(216, 236, 224, 0.99);
 }
 
 .picker-surface {
