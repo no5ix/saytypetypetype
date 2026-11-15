@@ -70,12 +70,6 @@ function visibleHintText(state: OverlayState): string {
 
 export function OverlayApp() {
   const { state, waveActive } = useOverlayState();
-  const [lastShortcuts, setLastShortcuts] = useState(state.shortcuts);
-  useEffect(() => {
-    if (state.shortcuts.length > 0) setLastShortcuts(state.shortcuts);
-  }, [state.shortcuts]);
-  const displayedShortcuts = state.shortcuts.length > 0 ? state.shortcuts : lastShortcuts;
-
   const [, forceLanguage] = useState(0);
   const [metrics, setMetrics] = useState<OverlayLayoutMetrics>(FALLBACK_METRICS);
 
@@ -143,21 +137,6 @@ export function OverlayApp() {
   return (
     <main className="overlay-main flex h-full w-full items-end justify-center overflow-hidden p-[28px_32px_40px] [font-family:var(--font-family-ui)]">
       <section className="overlay-surface relative flex max-h-full w-full max-w-[680px] items-end justify-center overflow-visible">
-        <div
-          className="shortcut-row"
-          data-visible={state.shortcuts.length > 0}
-          aria-hidden={state.shortcuts.length === 0}
-        >
-          {displayedShortcuts.map((shortcut) => (
-            <span
-              key={`${shortcut.key}-${shortcut.label}`}
-              className="inline-flex items-center gap-1 whitespace-nowrap"
-            >
-              <kbd>{shortcut.key}</kbd>
-              <span>{shortcut.label}</span>
-            </span>
-          ))}
-        </div>
         <div ref={pillRef} className="overlay-group relative max-w-full">
           <div
             data-wrap={wrap ? "multi" : "single"}
