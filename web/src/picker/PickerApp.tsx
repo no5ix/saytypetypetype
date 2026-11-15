@@ -23,8 +23,8 @@ declare global {
   }
 }
 
-function useNativeCardHover(enabled: boolean) {
-  const hoveredRef = useRef<number | null>(null);
+function useNativePickerHover(enabled: boolean) {
+  const hoveredRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!enabled) {
@@ -35,56 +35,36 @@ function useNativeCardHover(enabled: boolean) {
     const update = () => {
       const x = window.__pickerNativePointer?.x;
       const y = window.__pickerNativePointer?.y;
-      if (typeof x !== "number" || typeof y !== "number") {
-        if (hoveredRef.current !== null) {
-          const previous = document.querySelector<HTMLElement>(
-            '[data-picker-card-index="' + hoveredRef.current + '"]',
-          );
-          previous?.removeAttribute("data-native-hovered");
-          hoveredRef.current = null;
-        }
-        return;
-      }
+      let next: HTMLElement | null = null;
 
-      const cards = Array.from(
-        document.querySelectorAll<HTMLElement>("[data-picker-card-index]"),
-      );
-      let next: number | null = null;
-      for (const card of cards) {
-        if (
-          card.dataset.pickerDisabled === "true" ||
-          getComputedStyle(card).pointerEvents === "none"
-        ) {
-          continue;
-        }
-        const rect = card.getBoundingClientRect();
-        if (
-          x >= rect.left &&
-          x <= rect.right &&
-          y >= rect.top &&
-          y <= rect.bottom
-        ) {
-          next = Number(card.dataset.pickerCardIndex);
-          break;
+      if (typeof x === "number" && typeof y === "number") {
+        const targets = document.querySelectorAll<HTMLElement>(
+          "[data-picker-card-index], [data-picker-cancel]",
+        );
+        for (const target of targets) {
+          if (
+            target.dataset.pickerDisabled === "true" ||
+            getComputedStyle(target).pointerEvents === "none"
+          ) {
+            continue;
+          }
+          const rect = target.getBoundingClientRect();
+          if (
+            x >= rect.left &&
+            x <= rect.right &&
+            y >= rect.top &&
+            y <= rect.bottom
+          ) {
+            next = target;
+            break;
+          }
         }
       }
 
       if (next === hoveredRef.current) return;
-      const previous = hoveredRef.current;
+      hoveredRef.current?.removeAttribute("data-native-hovered");
       hoveredRef.current = next;
-
-      if (previous !== null) {
-        const oldCard = document.querySelector<HTMLElement>(
-          '[data-picker-card-index="' + previous + '"]',
-        );
-        oldCard?.removeAttribute("data-native-hovered");
-      }
-      if (next !== null) {
-        const nextCard = document.querySelector<HTMLElement>(
-          '[data-picker-card-index="' + next + '"]',
-        );
-        nextCard?.setAttribute("data-native-hovered", "true");
-      }
+      next?.setAttribute("data-native-hovered", "true");
     };
 
     window.__pickerNativeHoverTick = update;
@@ -173,7 +153,7 @@ export function PickerApp() {
   const sessionIdRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useWindowViewport();
-  useNativeCardHover(Boolean(view && !closing));
+  useNativePickerHover(Boolean(view && !closing));
 
   useEffect(() => {
     let mounted = true;
@@ -354,7 +334,8 @@ export function PickerApp() {
             <button
               type="button"
               onClick={dismiss}
-              className="rounded-lg bg-fill-subtle px-2 py-1 text-[11px] text-text-dim transition hover:bg-fill-hover hover:text-text"
+              data-picker-cancel=""
+              className="picker-cancel cursor-pointer rounded-lg bg-fill-subtle px-2 py-1 text-[11px] text-text-dim transition hover:bg-fill-hover hover:text-text"
             >
               {t("Esc 取消")}
             </button>
