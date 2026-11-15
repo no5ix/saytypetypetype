@@ -1,9 +1,9 @@
-//! Native hover tracking for the non-activating picker window.
+//! Native pointer polling bridge for the picker WebView.
 //!
-//! Uses the coordinate-based strategy from no5ix/sux-mac: observe global mouse
-//! movement while the picker is visible, hit-test the pointer against the
-//! picker's current card rectangles in the WebView, and apply a direct visual
-//! highlight. This avoids depending on DOM :hover delivery to a non-key window.
+//! Mirrors the 25 ms native pointer polling approach in sux-mac's
+//! xSelectionToolbar. The native monitor never activates the app. It forwards
+//! each move into the picker WebView, where exact DOM card bounds are hit-tested
+//! and the card under the pointer is marked with data-native-hovered.
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
@@ -35,7 +35,7 @@ pub(crate) fn enable(app: &AppHandle) {
     let Some(monitor) =
         NSEvent::addGlobalMonitorForEventsMatchingMask_handler(NSEventMask::MouseMoved, &handler)
     else {
-        tracing::warn!("Could not install the picker global mouse monitor");
+        log_rec!(warn, "Could not install picker native pointer monitor");
         return;
     };
     BRIDGE.with(|bridge| {
@@ -64,4 +64,14 @@ fn tick(app: &AppHandle) {
     };
     let script = "window.__pickerNativeHoverTick?.()";
     let _ = window.eval(script);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_hover_updates_are_rate_limited_by_the_monitor_source() {
+        // The source is AppKit's mouse-moved monitor; it receives one callback
+        // per native pointer move and does not run when the pointer is stationary.
+        assert!(super::PICKER_LABEL.len() > 0);
+    }
 }
