@@ -17,7 +17,6 @@ use std::time::Duration;
 use tauri::{App, AppHandle, Emitter, Manager};
 
 use crate::app_state;
-use crate::hotkey;
 
 // Updated only on the main thread; a later show invalidates pending hide completions.
 static VISIBILITY_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -200,33 +199,6 @@ pub(crate) fn position_overlay_on(app_handle: &AppHandle, target: &crate::displa
 pub(crate) fn invalidate_feedback(inner: &app_state::AppInner) {
     inner.overlay_epoch.fetch_add(1, Ordering::SeqCst);
     inner.feedback_visible.store(false, Ordering::SeqCst);
-}
-
-/// The key that ends a toggle recording, formatted for the recording panel.
-/// `voice_hotkey` names it when configured; with no separate stop key the global
-/// main key is its own stop (the compiled alias), and that is what the panel has
-/// to show. A key that the binding compiler disabled (conflict, invalid, hold
-/// mode) yields an empty label, so the panel never advertises a dead shortcut.
-fn finish_key_label(app: &crate::config::AppSettings, enabled: &[hotkey::HotkeyBinding]) -> String {
-    let voice = app.voice_hotkey.as_deref().unwrap_or("").trim();
-    let key = if voice.is_empty() {
-        app.hotkey.as_str().unwrap_or("")
-    } else {
-        voice
-    };
-    if key.is_empty() {
-        return String::new();
-    }
-    let is_stop = hotkey::parse_hotkey_string(key).is_some_and(|keys| {
-        enabled
-            .iter()
-            .any(|b| !b.wake_only && b.prompt_id.is_none() && b.keys == keys)
-    });
-    if is_stop {
-        hotkey::format_hotkey_label(key)
-    } else {
-        String::new()
-    }
 }
 
 pub(crate) async fn show_restart_error(
