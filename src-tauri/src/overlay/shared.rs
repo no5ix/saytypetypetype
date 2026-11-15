@@ -375,7 +375,7 @@ mod tests {
         // and a 1× 1920×1080 external below it.
         let metrics = LayoutMetrics::current_for(Some(&work(0.0, 38.0, 1728.0, 1079.0)));
         assert_eq!(metrics.max_text_width, 864.0 - 60.0); // chrome 16+16+16+12
-        assert_eq!(metrics.max_text_lines, 23.0); // (539.5−48−34−16)/18.48
+        assert_eq!(metrics.max_text_lines, 25.0); // (539.5−48−16)/18.48
 
         let metrics = LayoutMetrics::current_for(Some(&work(1728.0, -512.0, 1920.0, 1080.0)));
         assert_eq!(metrics.max_text_width, 960.0 - 60.0);
