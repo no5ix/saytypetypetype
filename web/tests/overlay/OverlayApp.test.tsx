@@ -151,32 +151,13 @@ describe("overlay presentation", () => {
     expect(container.querySelector('[aria-hidden="true"].pill')).toBeNull();
   });
 
-  it("renders error shortcuts above the pill without retry buttons or countdowns", () => {
+  it("does not render a recording toolbar while preserving the dictation pill", () => {
     const { container } = render(<OverlayApp />);
     emit("hint", { level: "error", text: "API Key 无效\n5 秒后输出原文" });
-    emit("shortcuts", {
-      shortcuts: [
-        { key: "Fn", label: "重试" },
-        { key: "Esc", label: "取消" },
-        { key: "Enter", label: "输出原文" },
-      ],
-    });
     expect(container.querySelector(".lucide-info")).toBeTruthy();
-    expect(container.querySelector(".pill button, .pill-countdown")).toBeNull();
-    expect(container.querySelector(".pill kbd")).toBeNull();
-    expect(container.querySelectorAll(".shortcut-row kbd")).toHaveLength(3);
-    expect(container.querySelector(".overlay-group .shortcut-row")).toBeNull();
-    expect(container.querySelector(".lucide-info")?.classList.contains("h-4")).toBe(true);
-    expect(screen.getByText("输出原文")).toBeTruthy();
-    const row = container.querySelector(".shortcut-row");
-    expect(row?.getAttribute("data-visible")).toBe("true");
-    emit("shortcuts", { shortcuts: [] });
-    expect(row?.getAttribute("data-visible")).toBe("false");
-    expect(row?.getAttribute("aria-hidden")).toBe("true");
-    expect(row?.querySelectorAll("kbd")).toHaveLength(3); // Retain items for the exit fade.
-    emit("shortcuts", { shortcuts: [{ key: "Fn", label: "结束" }] });
-    expect(row?.getAttribute("data-visible")).toBe("true");
-    expect(row?.querySelectorAll("kbd")).toHaveLength(1);
+    expect(container.querySelector(".pill button, .pill-countdown, .pill kbd")).toBeNull();
+    expect(container.querySelector(".shortcut-row")).toBeNull();
+    expect(screen.getByText("API Key 无效\n5 秒后输出原文")).toBeTruthy();
   });
   it("uses a borderless shallow-blue surface for the dictation pill and shortcut capsule", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
