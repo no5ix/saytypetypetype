@@ -405,15 +405,12 @@ function PickerCard({
         disabled={!selectable}
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
         onClick={onSelect}
-        className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-100 ${
+        className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-150 ${
           option.kind === "original" ? "picker-card-original" : getCardTone(option.id, option.title)
         } ${
-          // Cards must never react to the pointer. The panel floats over
-          // arbitrary application content, so a hover highlight reads as
-          // flicker while the user is deciding; selection is carried by the
-          // accent tint and the original-card ring alone. A selectable card
-          // therefore differs from a disabled one by cursor and opacity only.
-          selectable ? "cursor-pointer" : "cursor-default opacity-80"
+          selectable
+            ? "cursor-pointer hover:brightness-110 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55 focus-visible:ring-offset-2 focus-visible:ring-offset-black/25"
+            : "cursor-default opacity-80"
         } ${busy ? "pointer-events-none opacity-60" : ""}`}
       >
         <div className="flex items-start justify-between gap-2 pr-7">
