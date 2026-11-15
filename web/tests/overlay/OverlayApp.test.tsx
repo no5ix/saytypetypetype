@@ -182,6 +182,10 @@ describe("overlay presentation", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
     expect(css).toContain("border: 1px solid rgba(255, 255, 255, 0.09)");
     expect(css).toContain(".pill,");
+    const native = readFileSync(resolve(process.cwd(), "src-tauri/src/overlay/macos.rs"), "utf8");
+    expect(native).toContain("set_glass_hairline");
+    expect(native).toContain("setBorderWidth: 1.0f64");
+    expect(native).not.toContain("setBorderWidth: 1.0f64]; // window");
   });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
