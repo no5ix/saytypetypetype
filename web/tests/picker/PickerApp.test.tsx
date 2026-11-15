@@ -139,7 +139,6 @@ afterEach(() => {
 
 describe("PickerApp system theme preference", () => {
   it("updates the picker when macOS appearance changes while following the system", async () => {
-    let matches = false;
     const listeners = new Set<() => void>();
     const media = {
       matches,
@@ -160,7 +159,6 @@ describe("PickerApp system theme preference", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
 
     // macOS switches to Light while the picker WebView remains mounted.
-    matches = true;
     media.matches = true;
     act(() => {
       for (const listener of listeners) listener();
@@ -168,7 +166,6 @@ describe("PickerApp system theme preference", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
 
     // And it must follow the reverse transition as well.
-    matches = false;
     media.matches = false;
     act(() => {
       for (const listener of listeners) listener();
