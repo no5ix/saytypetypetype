@@ -91,51 +91,11 @@ impl WaveActivity {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct Shortcut {
-    pub key: String,
-    pub label: String,
-}
-
-impl Shortcut {
-    pub fn new(key: impl Into<String>, label: &str) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-        }
-    }
-}
-
-/// Recording hints use raw signal timing, independently of waveform smoothing.
-pub struct RecordingHints {
-    pub toggle: bool,
-    pub shortcuts: Vec<Shortcut>,
-    pub last_signal: std::time::Instant,
-    pub shown: bool,
-}
-
-impl RecordingHints {
-    pub fn update(&mut self, signal: bool, now: std::time::Instant) -> bool {
-        if signal {
-            self.last_signal = now;
-        }
-        if self.toggle
-            && !self.shown
-            && now.duration_since(self.last_signal) >= std::time::Duration::from_secs(2)
-        {
-            self.shown = true;
-            return true;
-        }
-        false
-    }
-}
-
 /// Logical overlay state used to derive display text. Parallels the Windows
 /// WebView's `OverlayState`; only the macOS renderer holds a live instance.
 #[derive(Default)]
 #[cfg(any(target_os = "macos", test))]
 pub struct Model {
-    pub shortcuts: Vec<Shortcut>,
     pub final_text: String,
     pub partial_text: String,
     pub hint_text: String,
@@ -329,56 +289,6 @@ mod tests {
         assert_eq!(
             visible_hint_lang(&model("idle", "出错了", "text"), false),
             "出错了"
-        );
-    }
-
-    #[test]
-    fn recording_hints_show_at_two_seconds_and_remain_after_speech() {
-        let now = std::time::Instant::now();
-        let mut hints = RecordingHints {
-            toggle: true,
-            shortcuts: vec![],
-            last_signal: now,
-            shown: false,
-        };
-        assert!(!hints.update(false, now + std::time::Duration::from_millis(1999)));
-        assert!(hints.update(false, now + std::time::Duration::from_secs(2)));
-        assert!(!hints.update(true, now + std::time::Duration::from_secs(3)));
-        assert!(hints.shown);
-    }
-
-    #[test]
-    fn recording_hints_reset_pause_on_signal_without_waveform_hold() {
-        let now = std::time::Instant::now();
-        let mut hints = RecordingHints {
-            toggle: true,
-            shortcuts: vec![],
-            last_signal: now,
-            shown: false,
-        };
-        assert!(!hints.update(true, now + std::time::Duration::from_secs(1)));
-        assert!(!hints.update(false, now + std::time::Duration::from_millis(2999)));
-        assert!(hints.update(false, now + std::time::Duration::from_secs(3)));
-        let mut hold = RecordingHints {
-            toggle: false,
-            shortcuts: vec![],
-            last_signal: now,
-            shown: false,
-        };
-        assert!(!hold.update(false, now + std::time::Duration::from_secs(30)));
-        assert!(!hold.shown);
-    }
-
-    #[test]
-    fn visible_hint_does_not_mistake_an_empty_success_for_processing() {
-        assert_eq!(visible_hint_lang(&model("idle", "", "success"), false), "");
-        assert_eq!(
-            visible_hint_lang(&model("finishing", "", "success"), false),
-            ""
-        );
-        assert_eq!(
-            visible_hint_lang(&model("finishing", "", "text"), false),
-            "识别中"
         );
     }
 
