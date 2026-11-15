@@ -916,6 +916,26 @@ fn set_clip(view: &NSView) {
 }
 
 
+/// Apply a subdued blue tint directly to the native pill glass surface.
+/// CSS backgrounds are not visible for NSGlassEffectView because AppKit owns
+/// that surface; painting its backing layer makes the color deterministic.
+fn apply_pill_tint(view: &NSView) {
+    unsafe {
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if layer.is_null() {
+            return;
+        }
+        let color = NSColor::colorWithSRGBRed_green_blue_alpha(
+            0.20,
+            0.39,
+            0.62,
+            0.22,
+        );
+        let cg: *mut AnyObject = msg_send![&*color, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg];
+    }
+}
+
 fn set_corner(view: &NSView, radius: f64) {
     unsafe {
         let layer: *mut AnyObject = msg_send![view, layer];
@@ -1526,8 +1546,12 @@ fn render(app: &AppHandle, model: &mut Model) {
                 // Style may change live between Clear and Regular without recreating.
                 g.setStyle(glass_style(&model.style));
                 g.setCornerRadius(radius);
+                apply_pill_tint(g);
             }
-            GlassKind::Vibrancy(g) => set_corner(g, radius),
+            GlassKind::Vibrancy(g) => {
+                set_corner(g, radius);
+                apply_pill_tint(g);
+            }
         }
 
         // Container fills the glass.
