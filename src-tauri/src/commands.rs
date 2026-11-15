@@ -302,7 +302,7 @@ pub async fn save_config_object(
     );
 
     // The language feeds every window (settings, picker, native overlay) and
-    // the tray. Announce the resolved value so already-open windows update
+    // Announce the resolved value so already-open windows update
     // immediately instead of waiting for their next data load.
     let _ = app.emit(
         "settings:event",
