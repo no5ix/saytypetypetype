@@ -936,13 +936,7 @@ fn set_glass_hairline(view: &NSView, radius: f64, color: &NSColor) {
 fn dictation_hairline_color() -> Retained<NSColor> {
     // A low-contrast white hairline is visible on both dark and light glass
     // without looking like a hard panel outline.
-    let color = NSColor::colorWithSRGBRed_green_blue_alpha(
-        1.0,
-        1.0,
-        1.0,
-        0.22,
-    );
-    color
+    NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.22)
 }
 
 fn set_corner(view: &NSView, radius: f64) {
