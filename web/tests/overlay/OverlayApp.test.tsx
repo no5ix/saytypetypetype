@@ -190,8 +190,11 @@ describe("overlay presentation", () => {
     expect(native).not.toContain("setBorderWidth: 1.0f64");
     expect(native).toContain("fn pill_tint_color");
     expect(native).toContain("let tint = pill_tint_color()");
-    expect(native).toContain("let host = NSView::new(mtm)");
-    expect(native).not.toContain("apply_pill_tint(g)");
+    expect(native).toContain("let container = unsafe");
+    expect(native).toContain("setCornerRadius: 20.0f64");
+    expect(native).toContain("setMasksToBounds: true");
+    const hostBlock = native.slice(native.indexOf("let host = NSView::new(mtm)"), native.indexOf("let width_constraint"));
+    expect(hostBlock).not.toContain("setBackgroundColor");
   });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
