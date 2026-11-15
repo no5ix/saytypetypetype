@@ -144,7 +144,7 @@ describe("PickerApp borderless color surfaces", () => {
     expect(surface).toContain("background: var(--picker-panel-bg)");
     expect(surface).not.toContain("box-shadow");
     expect(css).toContain("--picker-panel-bg: rgba(24, 24, 23, 0.97)");
-    expect(css).toContain("--picker-panel-bg: rgba(246, 244, 239, 0.98)");
+    expect(css).toContain("--picker-panel-bg: rgba(225, 223, 217, 0.99)");
   });
 
   it("defines distinct dark and light card colors for all four card types", () => {
@@ -193,6 +193,47 @@ describe("PickerApp borderless color surfaces", () => {
     expect(pill?.className).not.toContain("border");
   });
 });
+
+describe("PickerApp system theme synchronization", () => {
+  it("subscribes to system appearance changes only while the preference is system", async () => {
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    const media = {
+      matches: false,
+      addEventListener: vi.fn((name: string, listener: (event: MediaQueryListEvent) => void) => {
+        if (name === "change") listeners.add(listener);
+      }),
+      removeEventListener: vi.fn((name: string, listener: (event: MediaQueryListEvent) => void) => {
+        if (name === "change") listeners.delete(listener);
+      }),
+    };
+    vi.stubGlobal("matchMedia", vi.fn(() => media));
+    const { unmount } = await renderPicker(view(OPTIONS));
+    await waitFor(() => expect(media.addEventListener).toHaveBeenCalledWith("change", expect.any(Function)));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    media.matches = true;
+    act(() => {
+      for (const listener of listeners) listener({ matches: true } as MediaQueryListEvent);
+    });
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    unmount();
+    expect(media.removeEventListener).toHaveBeenCalled();
+  });
+
+  it("does not subscribe to system changes for a fixed light or dark preference", async () => {
+    const addEventListener = vi.fn();
+    vi.stubGlobal("matchMedia", () => ({
+      matches: false,
+      addEventListener,
+      removeEventListener: vi.fn(),
+    }));
+    const fixed = { ...view(OPTIONS), theme: "dark" };
+    const { unmount } = await renderPicker(fixed);
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(addEventListener).not.toHaveBeenCalled();
+    unmount();
+  });
+});
+
 describe("PickerApp pop-in and pop-out", () => {
   it("animates within the 120-180ms budget and drops the scale for reduced motion", () => {
     const durations = [...css.matchAll(/--picker-pop-(in|out):\s*(\d+)ms/g)].map((m) =>
