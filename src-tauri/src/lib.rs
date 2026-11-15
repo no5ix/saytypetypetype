@@ -26,7 +26,7 @@ mod tests;
 mod updater;
 
 use app_state::*;
-use tauri::{image::Image, tray::TrayIconBuilder, App, Listener, Manager, RunEvent};
+use tauri::{App, Listener, Manager, RunEvent};
 
 /// User-facing product name. Internal identifiers (bundle id, data directory,
 /// crate/binary names, update signing identity) deliberately keep the historical
@@ -191,7 +191,6 @@ pub fn run() {
                         continue;
                     }
                     i18n::set_language(next);
-                    refresh_tray_labels(&language_handle);
                     let _ = tauri::Emitter::emit(
                         &language_handle,
                         "settings:event",
@@ -292,13 +291,13 @@ pub fn run() {
                 ..
             } if label == "settings" => {
                 // Let the settings window close for real so its WebView memory is
-                // released. The app stays alive via the tray + ExitRequested below;
+                // released. The Dock icon remains available for reopening.
                 // platform::show_settings() rebuilds the window on the next "设置" click.
                 platform::set_dock_visible(true);
             }
             RunEvent::ExitRequested { code, api, .. }
-                // Keep the app running in the tray for user-initiated window closes,
-                // but allow tray "quit" to call app.exit(0).
+                // Keep the Dock-only app alive when its settings window is closed.
+                // An explicit application quit may still terminate the process.
                 if code.is_none() =>
             {
                 api.prevent_exit();
@@ -318,19 +317,3 @@ pub fn run() {
         });
 }
 
-/// Setup the system tray icon with menu items.
-fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
-
-    let tray = TrayIconBuilder::with_id("main-tray")
-        .icon(icon)
-        .icon_as_template(true)
-        .tooltip(APP_NAME)
-        .build(app)?;
-
-    // Keep the status item alive for the app's lifetime. It has no menu or
-    // click action: app access is intentionally through the Dock icon only.
-    app.manage(tray);
-
-    Ok(())
-}
