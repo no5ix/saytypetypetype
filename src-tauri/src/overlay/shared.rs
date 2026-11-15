@@ -37,10 +37,6 @@ pub const MAX_LINES: usize = 3;
 /// margin + 48 pill offset). Used by the macOS renderer and by each platform's
 /// placement code, so it is available everywhere.
 pub const BOTTOM_OFFSET: f64 = 48.0;
-/// Vertical room the keyboard-hint row takes above the pill in the macOS
-/// shell (18pt height + 16pt gap). The native renderer and the Windows
-/// metrics both need it.
-pub const SHORTCUT_RESERVE: f64 = 34.0;
 
 /// Transparent shell size for a target work area, in logical points.
 ///
@@ -259,7 +255,7 @@ impl LayoutMetrics {
             let chrome = PAD_LEFT + PAD_RIGHT + INDICATOR_W + GAP;
             (
                 (shell_w - chrome).max(MIN_PILL_W),
-                (((shell_h - BOTTOM_OFFSET - SHORTCUT_RESERVE - 16.0) / DOM_LINE_H).floor())
+                (((shell_h - BOTTOM_OFFSET - 16.0) / DOM_LINE_H).floor())
                     .max(3.0),
             )
         } else {
