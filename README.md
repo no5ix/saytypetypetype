@@ -86,6 +86,10 @@ Go to [GitHub Releases](https://github.com/no5ix/saytypetypetype/releases/latest
 | Ollama            | ✅️        |
 | OpenAI-Compatible | ✅️        |
 
+## How to Build
+
+`pnpm build:dev`
+
 ## FAQ
 
 ### Not working on macOS?
