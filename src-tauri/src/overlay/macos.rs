@@ -916,29 +916,6 @@ fn set_clip(view: &NSView) {
 }
 
 
-/// Apply a restrained one-pixel hairline to the actual native dictation glass
-/// surface. The transparent host window remains borderless, so no rectangular
-/// outline is painted around the large invisible window.
-fn set_glass_hairline(view: &NSView, radius: f64, color: &NSColor) {
-    unsafe {
-        let layer: *mut AnyObject = msg_send![view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let cg: *mut AnyObject = msg_send![&*color, CGColor];
-        let _: () = msg_send![layer, setCornerRadius: radius];
-        let _: () = msg_send![layer, setMasksToBounds: true];
-        let _: () = msg_send![layer, setBorderWidth: 1.0f64];
-        let _: () = msg_send![layer, setBorderColor: cg];
-    }
-}
-
-fn dictation_hairline_color() -> Retained<NSColor> {
-    // A low-contrast white hairline is visible on both dark and light glass
-    // without looking like a hard panel outline.
-    NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.22)
-}
-
 fn set_corner(view: &NSView, radius: f64) {
     unsafe {
         let layer: *mut AnyObject = msg_send![view, layer];
@@ -1348,14 +1325,6 @@ fn render(app: &AppHandle, model: &mut Model) {
             apply_variant(ns_window, variant);
             views.applied_variant = variant.to_string();
         }
-
-        // Keep the hairline on the pill's glass view only, never on the
-        // transparent native window shell.
-        set_glass_hairline(
-            views.glass.view(),
-            views.radius,
-            &dictation_hairline_color(),
-        );
 
         // --- Content ---
         if has_hint {
