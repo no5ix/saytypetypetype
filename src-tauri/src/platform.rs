@@ -20,22 +20,6 @@ pub(crate) fn use_dock_only() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn use_dock_only() {}
 
-/// Keep the app in the Dock. The menu bar extra is intentionally not used.
-#[cfg(target_os = "macos")]
-pub(crate) fn set_dock_visible(_visible: bool) {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-    if let Some(mtm) = MainThreadMarker::new() {
-        let app = NSApplication::sharedApplication(mtm);
-        // Dock-only mode always uses Regular; never switch to Accessory because
-        // that would remove the Dock icon when the settings window closes.
-        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn set_dock_visible(_visible: bool) {}
-
 /// Bring the app to the foreground on macOS. Explicit activation ensures the
 /// Dock-launched or reopened settings window is raised above other applications.
 ///
@@ -79,10 +63,10 @@ pub(crate) fn show_settings(app: &AppHandle) {
         match tauri::WebviewWindowBuilder::from_config(app, cfg) {
             Ok(builder) => {
                 if let Err(e) = builder.build() {
-                    log_tray!(error, "failed to rebuild settings window: {e}");
+                    log_app!(error, "failed to rebuild settings window: {e}");
                 }
             }
-            Err(e) => log_tray!(error, "failed to create settings window builder: {e}"),
+            Err(e) => log_app!(error, "failed to create settings window builder: {e}"),
         }
         // The rebuilt window has no implicit focus, so focus it explicitly.
         if let Some(window) = app.get_webview_window("settings") {
