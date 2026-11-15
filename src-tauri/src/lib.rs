@@ -318,60 +318,18 @@ pub fn run() {
         });
 }
 
-/// Build the tray menu in the active language.
-fn build_tray_menu<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<tauri::menu::Menu<R>, tauri::Error> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-
-    let settings_item = MenuItem::with_id(
-        app,
-        "settings",
-        i18n::tr("设置", "Settings"),
-        true,
-        None::<&str>,
-    )?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, "quit", i18n::tr("退出", "Quit"), true, None::<&str>)?;
-    Menu::with_items(app, &[&settings_item, &separator, &quit_item])
-}
-
-/// Re-apply the tray labels after the language preference changes. The tray
-/// icon itself and its click handler stay untouched.
-pub(crate) fn refresh_tray_labels(app: &tauri::AppHandle) {
-    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
-        let _ = tray.set_tooltip(Some(APP_NAME));
-        if let Ok(menu) = build_tray_menu(app) {
-            let _ = tray.set_menu(Some(menu));
-        }
-    }
-}
-
 /// Setup the system tray icon with menu items.
 fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let menu = build_tray_menu(app.handle())?;
     let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
 
     let tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
         .icon_as_template(true)
         .tooltip(APP_NAME)
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "settings" => {
-                log_tray!(debug, "Settings clicked");
-                platform::show_settings(app);
-            }
-            "quit" => {
-                log_tray!(debug, "Quit clicked");
-                app.exit(0);
-            }
-            _ => {}
-        })
         .build(app)?;
 
-    // Keep the tray icon alive for the app's lifetime.
+    // Keep the status item alive for the app's lifetime. It has no menu or
+    // click action: app access is intentionally through the Dock icon only.
     app.manage(tray);
 
     Ok(())
