@@ -247,6 +247,9 @@ describe("PickerApp borderless color surfaces", () => {
       (button) => button.textContent?.includes("Esc"),
     );
     expect(cancel?.className).toContain("bg-fill-subtle");
+    expect(cancel?.className).toContain("cursor-pointer");
+    expect(cancel?.getAttribute("data-picker-cancel")).toBe("");
+    expect(css).toContain('.picker-cancel[data-native-hovered="true"]');
   });
 
   it("keeps the waiting surface borderless too", async () => {
