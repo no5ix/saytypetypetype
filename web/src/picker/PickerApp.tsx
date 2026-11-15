@@ -18,6 +18,7 @@ import {
 // polling calls this function at the Sux-mac toolbar's 25 ms cadence.
 declare global {
   interface Window {
+    __pickerNativePointer?: { x: number; y: number };
     __pickerNativeHoverTick?: () => void;
   }
 }
@@ -81,6 +82,7 @@ function useNativeCardHover(enabled: boolean) {
     update();
     return () => {
       delete window.__pickerNativeHoverTick;
+      delete window.__pickerNativePointer;
       document
         .querySelectorAll("[data-native-hovered]")
         .forEach((element) => element.removeAttribute("data-native-hovered"));
