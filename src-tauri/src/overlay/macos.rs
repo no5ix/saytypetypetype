@@ -400,7 +400,6 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                     }
                     // Collapse the waveform when not actively recording.
                     if s != "idle" {
-                        model.shortcuts.clear();
                     }
                     if s != "recording" {
                         WAVE_ACTIVE.with(|w| *w.borrow_mut() = false);
