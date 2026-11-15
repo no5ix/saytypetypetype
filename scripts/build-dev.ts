@@ -67,6 +67,20 @@ function findIdentity(): boolean {
   return output.includes(`"${SIGNING_IDENTITY}"`);
 }
 
+function hasCertificate(): boolean {
+  const result = spawnSync(
+    "security",
+    ["find-certificate", "-c", SIGNING_IDENTITY, "-p", LOGIN_KEYCHAIN],
+    { encoding: "utf8" },
+  );
+  return (
+    !result.error &&
+    result.status === 0 &&
+    typeof result.stdout === "string" &&
+    result.stdout.includes("-----BEGIN CERTIFICATE-----")
+  );
+}
+
 function exportCertificate(outputPath: string): void {
   const pem = run("security", [
     "find-certificate",
@@ -218,19 +232,19 @@ function ensureTrustedForCodeSigning(certPath: string): void {
 function ensureMacSigningIdentity(): void {
   const tempDir = fs.mkdtempSync(path.join(tmpdir(), "saytypetypetype-signing-"));
   try {
-    if (!findIdentity()) {
+    if (!hasCertificate()) {
       createIdentity(tempDir);
-    }
-
-    if (!findIdentity()) {
-      throw new Error(
-        `The ${SIGNING_IDENTITY} identity was not found in the login Keychain after import.`,
-      );
     }
 
     const certPath = path.join(tempDir, "dev-signing.crt");
     exportCertificate(certPath);
     ensureTrustedForCodeSigning(certPath);
+
+    if (!findIdentity()) {
+      throw new Error(
+        `The ${SIGNING_IDENTITY} certificate is trusted, but its signing identity is unavailable in the login Keychain.`,
+      );
+    }
     console.log(`Using persistent local signing identity: ${SIGNING_IDENTITY}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
