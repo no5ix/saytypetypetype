@@ -143,6 +143,12 @@ describe("PickerApp borderless color surfaces", () => {
     expect(surface).toContain("border: 0");
     expect(surface).toContain("background: var(--picker-panel-bg)");
     expect(surface).not.toContain("box-shadow");
+    const pickerSource = readFileSync(
+      resolve(process.cwd(), "src-tauri/src/picker/mod.rs"),
+      "utf8",
+    );
+    expect(pickerSource).toContain(".shadow(true)");
+    expect(pickerSource).not.toContain(".shadow(false)");
     expect(css).toContain("--picker-panel-bg: rgba(24, 24, 23, 0.97)");
     expect(css).toContain("--picker-panel-bg: rgba(246, 244, 239, 0.98)");
   });
