@@ -62,8 +62,25 @@ fn tick(app: &AppHandle) {
     let Some(window) = app.get_webview_window(PICKER_LABEL) else {
         return;
     };
-    let script = "window.__pickerNativeHoverTick?.()";
-    let _ = window.eval(script);
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: Tauri owns the live picker NSWindow for the app lifetime.
+    let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+    if !ns_window.isVisible() {
+        return;
+    }
+    let frame = ns_window.frame();
+    let mouse = NSEvent::mouseLocation();
+    let x = mouse.x - frame.origin.x;
+    let y = frame.size.height - (mouse.y - frame.origin.y);
+    let script = format!(
+        "window.__pickerNativePointer={{x:{x},y:{y}}};window.__pickerNativeHoverTick?.()"
+    );
+    let _ = window.eval(&script);
 }
 
 #[cfg(test)]
