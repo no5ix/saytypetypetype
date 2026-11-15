@@ -89,6 +89,7 @@ Go to [GitHub Releases](https://github.com/no5ix/saytypetypetype/releases/latest
 ## How to Build
 
 `pnpm build:dev`
+the app is in here: open "saytypetypetype/src-tauri/target/release/bundle/macos/SayTypeTypeType Dev.app" 
 
 ## FAQ
 
