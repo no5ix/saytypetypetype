@@ -146,6 +146,15 @@ authorityKeyIdentifier = keyid:always
     "-export",
     "-name",
     SIGNING_IDENTITY,
+    // Use legacy-compatible PKCS#12 encryption. Apple's Keychain importer can
+    // reject OpenSSL 3's default PBES2/AES + SHA-256 MAC with "MAC verification
+    // failed" even when the supplied empty password is correct.
+    "-keypbe",
+    "PBE-SHA1-3DES",
+    "-certpbe",
+    "PBE-SHA1-3DES",
+    "-macalg",
+    "sha1",
     "-inkey",
     keyPath,
     "-in",
