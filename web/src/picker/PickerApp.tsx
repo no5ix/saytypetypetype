@@ -107,7 +107,19 @@ export function PickerApp() {
   }, []);
 
   useEffect(() => {
-    applyTheme(view?.theme ?? "system");
+    const preference = view?.theme ?? "system";
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const update = () => applyTheme(preference);
+
+    update();
+    if (preference !== "system") return;
+
+    // The picker WebView is reused between dictation sessions. Its theme
+    // preference can remain "system" while macOS changes appearance, so it
+    // must observe the live system setting rather than only applying it when
+    // a new picker state arrives.
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
   }, [view?.theme]);
 
   // A new session starts fresh: collapse previews, re-enable selection, and
