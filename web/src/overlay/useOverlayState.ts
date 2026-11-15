@@ -5,7 +5,6 @@ import {
   type HintLevel,
   INITIAL_OVERLAY_STATE,
   type OverlayState,
-  type Shortcut,
 } from "./types";
 
 type Action =
@@ -13,15 +12,12 @@ type Action =
   | { type: "state"; state: AppState }
   | { type: "transcript"; finalText?: string; partialText?: string }
   | { type: "hint"; text?: string; level?: HintLevel; variant?: string }
-  | { type: "shortcuts"; shortcuts: Shortcut[] }
   | { type: "appearance"; theme: OverlayState["theme"] };
 
 export function reducer(state: OverlayState, action: Action): OverlayState {
   switch (action.type) {
     case "reset":
       return { ...INITIAL_OVERLAY_STATE, theme: state.theme };
-    case "shortcuts":
-      return { ...state, shortcuts: action.shortcuts };
     case "appearance":
       return { ...state, theme: action.theme };
     case "state": {
@@ -30,7 +26,6 @@ export function reducer(state: OverlayState, action: Action): OverlayState {
       return {
         ...state,
         appState: action.state,
-        shortcuts: action.state === "idle" ? state.shortcuts : [],
         ...(clearHint ? { hintText: "", hintLevel: "info" as const, hintVariant: "text" } : {}),
       };
     }
@@ -84,9 +79,6 @@ export function useOverlayState() {
             level: payload.level as HintLevel,
             variant: payload.variant as string,
           });
-          break;
-        case "shortcuts":
-          dispatch({ type: "shortcuts", shortcuts: (payload.shortcuts as Shortcut[]) || [] });
           break;
         case "appearance":
           dispatch({
