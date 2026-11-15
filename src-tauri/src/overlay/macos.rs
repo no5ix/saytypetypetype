@@ -5,8 +5,7 @@ use objc2::{class, msg_send, sel, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSFont,
     NSGlassEffectView, NSGlassEffectViewStyle, NSLayoutConstraint, NSLineBreakMode,
-    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSTextAlignment, NSTextField, NSView, NSWindow,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
@@ -20,8 +19,8 @@ use tauri::{AppHandle, Manager};
 // platform-agnostic `shared` module so the macOS native renderer and the
 // Windows WebView stay driven by the same numbers.
 use super::shared::{
-    visible_hint, Model, Shortcut, BOTTOM_OFFSET, FONT_SIZE, GAP, ICON_SIZE, INDICATOR_W,
-    MAX_LINES, MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE, SHORTCUT_RESERVE,
+    visible_hint, Model, BOTTOM_OFFSET, FONT_SIZE, GAP, ICON_SIZE, INDICATOR_W,
+    MAX_LINES, MIN_PILL_W, MULTI_LINE_WIDTH, PAD_LEFT, PAD_RIGHT, PILL_H_SINGLE,
     SINGLE_LINE_LIMIT, TEXT_SLACK, WAVE_AREA_W, WAVE_BAR_GAP, WAVE_BAR_W, WAVE_CORNER_RADIUS,
     WAVE_DURATIONS, WAVE_MAX_H, WAVE_MIN_H, WAVE_N, WAVE_PEAKS, WAVE_SETTLE_SECONDS,
 };
@@ -51,12 +50,6 @@ struct WaveBar {
     layer: Retained<AnyObject>,
 }
 
-struct ShortcutViews {
-    keycap: Retained<NSView>,
-    key_label: Retained<NSTextField>,
-    label: Retained<NSTextField>,
-}
-
 /// The retained native view tree (built once, updated per render).
 struct Views {
     host: Retained<NSView>,
@@ -67,13 +60,6 @@ struct Views {
     container: Retained<NSView>,
     indicator: Retained<NSView>,
     label: Retained<NSTextField>,
-    /// Keyboard hints above the glass, without increasing the pill height.
-    shortcuts_root: Retained<NSView>,
-    shortcuts_background: Option<Retained<NSVisualEffectView>>,
-    shortcuts_width: Retained<NSLayoutConstraint>,
-    shortcuts_height: Retained<NSLayoutConstraint>,
-    shortcut_items: Vec<ShortcutViews>,
-    shortcut_content: Vec<Shortcut>,
     bars: [WaveBar; WAVE_N],
     icon_layer: Retained<AnyObject>,
     fade_mask: Retained<AnyObject>, // CAGradientLayer for the multi-line top fade
@@ -307,10 +293,6 @@ pub(super) fn animate_visibility(app: &AppHandle, visible: bool) {
         let Some(views) = slot.as_ref() else {
             return;
         };
-        fade_shortcuts(
-            &views.shortcuts_root,
-            visible && !views.shortcut_content.is_empty(),
-        );
         unsafe {
             // Fade the parent layer so the glass and its content disappear together.
             let layer: *mut AnyObject = msg_send![&*views.pivot, layer];
@@ -370,7 +352,7 @@ pub fn dispatch(app: &AppHandle, event: &serde_json::Value) {
     // (audio:warmup / recording:start / recording:stop) belong to the WebView worker.
     let relevant = matches!(
         kind,
-        "reset" | "state" | "transcript" | "hint" | "appearance" | "shortcuts"
+        "reset" | "state" | "transcript" | "hint" | "appearance"
     );
     if !relevant {
         return;
@@ -392,7 +374,6 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
         ensure_loaded(app, &mut model);
         match kind {
             "reset" => {
-                model.shortcuts.clear();
                 model.final_text.clear();
                 model.partial_text.clear();
                 model.hint_text.clear();
@@ -454,12 +435,6 @@ fn apply_event(app: &AppHandle, event: &serde_json::Value) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("text")
                     .into();
-            }
-            "shortcuts" => {
-                model.shortcuts = payload
-                    .and_then(|p| p.get("shortcuts"))
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
             }
             "appearance" => {
                 if let Some(s) = payload
@@ -551,41 +526,19 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         let mut slot = v.borrow_mut();
         let recreate = slot
             .as_ref()
-            .map(|x| x.glass.kind() != want || x.shortcuts_background.is_some() != (model.style == "vibrancy"))
+            .map(|x| x.glass.kind() != want)
             .unwrap_or(true);
         if !recreate {
             return;
         }
         if let Some(old) = slot.take() {
             old.host.removeFromSuperview();
-            old.shortcuts_root.removeFromSuperview();
         }
 
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setFont(Some(&NSFont::systemFontOfSize(FONT_SIZE)));
         // Layer-backed so the hint-text pulse (a layer.opacity animation) works.
         label.setWantsLayer(true);
-
-        // A separate root stays anchored to the window, outside width animations.
-        let shortcuts_root = NSView::new(mtm);
-        shortcuts_root.setTranslatesAutoresizingMaskIntoConstraints(false);
-        shortcuts_root.setWantsLayer(true);
-        shortcuts_root.setAlphaValue(0.0);
-        content.addSubview(&shortcuts_root);
-        let shortcuts_background = if model.style == "vibrancy" {
-            let background = NSVisualEffectView::new(mtm);
-            background.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-            background.setState(NSVisualEffectState::Active);
-            background.setMaterial(NSVisualEffectMaterial::HUDWindow);
-            background.setWantsLayer(true);
-            set_corner(&background, 12.0);
-            shortcuts_root.addSubview(&background);
-            Some(background)
-        } else {
-            None
-        };
-        let shortcuts_width = shortcuts_root.widthAnchor().constraintEqualToConstant(0.0);
-        let shortcuts_height = shortcuts_root.heightAnchor().constraintEqualToConstant(18.0);
 
         let indicator = NSView::new(mtm);
         indicator.setWantsLayer(true);
@@ -684,10 +637,6 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             host.bottomAnchor().constraintEqualToAnchor_constant(&content.bottomAnchor(), -BOTTOM_OFFSET),
             width_constraint.clone(),
             height_constraint.clone(),
-            shortcuts_root.centerXAnchor().constraintEqualToAnchor(&content.centerXAnchor()),
-            shortcuts_width.clone(),
-            shortcuts_height.clone(),
-            shortcuts_root.bottomAnchor().constraintEqualToAnchor_constant(&host.topAnchor(), -16.0),
             pivot.centerXAnchor().constraintEqualToAnchor(&host.centerXAnchor()),
             pivot.bottomAnchor().constraintEqualToAnchor(&host.bottomAnchor()),
             pivot.widthAnchor().constraintEqualToConstant(0.0),
@@ -714,12 +663,6 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             container,
             indicator,
             label,
-            shortcuts_root,
-            shortcuts_background,
-            shortcuts_width,
-            shortcuts_height,
-            shortcut_items: Vec::new(),
-            shortcut_content: Vec::new(),
             bars,
             icon_layer,
             fade_mask: make_fade_mask(),
@@ -783,19 +726,11 @@ fn sync_foreground(views: &Views) {
         // Use the glass content's appearance, which can differ from the window
         // when Liquid Glass adapts to the backdrop.
         let appearance: Retained<NSAppearance> = msg_send![&*views.container, effectiveAppearance];
-        let _: () = msg_send![&*views.shortcuts_root, setAppearance: &*appearance];
         let update = RcBlock::new(|| {
             let color = NSColor::labelColor();
             let cg: *mut AnyObject = msg_send![&*color, CGColor];
             let _: () = msg_send![&*views.icon_layer, setStrokeColor: cg];
-            let background = color.colorWithAlphaComponent(0.12);
-            let background_cg: *mut AnyObject = msg_send![&*background, CGColor];
-            for item in &views.shortcut_items {
-                item.key_label.setTextColor(Some(&color));
-                item.label.setTextColor(Some(&color));
-                let layer: *mut AnyObject = msg_send![&*item.keycap, layer];
-                let _: () = msg_send![layer, setBackgroundColor: background_cg];
-            }
+
         });
         appearance.performAsCurrentDrawingAppearance(&update);
     }
@@ -1075,144 +1010,6 @@ fn transcript_attr(model: &Model) -> Retained<NSAttributedString> {
     Retained::into_super(attr)
 }
 
-fn fade_shortcuts(view: &NSView, visible: bool) {
-    unsafe {
-        let layer: *mut AnyObject = msg_send![view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
-        let from: f32 = if presentation.is_null() {
-            msg_send![layer, opacity]
-        } else {
-            msg_send![presentation, opacity]
-        };
-        let target = if visible { 1.0f32 } else { 0.0f32 };
-        let _: () = msg_send![class!(CATransaction), begin];
-        let _: () = msg_send![class!(CATransaction), setDisableActions: true];
-        view.setAlphaValue(target as f64);
-        let _: () = msg_send![class!(CATransaction), commit];
-        let animation: *mut AnyObject = msg_send![class!(CABasicAnimation), animationWithKeyPath: &*NSString::from_str("opacity")];
-        let _: () = msg_send![animation, setFromValue: &*NSNumber::numberWithDouble(from as f64)];
-        let _: () = msg_send![animation, setToValue: &*NSNumber::numberWithDouble(target as f64)];
-        let _: () = msg_send![animation, setDuration: if visible { 0.16f64 } else { 0.12f64 }];
-        let timing: *mut AnyObject = msg_send![class!(CAMediaTimingFunction), functionWithName: &*NSString::from_str(if visible { "easeOut" } else { "easeIn" })];
-        let _: () = msg_send![animation, setTimingFunction: timing];
-        let _: () = msg_send![layer, addAnimation: animation, forKey: &*NSString::from_str("vp-shortcuts-opacity")];
-    }
-}
-
-fn update_shortcuts(views: &mut Views, shortcuts: &[Shortcut], mtm: MainThreadMarker) {
-    if views.shortcut_content == shortcuts {
-        return;
-    }
-    views.shortcut_content = shortcuts.to_vec();
-    if shortcuts.is_empty() {
-        fade_shortcuts(&views.shortcuts_root, false);
-        return; // Keep the rendered items alive until their fade finishes.
-    }
-    for item in views.shortcut_items.drain(..) {
-        item.keycap.removeFromSuperview();
-        item.label.removeFromSuperview();
-    }
-    let mut widths = Vec::new();
-    for shortcut in shortcuts {
-        let key_label = NSTextField::labelWithString(&NSString::from_str(&shortcut.key), mtm);
-        key_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        key_label.setAlignment(NSTextAlignment::Center);
-        let key_size = key_label
-            .cell()
-            .map(|cell| cell.cellSize())
-            .unwrap_or_else(|| key_label.intrinsicContentSize());
-        let keycap = NSView::new(mtm);
-        keycap.setWantsLayer(true);
-        set_corner(&keycap, 4.0);
-        keycap.addSubview(&key_label);
-        let label = NSTextField::labelWithString(&NSString::from_str(&shortcut.label), mtm);
-        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        label.setUsesSingleLineMode(true);
-        label.setLineBreakMode(NSLineBreakMode::ByClipping);
-        let label_size = label
-            .cell()
-            .map(|cell| cell.cellSize())
-            .unwrap_or_else(|| label.intrinsicContentSize());
-        label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        views.shortcuts_root.addSubview(&keycap);
-        views.shortcuts_root.addSubview(&label);
-        widths.push((
-            key_size.width.ceil() + 8.0,
-            label_size.width.ceil() + 2.0,
-            key_size.height.ceil(),
-            label_size.height.ceil(),
-        ));
-        views.shortcut_items.push(ShortcutViews {
-            keycap,
-            key_label,
-            label,
-        });
-    }
-    let total: f64 = widths.iter().map(|w| w.0 + 4.0 + w.1).sum::<f64>()
-        + 14.0 * widths.len().saturating_sub(1) as f64;
-    let padded = views.shortcuts_background.is_some();
-    let padding_x = if padded { 12.0 } else { 0.0 };
-    let padding_y = if padded { 6.0 } else { 0.0 };
-    let max_width = unsafe { views.shortcuts_root.superview() }
-        .map(|parent| (parent.bounds().size.width - 64.0).max(0.0))
-        .unwrap_or(656.0);
-    let width = (total + padding_x * 2.0).min(max_width);
-    let height = 18.0 + padding_y * 2.0;
-    views.shortcuts_width.setConstant(width);
-    views.shortcuts_height.setConstant(height);
-    if let Some(background) = &views.shortcuts_background {
-        background.setFrame(NSRect {
-            origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize { width, height },
-        });
-    }
-    // The template is the last action; shorten it without hiding cancel/complete.
-    let overflow = (total + padding_x * 2.0 - width).max(0.0);
-    let mut x = padding_x;
-    let last = widths.len() - 1;
-    for (index, (item, (key_w, label_w, key_h, label_h))) in
-        views.shortcut_items.iter().zip(widths).enumerate()
-    {
-        let label_w = if index == last {
-            (label_w - overflow).max(0.0)
-        } else {
-            label_w
-        };
-        item.keycap.setFrame(NSRect {
-            origin: NSPoint { x, y: padding_y },
-            size: NSSize {
-                width: key_w,
-                height: 18.0,
-            },
-        });
-        item.key_label.setFrame(NSRect {
-            origin: NSPoint {
-                x: 0.0,
-                y: (18.0 - key_h) / 2.0,
-            },
-            size: NSSize {
-                width: key_w,
-                height: key_h,
-            },
-        });
-        item.label.setFrame(NSRect {
-            origin: NSPoint {
-                x: x + key_w + 4.0,
-                y: padding_y + (18.0 - label_h) / 2.0,
-            },
-            size: NSSize {
-                width: label_w,
-                height: label_h,
-            },
-        });
-        x += key_w + 4.0 + label_w + 14.0;
-    }
-    fade_shortcuts(&views.shortcuts_root, true);
-}
-
 fn hint_color(level: &str) -> Retained<NSColor> {
     match level {
         "error" => NSColor::labelColor(),
@@ -1354,7 +1151,6 @@ fn render(app: &AppHandle, model: &mut Model) {
             let attr = transcript_attr(model);
             views.label.setAttributedStringValue(&attr);
         }
-        update_shortcuts(views, &model.shortcuts, mtm);
 
         // Reconnecting uses text only; recording keeps its waveform.
         let show_wave = model.app_state == "recording"
@@ -1419,10 +1215,8 @@ fn render(app: &AppHandle, model: &mut Model) {
         let (shell_w, shell_h) = SHELL.with(|shell| *shell.borrow());
         let dynamic = (shell_w - super::shared::MIN_SHELL_W).abs() > 0.5
             || (shell_h - super::shared::MIN_SHELL_H).abs() > 0.5;
-        // The pill hangs BOTTOM_OFFSET above the shell bottom; the shortcut
-        // hints take SHORTCUT_RESERVE (18pt row + 16pt gap) of the height
-        // above it.
-        let pill_h_cap = (shell_h - super::shared::BOTTOM_OFFSET - SHORTCUT_RESERVE).max(56.0);
+        // The toolbar is removed, so the pill can use the full shell height.
+        let pill_h_cap = (shell_h - super::shared::BOTTOM_OFFSET).max(56.0);
         // The shell only has to be wider than the legacy pill for the dynamic
         // caps to change anything; on small displays the legacy floor keeps the
         // today-visible behaviour.
