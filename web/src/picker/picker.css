@@ -128,6 +128,10 @@ body,
   filter: brightness(1.12);
   transform: translateY(-1px);
 }
+.picker-cancel[data-native-hovered="true"] {
+  background: var(--color-fill-hover);
+  color: var(--color-text);
+}
 .picker-card-original { background: var(--picker-card-original); }
 .picker-card-polish { background: var(--picker-card-polish); }
 .picker-card-native { background: var(--picker-card-native); }
