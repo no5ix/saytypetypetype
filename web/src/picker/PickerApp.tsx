@@ -348,6 +348,14 @@ function Kbd({ children }: { children: ReactNode }) {
   );
 }
 
+function getCardTone(optionId: string): string {
+  const id = optionId.toLowerCase();
+  if (id.includes("polish")) return "picker-card-polish";
+  if (id.includes("native")) return "picker-card-native";
+  if (id.includes("translat")) return "picker-card-translate";
+  return "picker-card-default";
+}
+
 function PickerCard({
   option,
   busy,
@@ -370,15 +378,7 @@ function PickerCard({
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
         onClick={onSelect}
         className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-100 ${
-          option.kind === "original"
-            ? "picker-card-original"
-            : option.id.toLowerCase().includes("polish")
-              ? "picker-card-polish"
-              : option.id.toLowerCase().includes("native")
-                ? "picker-card-native"
-                : option.id.toLowerCase().includes("translat")
-                  ? "picker-card-translate"
-                  : "picker-card-default"
+          option.kind === "original" ? "picker-card-original" : getCardTone(option.id)
         } ${
           // Cards must never react to the pointer. The panel floats over
           // arbitrary application content, so a hover highlight reads as
