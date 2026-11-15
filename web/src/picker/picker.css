@@ -27,11 +27,13 @@ body,
   --color-fill-hover: rgba(255, 255, 255, 0.15);
   --color-error: #ff9a94;
 
-  /* The panel outline carries all of the separation from the desktop, so it is a
-   * crisp 1px near-white line instead of a drop shadow: over arbitrary windows a
-   * large shadow reads as a smudge. The native window shadow is disabled too
-   * (`WebviewWindowBuilder::shadow(false)`), so this is the only outline. */
-  --picker-border: rgba(255, 255, 255, 0.34);
+  /* Borderless neutral canvas; card colors create the visual grouping. */
+  --picker-border: transparent;
+  --picker-panel-bg: rgba(24, 24, 23, 0.97);
+  --picker-card-original: rgba(57, 43, 35, 0.98);
+  --picker-card-polish: rgba(38, 53, 67, 0.98);
+  --picker-card-native: rgba(51, 43, 66, 0.98);
+  --picker-card-translate: rgba(36, 59, 51, 0.98);
   /* Shared scale factor for the pop-in/pop-out motion (see below). */
   --picker-pop-scale: 0.975;
   --picker-pop-in: 150ms;
@@ -49,14 +51,18 @@ body,
   --color-fill-hover: rgba(0, 0, 0, 0.09);
   --color-error: #b3261e;
 
-  /* Same restrained outline, inverted for light desktops. */
-  --picker-border: rgba(0, 0, 0, 0.3);
+  /* Light mode keeps the same borderless hierarchy with pale card tints. */
+  --picker-border: transparent;
+  --picker-panel-bg: rgba(246, 244, 239, 0.98);
+  --picker-card-original: rgba(245, 235, 226, 0.98);
+  --picker-card-polish: rgba(229, 239, 248, 0.98);
+  --picker-card-native: rgba(239, 232, 248, 0.98);
+  --picker-card-translate: rgba(229, 242, 235, 0.98);
 }
 
 .picker-surface {
-  background: var(--color-surface-card);
-  /* No outer shadow on purpose: the panel is defined by its border. */
-  border: 1px solid var(--picker-border);
+  background: var(--picker-panel-bg);
+  border: 0;
 }
 
 /* Pop-in / pop-out.
@@ -110,3 +116,15 @@ body,
     transform: none;
   }
 }
+
+
+/* Borderless, mode-specific card surfaces. */
+.picker-card {
+  border: 0;
+  box-shadow: none;
+}
+.picker-card-original { background: var(--picker-card-original); }
+.picker-card-polish { background: var(--picker-card-polish); }
+.picker-card-native { background: var(--picker-card-native); }
+.picker-card-translate { background: var(--picker-card-translate); }
+.picker-card-default { background: var(--color-surface-card); }
