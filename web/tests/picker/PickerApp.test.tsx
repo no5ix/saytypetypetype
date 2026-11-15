@@ -9,7 +9,7 @@ import { PickerApp } from "@/picker/PickerApp";
 
 /**
  * The stylesheet the picker window actually loads. Asserted as text so the
- * appearance rules (no outer shadow, theme-aware 1px outline, motion budget) are
+ * appearance rules (borderless surfaces, theme-specific card colors, motion budget) are
  * checked against the source of truth instead of a jsdom approximation, which
  * neither applies external stylesheets nor real layout.
  */
@@ -155,6 +155,9 @@ describe("PickerApp borderless color surfaces", () => {
     expect(css).toContain("--picker-card-polish: rgba(218, 233, 246, 0.99)");
     expect(css).toContain("--picker-card-native: rgba(231, 221, 244, 0.99)");
     expect(css).toContain("--picker-card-translate: rgba(216, 236, 224, 0.99)");
+    expect(css).toContain("--picker-card-polish: rgba(35, 57, 76, 0.99)");
+    expect(css).toContain("--picker-card-native: rgba(54, 43, 76, 0.99)");
+    expect(css).toContain("--picker-card-translate: rgba(35, 66, 53, 0.99)");
     expect(css).toContain(".picker-card {\n  border: 0;");
   });
 
