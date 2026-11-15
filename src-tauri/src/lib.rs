@@ -294,7 +294,7 @@ pub fn run() {
                 // Let the settings window close for real so its WebView memory is
                 // released. The app stays alive via the tray + ExitRequested below;
                 // platform::show_settings() rebuilds the window on the next "设置" click.
-                platform::set_dock_visible(false);
+                platform::set_dock_visible(true);
             }
             RunEvent::ExitRequested { code, api, .. }
                 // Keep the app running in the tray for user-initiated window closes,
