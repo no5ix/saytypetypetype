@@ -1,5 +1,5 @@
 /* VoicePaste overlay pill — glass surface + animations only.
-   Everything else (layout, indicator states, transcript, waveform, shortcuts) is
+   Everything else (layout, indicator states, transcript, waveform) is
    expressed inline as Tailwind utilities in OverlayApp.tsx. What remains here is
    the backdrop-filter glass that is too verbose for utility classes, its Fluent
    reveal highlight, and the two keyframes referenced via arbitrary animate-*
@@ -16,8 +16,7 @@ body,
   overflow: hidden;
 }
 
-.pill,
-.shortcut-row {
+.pill {
   color: inherit;
   /* Blue-tinted glass; retain the CSS color as a visible layer above the
      transparent native host and AppKit glass material. */
@@ -72,71 +71,20 @@ body,
 .overlay-group {
   opacity: 0;
 }
-.shortcut-row {
-  position: absolute;
-  bottom: calc(100% + 16px);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  font-size: 11px;
-  color: inherit;
-  width: max-content;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 6px 12px;
-  border-radius: 12px;
-}
-.shortcut-row > span {
-  min-width: 0;
-  flex-shrink: 0;
-}
-.shortcut-row > span:last-child {
-  flex-shrink: 1;
-}
-.shortcut-row > span > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.shortcut-row kbd {
-  flex-shrink: 0;
-}
-.shortcut-row {
-  opacity: 0;
-  transition: opacity 120ms ease-in;
-}
-.shortcut-row[data-visible="true"] {
-  opacity: 1;
-  transition: opacity 160ms ease-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  .shortcut-row {
-    transition: none;
-  }
-}
-.shortcut-row kbd {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-radius: 4px;
-  padding: 2px 4px;
-  font: inherit;
-}
 .overlay-group .pill {
   opacity: 1;
 }
 html[data-overlay-theme="light"] {
   --overlay-foreground: #171717;
 }
-html[data-overlay-theme="light"] .pill,
-html[data-overlay-theme="light"] .shortcut-row {
+html[data-overlay-theme="light"] .pill {
   background: rgba(117, 166, 216, 0.38);
 }
 @media (prefers-color-scheme: light) {
   html[data-overlay-theme="system"] {
     --overlay-foreground: #171717;
   }
-  html[data-overlay-theme="system"] .pill,
-  html[data-overlay-theme="system"] .shortcut-row {
+  html[data-overlay-theme="system"] .pill {
     background: rgba(117, 166, 216, 0.38);
   }
 }
