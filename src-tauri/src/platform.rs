@@ -66,9 +66,8 @@ pub(crate) fn activate_app() {}
 /// (lazy lifecycle: closing destroys it to free the WebView), rebuild it from the
 /// bundled window config before showing.
 pub(crate) fn show_settings(app: &AppHandle) {
-    // Switch back to Regular (show Dock) BEFORE showing/focusing the window: an
-    // accessory-policy app cannot reliably raise its window above other apps, so
-    // the policy flip must come first, and the foreground activation comes last.
+    // Keep the Dock application icon visible; menu-bar extra was removed.
+    use_dock_only();
     set_dock_visible(true);
 
     if let Some(window) = app.get_webview_window("settings") {
