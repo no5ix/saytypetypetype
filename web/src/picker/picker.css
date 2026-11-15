@@ -122,6 +122,11 @@ body,
 .picker-card {
   border: 0;
   box-shadow: none;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+.picker-card[data-native-hovered="true"] {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
 }
 .picker-card-original { background: var(--picker-card-original); }
 .picker-card-polish { background: var(--picker-card-polish); }
