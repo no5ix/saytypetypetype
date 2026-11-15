@@ -572,17 +572,21 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         shortcuts_root.setWantsLayer(true);
         shortcuts_root.setAlphaValue(0.0);
         content.addSubview(&shortcuts_root);
-        let shortcuts_background = if model.style == "vibrancy" {
+        let shortcuts_background = {
             let background = NSVisualEffectView::new(mtm);
             background.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             background.setState(NSVisualEffectState::Active);
             background.setMaterial(NSVisualEffectMaterial::HUDWindow);
             background.setWantsLayer(true);
             set_corner(&background, 12.0);
+            unsafe {
+                let layer: *mut AnyObject = msg_send![&*background, layer];
+                let tint = pill_tint_color();
+                let cg: *mut AnyObject = msg_send![&*tint, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: cg];
+            }
             shortcuts_root.addSubview(&background);
             Some(background)
-        } else {
-            None
         };
         let shortcuts_width = shortcuts_root.widthAnchor().constraintEqualToConstant(0.0);
         let shortcuts_height = shortcuts_root.heightAnchor().constraintEqualToConstant(18.0);
