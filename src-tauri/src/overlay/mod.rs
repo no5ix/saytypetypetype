@@ -275,7 +275,7 @@ pub(crate) async fn emit_polish_decision_hint(
             "type": "hint",
             "payload": {
                 "text": format!(
-                    "{}\\n{}",
+                    "{}\n{}",
                     text,
                     i18n::tr("5 秒后输出原文", "Sending raw text in 5 s")
                 ),
