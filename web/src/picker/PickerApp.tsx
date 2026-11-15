@@ -12,6 +12,83 @@ import {
   selectPickerOption,
 } from "./bridge";
 
+
+// The picker is a non-key AppKit window. macOS may not deliver normal DOM
+// pointer events to its WKWebView while another app stays active, so native
+// polling calls this function at the Sux-mac toolbar's 25 ms cadence.
+declare global {
+  interface Window {
+    __pickerNativeHoverTick?: () => void;
+  }
+}
+
+function useNativeCardHover(enabled: boolean) {
+  const hoveredRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      hoveredRef.current = null;
+      return;
+    }
+
+    const update = () => {
+      const x = window.__pickerNativePointer?.x;
+      const y = window.__pickerNativePointer?.y;
+      if (typeof x !== "number" || typeof y !== "number") return;
+
+      const cards = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-picker-card-index]"),
+      );
+      let next: number | null = null;
+      for (const card of cards) {
+        if (
+          card.dataset.pickerDisabled === "true" ||
+          getComputedStyle(card).pointerEvents === "none"
+        ) {
+          continue;
+        }
+        const rect = card.getBoundingClientRect();
+        if (
+          x >= rect.left &&
+          x <= rect.right &&
+          y >= rect.top &&
+          y <= rect.bottom
+        ) {
+          next = Number(card.dataset.pickerCardIndex);
+          break;
+        }
+      }
+
+      if (next === hoveredRef.current) return;
+      const previous = hoveredRef.current;
+      hoveredRef.current = next;
+
+      if (previous !== null) {
+        const oldCard = document.querySelector<HTMLElement>(
+          '[data-picker-card-index="' + previous + '"]',
+        );
+        oldCard?.removeAttribute("data-native-hovered");
+      }
+      if (next !== null) {
+        const nextCard = document.querySelector<HTMLElement>(
+          '[data-picker-card-index="' + next + '"]',
+        );
+        nextCard?.setAttribute("data-native-hovered", "true");
+      }
+    };
+
+    window.__pickerNativeHoverTick = update;
+    update();
+    return () => {
+      delete window.__pickerNativeHoverTick;
+      document
+        .querySelectorAll("[data-native-hovered]")
+        .forEach((element) => element.removeAttribute("data-native-hovered"));
+      hoveredRef.current = null;
+    };
+  }, [enabled]);
+}
+
 function useWindowViewport(): { width: number; height: number } {
   const [viewport, setViewport] = useState(() => ({
     width: window.innerWidth,
@@ -85,6 +162,7 @@ export function PickerApp() {
   const sessionIdRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useWindowViewport();
+  useNativeCardHover(Boolean(view && !closing));
 
   useEffect(() => {
     let mounted = true;
@@ -300,6 +378,7 @@ export function PickerApp() {
               <PickerCard
                 key={option.id}
                 option={option}
+                cardIndex={options.indexOf(option)}
                 busy={busy}
                 onSelect={() => select(option)}
                 onExpand={() => setExpanded(option.id)}
@@ -386,11 +465,13 @@ function getCardTone(optionId: string, title: string): string {
 
 function PickerCard({
   option,
+  cardIndex,
   busy,
   onSelect,
   onExpand,
 }: {
   option: PickerOptionView;
+  cardIndex: number;
   busy: boolean;
   onSelect: () => void;
   onExpand: () => void;
@@ -404,12 +485,14 @@ function PickerCard({
         type="button"
         disabled={!selectable}
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
+        data-picker-card-index={cardIndex}
+        data-picker-disabled={!selectable ? "true" : "false"}
         onClick={onSelect}
         className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-150 ${
           option.kind === "original" ? "picker-card-original" : getCardTone(option.id, option.title)
         } ${
           selectable
-            ? "cursor-pointer hover:brightness-110 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55 focus-visible:ring-offset-2 focus-visible:ring-offset-black/25"
+            ? "cursor-pointer active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55 focus-visible:ring-offset-2 focus-visible:ring-offset-black/25"
             : "cursor-default opacity-80"
         } ${busy ? "pointer-events-none opacity-60" : ""}`}
       >
