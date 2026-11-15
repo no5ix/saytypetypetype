@@ -34,11 +34,24 @@ function columnsForWidth(width: number, count: number): number {
 function applyTheme(theme: string) {
   const resolved =
     theme === "system"
-      ? window.matchMedia("(prefers-color-scheme: light)").matches
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light"
+      : theme === "light"
         ? "light"
-        : "dark"
-      : theme;
+        : "dark";
   document.documentElement.dataset.theme = resolved;
+}
+
+function useSystemTheme(preference: string | undefined) {
+  useEffect(() => {
+    if (preference !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => applyTheme("system");
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [preference]);
 }
 
 /**
@@ -109,6 +122,7 @@ export function PickerApp() {
   useEffect(() => {
     applyTheme(view?.theme ?? "system");
   }, [view?.theme]);
+  useSystemTheme(view?.theme);
 
   // A new session starts fresh: collapse previews, re-enable selection, and
   // reset the scroll offset. The picker window is reused between sessions, so a
