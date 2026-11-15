@@ -28,6 +28,11 @@ mod updater;
 use app_state::*;
 use tauri::{Listener, Manager, RunEvent};
 
+/// User-facing product name. Internal identifiers (bundle id, data directory,
+/// crate/binary names, update signing identity) deliberately keep the historical
+/// `voicepaste` spelling so upgrades continue to find the existing installation.
+pub const APP_NAME: &str = "SayTypeTypeType";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
