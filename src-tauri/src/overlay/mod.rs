@@ -17,6 +17,8 @@ use std::time::Duration;
 use tauri::{App, AppHandle, Emitter, Manager};
 
 use crate::app_state;
+use crate::hotkey;
+use crate::i18n;
 
 // Updated only on the main thread; a later show invalidates pending hide completions.
 static VISIBILITY_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -247,6 +249,36 @@ pub(crate) async fn emit_retryable_error_hint(
             "type": "hint",
             "payload": {
                 "text": text,
+                "level": "error",
+                "variant": "text",
+                "retryable": true,
+                "hotkey": hotkey
+            }
+        }),
+    );
+}
+
+/// Show the polish failure decision hint inside the pill. The retry/Enter/Escape
+/// decision keys are armed by the recording workflow and remain independent of
+/// the removed visual toolbar.
+pub(crate) async fn emit_polish_decision_hint(
+    app: &AppHandle,
+    app_inner: &Arc<app_state::AppInner>,
+    text: &str,
+) {
+    invalidate_feedback(app_inner);
+    app_inner.feedback_visible.store(true, Ordering::SeqCst);
+    let hotkey = hotkey::current_hotkey_label(app_inner).await;
+    let _ = app.emit(
+        "overlay:event",
+        serde_json::json!({
+            "type": "hint",
+            "payload": {
+                "text": format!(
+                    "{}\\n{}",
+                    text,
+                    i18n::tr("5 秒后输出原文", "Sending raw text in 5 s")
+                ),
                 "level": "error",
                 "variant": "text",
                 "retryable": true,
