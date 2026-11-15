@@ -443,8 +443,8 @@ describe("PickerApp hover and selection", () => {
     const { container } = await renderPicker(view(OPTIONS));
     const polish = container.querySelector<HTMLElement>("button[aria-label^='润色']");
     const original = container.querySelector<HTMLElement>("button[aria-label^='原文']");
-    expect(polish?.className).toContain("hover:brightness-110");
-    expect(original?.className).toContain("hover:brightness-110");
+    expect(polish?.getAttribute("data-picker-card-index")).toBe("1");
+    expect(original?.getAttribute("data-picker-card-index")).toBe("0");
     expect(polish?.className).toContain("focus-visible:ring-2");
     expect(polish?.className).not.toContain("hover:bg-");
   });
@@ -655,6 +655,7 @@ describe("Picker card hover stability", () => {
     expect(cards[0].className).toContain("focus-visible:ring-2");
     expect(cards[2].className).not.toMatch(/hover:/);
     expect(cards[2].className).not.toMatch(/focus-visible:ring/);
+    expect(cards[0].getAttribute("data-picker-card-index")).toBe("0");
     expect((cards[0] as HTMLButtonElement).disabled).toBe(false);
     expect((cards[2] as HTMLButtonElement).disabled).toBe(true);
   });
