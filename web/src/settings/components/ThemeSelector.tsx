@@ -9,10 +9,15 @@ function isThemePref(value: unknown): value is ThemePref {
   return value === "light" || value === "dark" || value === "system";
 }
 
+function preferredSystemTheme(): "light" | "dark" {
+  return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+}
+
 export function ThemeSelector() {
   const t = useT();
   const { settings, scheduleSave } = useSettings();
   const [pref, setPref] = useState<ThemePref>("system");
+  const [systemTheme, setSystemTheme] = useState<"light" | "dark">(preferredSystemTheme);
 
   const apply = useCallback((resolved: "light" | "dark") => {
     if (resolved === "light") {
@@ -22,13 +27,6 @@ export function ThemeSelector() {
     }
   }, []);
 
-  const resolve = useCallback((p: ThemePref): "light" | "dark" => {
-    if (p === "system") {
-      return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
-    }
-    return p === "light" ? "light" : "dark";
-  }, []);
-
   useEffect(() => {
     const theme = settings?.runtime?.theme as Record<string, unknown> | undefined;
     const next = theme?.preference;
@@ -36,17 +34,16 @@ export function ThemeSelector() {
   }, [settings?.runtime?.theme]);
 
   useEffect(() => {
-    apply(resolve(pref));
-  }, [pref, apply, resolve]);
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemTheme(media.matches ? "dark" : "light");
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const listener = () => {
-      if (pref === "system") apply(mq.matches ? "dark" : "light");
-    };
-    mq.addEventListener("change", listener);
-    return () => mq.removeEventListener("change", listener);
-  }, [pref, apply]);
+    apply(pref === "system" ? systemTheme : pref);
+  }, [pref, systemTheme, apply]);
 
   const options: { key: ThemePref; icon: typeof Sun; label: string }[] = [
     { key: "light", icon: Sun, label: "浅色" },
@@ -63,7 +60,7 @@ export function ThemeSelector() {
           title={t(opt.label)}
           onClick={() => {
             setPref(opt.key);
-            scheduleSave({ app: { theme: opt.key } });
+            void scheduleSave({ app: { theme: opt.key } });
           }}
           className={`flex-1 flex items-center justify-center p-1.5 rounded-md text-text-muted hover:text-text transition-colors ${
             pref === opt.key ? "bg-fill-interactive text-accent" : ""
