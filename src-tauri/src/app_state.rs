@@ -44,7 +44,6 @@ pub enum PolishRetryCommand {
 pub struct AppInner {
     pub overlay_epoch: std::sync::atomic::AtomicU64,
     pub feedback_visible: std::sync::atomic::AtomicBool,
-    pub recording_hints: Mutex<Option<crate::overlay::shared::RecordingHints>>,
     pub recording_mode: Mutex<hotkey::HotkeyMode>,
     pub state: Mutex<AppState>,
     pub config_manager: ConfigManager,
@@ -147,7 +146,6 @@ pub fn create_app_state(
     Arc::new(AppInner {
         overlay_epoch: std::sync::atomic::AtomicU64::new(0),
         feedback_visible: std::sync::atomic::AtomicBool::new(false),
-        recording_hints: Mutex::new(None),
         recording_mode: Mutex::new(hotkey::HotkeyMode::Toggle),
         state: Mutex::new(AppState::Idle),
         config_manager,
@@ -221,10 +219,8 @@ pub(crate) async fn set_app_state(
 ) {
     if next_state != AppState::Idle {
         crate::overlay::invalidate_feedback(app_inner);
-        crate::overlay::emit_shortcuts(app, &[]);
     }
     if next_state != AppState::Recording {
-        *app_inner.recording_hints.lock().await = None;
     }
     *app_inner.state.lock().await = next_state.clone();
     // Reset sound activity so a new session starts with resting bars.
