@@ -19,7 +19,9 @@ body,
 .pill,
 .shortcut-row {
   color: inherit;
-  background: rgba(70, 105, 145, 0.24);
+  /* Fallback for non-native overlay implementations. On macOS, the native
+     NSGlassEffectView / NSVisualEffectView receives its tint from AppKit. */
+  background: rgba(51, 99, 158, 0.22);
   backdrop-filter: blur(60px) saturate(140%);
   -webkit-backdrop-filter: blur(60px) saturate(140%);
   border: 0;
@@ -127,7 +129,7 @@ html[data-overlay-theme="light"] {
 }
 html[data-overlay-theme="light"] .pill,
 html[data-overlay-theme="light"] .shortcut-row {
-  background: rgba(113, 151, 190, 0.20);
+  background: rgba(117, 166, 216, 0.22);
 }
 @media (prefers-color-scheme: light) {
   html[data-overlay-theme="system"] {
