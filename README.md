@@ -1,3 +1,11 @@
+
+
+# no5ix - how to build and path
+
+1. in the project root path, `pnpm build:dev`
+2. then `open "./src-tauri/target/release/bundle/macos/SayTypeTypeType Dev.app"`
+
+
 <div align="center">
 
 ![SayTypeTypeType Demo](docs/screenshots/banner.png)
@@ -86,10 +94,8 @@ Go to [GitHub Releases](https://github.com/no5ix/saytypetypetype/releases/latest
 | Ollama            | ✅️        |
 | OpenAI-Compatible | ✅️        |
 
-## How to Build
 
-`pnpm build:dev`
-the app is in here: open "saytypetypetype/src-tauri/target/release/bundle/macos/SayTypeTypeType Dev.app" 
+
 
 ## FAQ
 
