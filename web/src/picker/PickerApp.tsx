@@ -239,7 +239,7 @@ export function PickerApp() {
             <button
               type="button"
               onClick={dismiss}
-              className="rounded-lg px-2 py-1 text-[11px] text-text-dim transition hover:bg-fill-hover hover:text-text"
+              className="rounded-lg bg-fill-subtle px-2 py-1 text-[11px] text-text-dim transition hover:bg-fill-hover hover:text-text"
             >
               {t("Esc 取消")}
             </button>
@@ -348,11 +348,13 @@ function Kbd({ children }: { children: ReactNode }) {
   );
 }
 
-function getCardTone(optionId: string): string {
-  const id = optionId.toLowerCase();
-  if (id.includes("polish")) return "picker-card-polish";
-  if (id.includes("native")) return "picker-card-native";
-  if (id.includes("translat")) return "picker-card-translate";
+function getCardTone(optionId: string, title: string): string {
+  // Template IDs are user-configurable (and may be opaque); use the visible
+  // title as a fallback so the built-in template families keep their colors.
+  const identity = `${optionId} ${title}`.toLowerCase();
+  if (identity.includes("polish") || identity.includes("general")) return "picker-card-polish";
+  if (identity.includes("native")) return "picker-card-native";
+  if (identity.includes("translat")) return "picker-card-translate";
   return "picker-card-default";
 }
 
@@ -378,7 +380,7 @@ function PickerCard({
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
         onClick={onSelect}
         className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-100 ${
-          option.kind === "original" ? "picker-card-original" : getCardTone(option.id)
+          option.kind === "original" ? "picker-card-original" : getCardTone(option.id, option.title)
         } ${
           // Cards must never react to the pointer. The panel floats over
           // arbitrary application content, so a hover highlight reads as
