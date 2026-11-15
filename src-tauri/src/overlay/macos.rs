@@ -646,6 +646,12 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         let host = NSView::new(mtm);
         host.setWantsLayer(true);
         unsafe {
+            let layer: *mut AnyObject = msg_send![&*host, layer];
+            let tint = pill_tint_color();
+            let cg: *mut AnyObject = msg_send![&*tint, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+        }
+        unsafe {
             let supports: bool = msg_send![&*host, respondsToSelector: sel!(setClipsToBounds:)];
             if supports { let _: () = msg_send![&*host, setClipsToBounds: false]; }
         }
@@ -916,24 +922,11 @@ fn set_clip(view: &NSView) {
 }
 
 
-/// Apply a subdued blue tint directly to the native pill glass surface.
-/// CSS backgrounds are not visible for NSGlassEffectView because AppKit owns
-/// that surface; painting its backing layer makes the color deterministic.
-fn apply_pill_tint(view: &NSView) {
-    unsafe {
-        let layer: *mut AnyObject = msg_send![view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let color = NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.20,
-            0.39,
-            0.62,
-            0.22,
-        );
-        let cg: *mut AnyObject = msg_send![&*color, CGColor];
-        let _: () = msg_send![layer, setBackgroundColor: cg];
-    }
+/// Resolve a subdued blue surface color in the active appearance.
+/// Set this on the native content view behind the glass, rather than on the
+/// glass view itself, so AppKit keeps its material while tinting the backdrop.
+fn pill_tint_color() -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.39, 0.62, 0.22)
 }
 
 fn set_corner(view: &NSView, radius: f64) {
@@ -1546,11 +1539,9 @@ fn render(app: &AppHandle, model: &mut Model) {
                 // Style may change live between Clear and Regular without recreating.
                 g.setStyle(glass_style(&model.style));
                 g.setCornerRadius(radius);
-                apply_pill_tint(g);
             }
             GlassKind::Vibrancy(g) => {
                 set_corner(g, radius);
-                apply_pill_tint(g);
             }
         }
 
