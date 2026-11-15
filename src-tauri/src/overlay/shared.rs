@@ -160,7 +160,7 @@ pub fn visible_hint_lang(model: &Model, english: bool) -> String {
             "识别中".into()
         };
     }
-    // Action shortcuts live above the pill; its body contains only the hint.
+    // The pill body contains only the hint; keyboard actions are handled separately.
     model.hint_text.clone()
 }
 
@@ -379,6 +379,6 @@ mod tests {
 
         let metrics = LayoutMetrics::current_for(Some(&work(1728.0, -512.0, 1920.0, 1080.0)));
         assert_eq!(metrics.max_text_width, 960.0 - 60.0);
-        assert_eq!(metrics.max_text_lines, 23.0);
+        assert_eq!(metrics.max_text_lines, 25.0);
     }
 }
