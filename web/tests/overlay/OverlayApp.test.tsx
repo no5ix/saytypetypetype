@@ -156,10 +156,9 @@ describe("overlay presentation", () => {
     emit("hint", { level: "error", text: "API Key 无效\n5 秒后输出原文" });
     expect(container.querySelector(".lucide-info")).toBeTruthy();
     expect(container.querySelector(".pill button, .pill-countdown, .pill kbd")).toBeNull();
-    expect(container.querySelector(".shortcut-row")).toBeNull();
     expect(screen.getByText("API Key 无效\n5 秒后输出原文")).toBeTruthy();
   });
-  it("uses a borderless shallow-blue surface for the dictation pill and shortcut capsule", () => {
+  it("uses a borderless shallow-blue surface for the dictation pill", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
     expect(css).toContain("background: rgba(51, 99, 158, 0.38)");
     expect(css).toContain("background: rgba(117, 166, 216, 0.38)");
