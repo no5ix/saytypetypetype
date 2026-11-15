@@ -12,7 +12,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{NSEvent, NSEventMask, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSPoint};
+use objc2_foundation::MainThreadMarker;
 use tauri::{AppHandle, Manager};
 
 use super::PICKER_LABEL;
