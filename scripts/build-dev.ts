@@ -11,6 +11,7 @@
  * committed or used by production/release builds.
  */
 
+import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -100,6 +101,9 @@ function createIdentity(tempDir: string): void {
   const certPath = path.join(tempDir, "dev-signing.crt");
   const p12Path = path.join(tempDir, "dev-signing.p12");
   const opensslConfig = path.join(tempDir, "openssl.cnf");
+  // A non-empty one-time password avoids Keychain import failures with empty-
+  // password PKCS#12 files. It is generated per run and never persisted.
+  const p12Password = randomBytes(32).toString("hex");
 
   fs.writeFileSync(
     opensslConfig,
@@ -162,7 +166,7 @@ authorityKeyIdentifier = keyid:always
     "-out",
     p12Path,
     "-passout",
-    "pass:",
+    `pass:${p12Password}`,
   ]);
 
   // Import the private key + certificate into the login Keychain and allow
@@ -175,7 +179,7 @@ authorityKeyIdentifier = keyid:always
       "-k",
       LOGIN_KEYCHAIN,
       "-P",
-      "",
+      p12Password,
       "-T",
       "/usr/bin/codesign",
     ],
