@@ -18,7 +18,6 @@ use tauri::{App, AppHandle, Emitter, Manager};
 
 use crate::app_state;
 use crate::hotkey;
-use crate::i18n;
 
 // Updated only on the main thread; a later show invalidates pending hide completions.
 static VISIBILITY_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -63,7 +62,6 @@ fn hide_for_epoch(app: &AppHandle, expected: Option<u64>) {
             }
             invalidate_feedback(&inner);
         }
-        emit_shortcuts(&handle, &[]);
         let generation = VISIBILITY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         #[cfg(target_os = "macos")]
         macos::animate_visibility(&handle, false);
@@ -204,15 +202,6 @@ pub(crate) fn invalidate_feedback(inner: &app_state::AppInner) {
     inner.feedback_visible.store(false, Ordering::SeqCst);
 }
 
-pub(crate) fn emit_shortcuts(app: &AppHandle, shortcuts: &[shared::Shortcut]) {
-    let _ = app.emit(
-        "overlay:event",
-        serde_json::json!({
-            "type": "shortcuts", "payload": { "shortcuts": shortcuts }
-        }),
-    );
-}
-
 /// The key that ends a toggle recording, formatted for the recording panel.
 /// `voice_hotkey` names it when configured; with no separate stop key the global
 /// main key is its own stop (the compiled alias), and that is what the panel has
@@ -238,35 +227,6 @@ fn finish_key_label(app: &crate::config::AppSettings, enabled: &[hotkey::HotkeyB
     } else {
         String::new()
     }
-}
-
-pub(crate) async fn begin_recording_hints(_app: &AppHandle, inner: &app_state::AppInner) {
-    let config = inner.config_manager.load_config().ok();
-    let toggle = *inner.recording_mode.lock().await == hotkey::HotkeyMode::Toggle;
-    let all_prompts = inner.config_manager.load_prompts();
-    let enabled = config
-        .as_ref()
-        .map(|c| hotkey::compile_bindings(&c.app, &all_prompts).0)
-        .unwrap_or_default();
-    let hotkey = config
-        .as_ref()
-        .filter(|c| toggle && c.app.hotkey_mode != "hold")
-        .map(|c| finish_key_label(&c.app, &enabled))
-        .unwrap_or_default();
-    // Exactly two actions belong to the recording panel: cancel and finish.
-    // Template names are deliberately not shown here — a template is chosen
-    // when the recording starts (its own shortcut) or in the picker afterwards,
-    // not by reading a toolbar label mid-sentence.
-    let mut shortcuts = vec![shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel"))];
-    if !hotkey.is_empty() {
-        shortcuts.push(shared::Shortcut::new(hotkey, i18n::tr("完成", "Finish")));
-    }
-    *inner.recording_hints.lock().await = Some(shared::RecordingHints {
-        toggle,
-        shortcuts,
-        last_signal: std::time::Instant::now(),
-        shown: false,
-    });
 }
 
 pub(crate) async fn show_restart_error(
@@ -295,10 +255,6 @@ pub(crate) async fn show_output_error(
             "type": "hint", "payload": { "text": text, "level": "error", "variant": "text" }
         }),
     );
-    emit_shortcuts(
-        app,
-        &[shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel"))],
-    );
     show(app);
     schedule_retry_overlay_hide(app.clone(), Arc::clone(inner));
 }
@@ -326,51 +282,6 @@ pub(crate) async fn emit_retryable_error_hint(
             }
         }),
     );
-    emit_shortcuts(app, &error_shortcuts(&hotkey, false));
-}
-
-fn error_shortcuts(hotkey: &str, polish: bool) -> Vec<shared::Shortcut> {
-    let mut shortcuts = Vec::new();
-    if !hotkey.is_empty() {
-        shortcuts.push(shared::Shortcut::new(hotkey, i18n::tr("重试", "Retry")));
-    }
-    shortcuts.push(shared::Shortcut::new("Esc", i18n::tr("取消", "Cancel")));
-    if polish {
-        shortcuts.push(shared::Shortcut::new(
-            "Enter",
-            i18n::tr("输出原文", "Raw text"),
-        ));
-    }
-    shortcuts
-}
-
-/// Show a polish failure with explicit timeout wording and keyboard actions above it.
-pub(crate) async fn emit_polish_decision_hint(
-    app: &AppHandle,
-    app_inner: &Arc<app_state::AppInner>,
-    text: &str,
-) {
-    invalidate_feedback(app_inner);
-    app_inner.feedback_visible.store(true, Ordering::SeqCst);
-    let hotkey = hotkey::current_hotkey_label(app_inner).await;
-    let _ = app.emit(
-        "overlay:event",
-        serde_json::json!({
-            "type": "hint",
-            "payload": {
-                "text": format!(
-                    "{}\n{}",
-                    text,
-                    i18n::tr("5 秒后输出原文", "Sending raw text in 5 s")
-                ),
-                "level": "error",
-                "variant": "text",
-                "retryable": true,
-                "hotkey": hotkey
-            }
-        }),
-    );
-    emit_shortcuts(app, &error_shortcuts(&hotkey, true));
 }
 
 pub(crate) fn schedule_retry_overlay_hide(
@@ -471,68 +382,5 @@ mod macos;
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn error_actions_only_offer_raw_output_for_polish() {
-        assert_eq!(
-            error_shortcuts("Fn", false)
-                .iter()
-                .map(|s| s.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["重试", "取消"]
-        );
-        assert_eq!(error_shortcuts("Fn", true).last().unwrap().key, "Enter");
-        assert_eq!(
-            error_shortcuts("", false),
-            vec![shared::Shortcut::new("Esc", "取消")]
-        );
-    }
 
-    /// The recording panel advertises the key that really ends the recording:
-    /// the configured stop key, otherwise the global main key that stops itself.
-    #[test]
-    fn the_finish_hint_names_the_key_that_ends_the_recording() {
-        use crate::config::AppConfig;
-        let compiled = |app: &AppConfig| hotkey::compile_bindings(&app.app, &[]).0;
-
-        let default_app = AppConfig::default();
-        assert_eq!(
-            finish_key_label(&default_app.app, &compiled(&default_app)),
-            hotkey::format_hotkey_label(crate::config::DEFAULT_HOTKEY)
-        );
-
-        // No separate stop key: the main chord is its own stop, and the label is
-        // the combination, not the stale empty field.
-        let mut chord = AppConfig::default();
-        chord.app.hotkey = "ControlLeft+MetaLeft+L".into();
-        chord.app.voice_hotkey = Some(String::new());
-        if cfg!(target_os = "macos") {
-            assert_eq!(finish_key_label(&chord.app, &compiled(&chord)), "⌃ ⌘ L");
-        } else {
-            assert_eq!(
-                finish_key_label(&chord.app, &compiled(&chord)),
-                "Ctrl Win L"
-            );
-        }
-
-        // A configured stop key keeps the label.
-        let mut stop = AppConfig::default();
-        stop.app.voice_hotkey = Some("ShiftRight".into());
-        if cfg!(target_os = "macos") {
-            assert_eq!(finish_key_label(&stop.app, &compiled(&stop)), "R ⇧");
-        } else {
-            assert_eq!(finish_key_label(&stop.app, &compiled(&stop)), "R Shift");
-        }
-
-        // A binding the compiler disabled (here: the main key is a system chord)
-        // must never be advertised.
-        let mut disabled = AppConfig::default();
-        disabled.app.hotkey = "ControlLeft+MetaLeft".into();
-        disabled.app.voice_hotkey = Some(String::new());
-        assert_eq!(finish_key_label(&disabled.app, &compiled(&disabled)), "");
-
-        let mut unbound = AppConfig::default();
-        unbound.app.hotkey = "".into();
-        unbound.app.voice_hotkey = Some(String::new());
-        assert_eq!(finish_key_label(&unbound.app, &compiled(&unbound)), "");
-    }
 }
