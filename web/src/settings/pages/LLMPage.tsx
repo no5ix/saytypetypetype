@@ -191,9 +191,6 @@ export function LLMPage() {
             <SectionItem
               title="URL"
               labelClassName={SETTING_LABEL_COLUMN}
-              description={t(
-                "填写 API 基础地址（如 http://127.0.0.1:8000/v1），应用会自动拼接 /chat/completions；旧配置中的完整地址依然可用。",
-              )}
               action={
                 <Input
                   className="w-full"
