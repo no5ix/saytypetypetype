@@ -5,7 +5,8 @@ use objc2::{class, msg_send, sel, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSFont,
     NSGlassEffectView, NSGlassEffectViewStyle, NSLayoutConstraint, NSLineBreakMode,
-    NSTextAlignment, NSTextField, NSView, NSWindow,
+    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
