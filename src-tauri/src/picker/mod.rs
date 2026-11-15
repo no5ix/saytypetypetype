@@ -668,7 +668,7 @@ fn get_or_create_window(
             .title(crate::APP_NAME)
             .decorations(false)
             .transparent(true)
-            .shadow(false)
+            .shadow(true)
             .resizable(false)
             .always_on_top(true)
             .skip_taskbar(true)
