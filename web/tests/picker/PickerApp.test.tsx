@@ -147,11 +147,38 @@ describe("PickerApp borderless color surfaces", () => {
     expect(css).toContain("--picker-panel-bg: rgba(246, 244, 239, 0.98)");
   });
 
-  it("defines four distinct borderless card tint surfaces", () => {
+  it("defines distinct dark and light card colors for all four card types", () => {
     for (const kind of ["original", "polish", "native", "translate"]) {
       expect(css).toContain(`.picker-card-${kind} { background: var(--picker-card-${kind}); }`);
     }
+    expect(css).toContain("--picker-card-original: rgba(232, 210, 194, 0.99)");
+    expect(css).toContain("--picker-card-polish: rgba(218, 233, 246, 0.99)");
+    expect(css).toContain("--picker-card-native: rgba(231, 221, 244, 0.99)");
+    expect(css).toContain("--picker-card-translate: rgba(216, 236, 224, 0.99)");
     expect(css).toContain(".picker-card {\n  border: 0;");
+  });
+
+  it("uses template titles when configured option IDs are opaque", async () => {
+    const { container } = await renderPicker(view([
+      option({ id: "prompt:opaque-a", title: "General Polishing Dev" }),
+      option({ id: "prompt:opaque-b", title: "Native English Dev" }),
+      option({ id: "prompt:opaque-c", title: "Translate Dev" }),
+    ]));
+    const buttonFor = (title: string) =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.getAttribute("aria-label") === title,
+      );
+    expect(buttonFor("General Polishing Dev")?.className).toContain("picker-card-polish");
+    expect(buttonFor("Native English Dev")?.className).toContain("picker-card-native");
+    expect(buttonFor("Translate Dev")?.className).toContain("picker-card-translate");
+  });
+
+  it("gives the Esc cancel control a persistent subtle background", async () => {
+    const { container } = await renderPicker(view(OPTIONS));
+    const cancel = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Esc"),
+    );
+    expect(cancel?.className).toContain("bg-fill-subtle");
   });
 
   it("keeps the waiting surface borderless too", async () => {
