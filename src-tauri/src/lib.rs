@@ -208,9 +208,6 @@ pub fn run() {
             // Keep the application visible in the Dock without a menu-bar extra.
             platform::use_dock_only();
 
-            // Setup system tray
-            setup_tray(app)?;
-
             // Setup global hotkeys via keytap
             log_app!(debug, "Setting up global hotkeys (keytap)...");
             hotkey::setup_keytap_hotkeys(app.handle())?;
@@ -293,7 +290,7 @@ pub fn run() {
                 // Let the settings window close for real so its WebView memory is
                 // released. The Dock icon remains available for reopening.
                 // platform::show_settings() rebuilds the window on the next "设置" click.
-                platform::set_dock_visible(true);
+                platform::use_dock_only();
             }
             RunEvent::ExitRequested { code, api, .. }
                 // Keep the Dock-only app alive when its settings window is closed.
