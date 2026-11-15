@@ -20,28 +20,24 @@ pub(crate) fn use_dock_only() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn use_dock_only() {}
 
-/// Show or hide the app in the macOS Dock.
+/// Keep the app in the Dock. The menu bar extra is intentionally not used.
 #[cfg(target_os = "macos")]
-pub(crate) fn set_dock_visible(visible: bool) {
+pub(crate) fn set_dock_visible(_visible: bool) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);
-        let policy = if visible {
-            NSApplicationActivationPolicy::Regular
-        } else {
-            NSApplicationActivationPolicy::Accessory
-        };
-        app.setActivationPolicy(policy);
+        // Dock-only mode always uses Regular; never switch to Accessory because
+        // that would remove the Dock icon when the settings window closes.
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn set_dock_visible(_visible: bool) {}
 
-/// Bring the app to the foreground on macOS. After switching an accessory-policy
-/// app back to Regular via `set_dock_visible(true)`, its windows still will not
-/// reliably raise above other apps' windows without an explicit activate call.
+/// Bring the app to the foreground on macOS. Explicit activation ensures the
+/// Dock-launched or reopened settings window is raised above other applications.
 ///
 /// Uses the legacy `-activateIgnoringOtherApps:` deliberately: its replacement
 /// `-[NSApplication activate]` only exists on macOS 14+, while this app targets
@@ -62,13 +58,12 @@ pub(crate) fn activate_app() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn activate_app() {}
 
-/// Bring the settings window to front and show it in the Dock. If it was closed
+/// Bring the settings window to front. If it was closed
 /// (lazy lifecycle: closing destroys it to free the WebView), rebuild it from the
 /// bundled window config before showing.
 pub(crate) fn show_settings(app: &AppHandle) {
-    // Keep the Dock application icon visible; menu-bar extra was removed.
+    // Retain the Dock-only activation policy before showing/focusing the window.
     use_dock_only();
-    set_dock_visible(true);
 
     if let Some(window) = app.get_webview_window("settings") {
         let _ = window.unminimize();
