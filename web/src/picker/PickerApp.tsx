@@ -35,7 +35,16 @@ function useNativeCardHover(enabled: boolean) {
     const update = () => {
       const x = window.__pickerNativePointer?.x;
       const y = window.__pickerNativePointer?.y;
-      if (typeof x !== "number" || typeof y !== "number") return;
+      if (typeof x !== "number" || typeof y !== "number") {
+        if (hoveredRef.current !== null) {
+          const previous = document.querySelector<HTMLElement>(
+            '[data-picker-card-index="' + hoveredRef.current + '"]',
+          );
+          previous?.removeAttribute("data-native-hovered");
+          hoveredRef.current = null;
+        }
+        return;
+      }
 
       const cards = Array.from(
         document.querySelectorAll<HTMLElement>("[data-picker-card-index]"),
