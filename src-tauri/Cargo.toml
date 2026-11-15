@@ -19,7 +19,7 @@ tauri-build = { version = "~2.6", features = [] }
 # pure native Window (no WebView), dropping a resident WKWebView (~30-80MB).
 # Pinned to the 2.11 line to match @tauri-apps/api 2.11 on the frontend, and
 # Cargo.lock is committed so every build host resolves identical versions.
-tauri = { version = "~2.11", features = ["tray-icon", "macos-private-api", "image-png", "unstable"] }
+tauri = { version = "~2.11", features = ["macos-private-api", "image-png", "unstable"] }
 tauri-plugin-clipboard-manager = "~2.3"
 tauri-plugin-shell = "~2.3"
 tauri-plugin-dialog = "~2.7"
