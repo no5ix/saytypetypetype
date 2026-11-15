@@ -31,7 +31,7 @@
     "dev:no-watch": "tauri dev --no-watch --config src-tauri/tauri.dev.conf.json",
     "dev:web": "vite",
     "build:web": "vite build",
-    "build:dev": "tauri build --config src-tauri/tauri.dev.conf.json --bundles app",
+    "build:dev": "tsx scripts/build-dev.ts",
     "pack": "tsx --env-file=.env scripts/pack.ts",
     "icon": "tsx scripts/prepare-assets.ts",
     "clean": "tsx scripts/clean.ts",
