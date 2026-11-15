@@ -212,13 +212,13 @@ export function PickerApp() {
       <section
         key={view.sessionId}
         data-picker-state={closing ? "closing" : "open"}
-        className="picker-panel picker-surface flex h-full w-full flex-col overflow-hidden rounded-[20px] border bg-surface-card backdrop-blur-xl"
+        className="picker-panel picker-surface flex h-full w-full flex-col overflow-hidden rounded-[20px] backdrop-blur-xl"
       >
         {/* The header is a flex item in its own right: `shrink-0` keeps it at its
             natural height so resizing can never squash it, the opaque background
             hides cards scrolling behind the scroll container's top edge, and `z-10`
             keeps any card repaint from painting over it. */}
-        <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border/50 bg-surface-card px-4 pt-3 pb-2.5">
+        <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 bg-transparent px-4 pt-3 pb-2.5">
           <div className="min-w-0">
             <h1 className="truncate text-[13px] font-semibold text-text">
               {t("选择要粘贴的版本")}
@@ -239,7 +239,7 @@ export function PickerApp() {
             <button
               type="button"
               onClick={dismiss}
-              className="rounded-lg border border-border/70 px-2 py-1 text-[11px] text-text-dim transition hover:border-border-hover hover:text-text"
+              className="rounded-lg px-2 py-1 text-[11px] text-text-dim transition hover:bg-fill-hover hover:text-text"
             >
               {t("Esc 取消")}
             </button>
@@ -282,7 +282,7 @@ export function PickerApp() {
           </div>
         </div>
 
-        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border/50 px-4 py-2 text-[10.5px] text-text-muted">
+        <footer className="flex shrink-0 items-center justify-between gap-3 px-4 py-2 text-[10.5px] text-text-muted">
           <span className="truncate">{t("原文始终可用；模板独立处理，不会串联。")}</span>
           <span className="shrink-0">
             {busy ? (
@@ -369,8 +369,16 @@ function PickerCard({
         disabled={!selectable}
         aria-label={`${option.title}${option.hotkey ? `（${option.hotkey}）` : ""}`}
         onClick={onSelect}
-        className={`flex h-full w-full min-w-0 flex-col rounded-xl border p-3 text-left transition duration-100 ${
-          option.kind === "original" ? "border-accent/45 bg-accent-soft/30" : "border-border/70"
+        className={`picker-card flex h-full w-full min-w-0 flex-col rounded-xl p-3 text-left transition duration-100 ${
+          option.kind === "original"
+            ? "picker-card-original"
+            : option.id.toLowerCase().includes("polish")
+              ? "picker-card-polish"
+              : option.id.toLowerCase().includes("native")
+                ? "picker-card-native"
+                : option.id.toLowerCase().includes("translat")
+                  ? "picker-card-translate"
+                  : "picker-card-default"
         } ${
           // Cards must never react to the pointer. The panel floats over
           // arbitrary application content, so a hover highlight reads as
