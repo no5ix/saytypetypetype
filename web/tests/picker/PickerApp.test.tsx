@@ -137,6 +137,68 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("PickerApp system theme preference", () => {
+  it("updates the picker when macOS appearance changes while following the system", async () => {
+    let matches = false;
+    const listeners = new Set<() => void>();
+    const media = {
+      matches,
+      media: "(prefers-color-scheme: light)",
+      onchange: null,
+      addEventListener: vi.fn((_event: string, listener: () => void) => listeners.add(listener)),
+      removeEventListener: vi.fn((_event: string, listener: () => void) => listeners.delete(listener)),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    vi.stubGlobal("matchMedia", vi.fn(() => media));
+
+    const systemView = { ...view(OPTIONS), theme: "system" };
+    const { unmount } = await renderPicker(systemView);
+
+    // Initial dark system appearance.
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    // macOS switches to Light while the picker WebView remains mounted.
+    matches = true;
+    media.matches = true;
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    // And it must follow the reverse transition as well.
+    matches = false;
+    media.matches = false;
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    unmount();
+    expect(media.removeEventListener).toHaveBeenCalledWith("change", expect.any(Function));
+    expect(listeners.size).toBe(0);
+  });
+
+  it("does not subscribe to system changes for an explicitly selected theme", async () => {
+    const media = {
+      matches: false,
+      media: "(prefers-color-scheme: light)",
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    vi.stubGlobal("matchMedia", vi.fn(() => media));
+
+    await renderPicker({ ...view(OPTIONS), theme: "light" });
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(media.addEventListener).not.toHaveBeenCalled();
+  });
+});
+
 describe("PickerApp borderless color surfaces", () => {
   it("keeps the panel borderless and uses a neutral theme-aware canvas", () => {
     const surface = css.slice(css.indexOf(".picker-surface {"), css.indexOf("/* Pop-in"));
