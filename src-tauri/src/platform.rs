@@ -4,6 +4,22 @@
 use tauri::AppHandle;
 use tauri::Manager;
 
+/// Hide the macOS menu bar extra while retaining the Dock application icon.
+/// Regular activation policy keeps the app eligible for the Dock and normal
+/// windows; unlike Accessory, it does not suppress the Dock icon.
+#[cfg(target_os = "macos")]
+pub(crate) fn use_dock_only() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm)
+            .setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn use_dock_only() {}
+
 /// Show or hide the app in the macOS Dock.
 #[cfg(target_os = "macos")]
 pub(crate) fn set_dock_visible(visible: bool) {
