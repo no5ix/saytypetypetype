@@ -178,15 +178,16 @@ describe("overlay presentation", () => {
     expect(row?.getAttribute("data-visible")).toBe("true");
     expect(row?.querySelectorAll("kbd")).toHaveLength(1);
   });
-  it("keeps the dictation pill border scoped to the visible pill, not the transparent window", () => {
+  it("uses a borderless shallow-blue surface for the dictation pill and shortcut capsule", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
-    expect(css).toContain("border: 1px solid rgba(255, 255, 255, 0.09)");
-    expect(css).toContain(".pill,");
+    expect(css).toContain("background: rgba(70, 105, 145, 0.24)");
+    expect(css).toContain("background: rgba(113, 151, 190, 0.20)");
+    expect(css).toContain("border: 0");
+    expect(css).toContain("box-shadow: none");
+    expect(css).not.toContain("border: 1px solid rgba(255, 255, 255, 0.09)");
     const native = readFileSync(resolve(process.cwd(), "src-tauri/src/overlay/macos.rs"), "utf8");
-    expect(native).toContain("set_glass_hairline");
-    expect(native).toContain("setBorderWidth: 1.0f64");
-    expect(native).toContain("set_glass_hairline(");
-    expect(native).not.toContain("setBorderWidth: 1.0f64]; // window");
+    expect(native).not.toContain("set_glass_hairline");
+    expect(native).not.toContain("setBorderWidth: 1.0f64");
   });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
