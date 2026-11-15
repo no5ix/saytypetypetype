@@ -158,8 +158,6 @@ pub(super) async fn start_recording(app_handle: AppHandle) {
         return;
     }
 
-    overlay::begin_recording_hints(&app_handle, &app_inner).await;
-
     // 5. Connect the ASR session in the background; attach it once ready.
     let connect_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
