@@ -26,12 +26,7 @@ mod tests;
 mod updater;
 
 use app_state::*;
-use tauri::{App, Listener, Manager, RunEvent};
-
-/// User-facing product name. Internal identifiers (bundle id, data directory,
-/// crate/binary names, update signing identity) deliberately keep the historical
-/// `voicepaste` spelling so upgrades continue to find the existing installation.
-pub const APP_NAME: &str = "SayTypeTypeType";
+use tauri::{Listener, Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -288,8 +283,8 @@ pub fn run() {
                 ..
             } if label == "settings" => {
                 // Let the settings window close for real so its WebView memory is
-                // released. The Dock icon remains available for reopening.
-                // platform::show_settings() rebuilds the window on the next "设置" click.
+                // released. The Dock icon remains available for reopening; the
+                // Reopen event rebuilds the settings window when needed.
                 platform::use_dock_only();
             }
             RunEvent::ExitRequested { code, api, .. }
