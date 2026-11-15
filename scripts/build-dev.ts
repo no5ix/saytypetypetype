@@ -13,13 +13,12 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { tmpdir } from "node:os";
 
 const ROOT = path.resolve(__dirname, "..");
 const SIGNING_IDENTITY = "SayTypeTypeType Dev";
-const LOGIN_KEYCHAIN = path.join(os.homedir(), "Library/Keychains/login.keychain-db");
+const LOGIN_KEYCHAIN = path.join(homedir(), "Library/Keychains/login.keychain-db");
 const SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain";
 const APP_PATH = path.join(
   ROOT,
@@ -35,6 +34,7 @@ function run(
     encoding: "utf8",
     stdio: options.inherit ? "inherit" : "pipe",
     env: options.env ?? process.env,
+    shell: process.platform === "win32",
   });
 
   if (result.error) {
@@ -93,7 +93,7 @@ function createIdentity(tempDir: string): void {
 prompt = no
 distinguished_name = distinguished_name
 x509_extensions = code_signing
-[ distinguished_name ]
+[distinguished_name]
 CN = ${SIGNING_IDENTITY}
 [ code_signing ]
 basicConstraints = critical,CA:TRUE
