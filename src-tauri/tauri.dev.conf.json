@@ -3,6 +3,9 @@
   "productName": "SayTypeTypeType Dev",
   "identifier": "com.yolanda.voicepaste.dev",
   "bundle": {
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "SayTypeTypeType Dev"
+    }
   }
 }
