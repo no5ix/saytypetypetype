@@ -130,6 +130,8 @@ authorityKeyIdentifier = keyid:always
   run("openssl", [
     "pkcs12",
     "-export",
+    "-name",
+    SIGNING_IDENTITY,
     "-inkey",
     keyPath,
     "-in",
