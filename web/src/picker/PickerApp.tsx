@@ -194,7 +194,7 @@ export function PickerApp() {
   if (!view) {
     return (
       <div className="picker-root flex h-screen w-screen items-center justify-center p-2">
-        <div className="picker-surface flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm text-text-dim backdrop-blur-2xl">
+        <div className="picker-surface flex items-center gap-2 rounded-2xl px-4 py-3 text-sm text-text-dim backdrop-blur-2xl">
           <Loader2 className="size-4 animate-spin" />
           {t("等待转写…")}
         </div>
@@ -247,7 +247,7 @@ export function PickerApp() {
         </header>
 
         {view.error && (
-          <div className="mx-4 mt-2 mb-2 flex shrink-0 items-start gap-2 rounded-xl border border-error/40 bg-error/10 px-3 py-2 text-[11.5px] text-error">
+          <div className="mx-4 mt-2 mb-2 flex shrink-0 items-start gap-2 rounded-xl bg-error/10 px-3 py-2 text-[11.5px] text-error">
             <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
             <span className="min-w-0 break-words">{view.error}</span>
           </div>
@@ -299,8 +299,8 @@ export function PickerApp() {
 
       {expandedOption && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/45 p-3 backdrop-blur-sm">
-          <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-surface-card">
-            <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2.5">
+          <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl bg-surface-card">
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
                 <h2 className="truncate text-[13px] font-semibold text-text">
                   {expandedOption.title}
@@ -321,7 +321,7 @@ export function PickerApp() {
                 {expandedOption.text}
               </p>
             </div>
-            <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 px-3 py-2">
               <span className="text-[10.5px] text-text-muted">{t("预览不会粘贴")}</span>
               <button
                 type="button"
@@ -342,7 +342,7 @@ export function PickerApp() {
 
 function Kbd({ children }: { children: ReactNode }) {
   return (
-    <kbd className="shrink-0 rounded-md border border-border/80 bg-fill-subtle px-1.5 py-0.5 text-[10.5px] font-medium text-text-dim">
+    <kbd className="shrink-0 rounded-md bg-fill-subtle px-1.5 py-0.5 text-[10.5px] font-medium text-text-dim">
       {children}
     </kbd>
   );
