@@ -180,17 +180,18 @@ describe("overlay presentation", () => {
   });
   it("uses a borderless shallow-blue surface for the dictation pill and shortcut capsule", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
-    expect(css).toContain("background: rgba(51, 99, 158, 0.22)");
-    expect(css).toContain("background: rgba(117, 166, 216, 0.22)");
+    expect(css).toContain("background: rgba(51, 99, 158, 0.38)");
+    expect(css).toContain("background: rgba(117, 166, 216, 0.38)");
     expect(css).toContain("border: 0");
     expect(css).toContain("box-shadow: none");
     expect(css).not.toContain("border: 1px solid rgba(255, 255, 255, 0.09)");
     const native = readFileSync(resolve(process.cwd(), "src-tauri/src/overlay/macos.rs"), "utf8");
     expect(native).not.toContain("set_glass_hairline");
     expect(native).not.toContain("setBorderWidth: 1.0f64");
-    expect(native).toContain("fn apply_pill_tint");
-    expect(native).toContain("setBackgroundColor: cg");
-    expect(native).toContain("apply_pill_tint(g)");
+    expect(native).toContain("fn pill_tint_color");
+    expect(native).toContain("let tint = pill_tint_color()");
+    expect(native).toContain("let host = NSView::new(mtm)");
+    expect(native).not.toContain("apply_pill_tint(g)");
   });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
