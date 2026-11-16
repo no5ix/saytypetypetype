@@ -5,12 +5,10 @@ import type { OverlayLayoutMetrics } from "./bridge";
 export function Waveform({
   active,
   metrics,
-  className = "",
 }: {
   active: boolean;
   metrics: OverlayLayoutMetrics;
-  className?: string;
-}) {
+ }) {
   const bars = useRef<(HTMLSpanElement | null)[]>([]);
   const animations = useRef<Animation[]>([]);
   const rest = metrics.wave_min_h;
@@ -49,7 +47,7 @@ export function Waveform({
 
   return (
     <span
-      className={`flex shrink-0 items-center ${className}`}
+      className="flex shrink-0 items-center"
       style={{ height: metrics.wave_max_h, gap: metrics.wave_bar_gap }}
       aria-hidden="true"
     >
