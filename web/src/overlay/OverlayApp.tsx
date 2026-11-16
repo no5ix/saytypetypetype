@@ -107,9 +107,6 @@ export function OverlayApp() {
   const showWave = state.appState === "recording" && state.hintLevel !== "warn" && !isError;
   const showIcon = isError || success;
   const hasText = Boolean(state.finalText || state.partialText);
-  const isLightTheme = state.theme === "light" || (
-    state.theme === "system" && window.matchMedia("(prefers-color-scheme: light)").matches
-  );
   const centerText = hasHint && !showWave && !showIcon;
   const shouldPulse = hasHint && !isError && !success && state.appState !== "idle";
 
@@ -153,13 +150,7 @@ export function OverlayApp() {
               ) : (
                 <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
               ))}
-            {showWave && (
-              <Waveform
-                active={waveActive}
-                metrics={metrics}
-                className={isLightTheme ? "recording-dot-light" : ""}
-              />
-            )}
+            {showWave && <Waveform active={waveActive} metrics={metrics} />}
             {(hasHint || (!success && hasText)) && (
               <div
                 className={`min-w-0 flex-1 text-[14px] font-medium leading-[1.3] ${centerText ? "text-center" : ""}`}
