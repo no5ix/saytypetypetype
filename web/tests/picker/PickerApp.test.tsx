@@ -257,7 +257,10 @@ describe("PickerApp borderless color surfaces", () => {
     expect(css).toContain("--picker-card-polish-hover: #c5dced");
     expect(css).toContain("--picker-card-translate: #d1e8d9");
     expect(css).toContain("--picker-card-translate-hover: #c1decf");
+    expect(css).toContain("--picker-card-native: #e0d4ef");
+    expect(css).toContain("--picker-card-native-hover: #d5c7e8");
     expect(css).toContain('[data-theme="light"] .picker-card-polish[data-native-hovered="true"]');
+    expect(css).toContain('[data-theme="light"] .picker-card-native[data-native-hovered="true"]');
     expect(css).toContain('[data-theme="light"] .picker-card-translate[data-native-hovered="true"]');
     expect(css).not.toMatch(/\.picker-card\[data-native-hovered="true"\]\s*\{[^}]*filter:/s);
   });
