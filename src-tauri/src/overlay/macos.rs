@@ -884,9 +884,9 @@ fn set_corner(view: &NSView, radius: f64) {
 fn recording_wave_color() -> Retained<NSColor> {
     // Keep the recording indicator identical across light and dark themes.
     NSColor::colorWithSRGBRed_green_blue_alpha(
-        76.0 / 255.0,
-        210.0 / 255.0,
-        142.0 / 255.0,
+        255.0 / 255.0,
+        255.0 / 255.0,
+        255.0 / 255.0,
         1.0,
     )
 }
