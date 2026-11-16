@@ -584,7 +584,7 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
                 size: NSSize { width: WAVE_BAR_W, height: WAVE_MIN_H },
             }];
             let _: () = msg_send![&*layer, setCornerRadius: WAVE_CORNER_RADIUS];
-            let color = recording_wave_color(model);
+            let color = recording_wave_color();
             let cg: *mut AnyObject = msg_send![&*color, CGColor];
             let _: () = msg_send![&*layer, setBackgroundColor: cg];
             let parent: *mut AnyObject = msg_send![&*view, layer];
@@ -883,7 +883,7 @@ fn set_corner(view: &NSView, radius: f64) {
 
 /// Fixed bar frames keep the waveform anchored while the pill grows.
 /// Capsule bounds animate around a fixed center, preserving rounded ends.
-fn recording_wave_color(_model: &Model) -> Retained<NSColor> {
+fn recording_wave_color() -> Retained<NSColor> {
     // Keep the recording indicator identical across light and dark themes.
     NSColor::colorWithSRGBRed_green_blue_alpha(
         76.0 / 255.0,
@@ -895,7 +895,15 @@ fn recording_wave_color(_model: &Model) -> Retained<NSColor> {
 
 fn layout_bars(views: &Views, pill_h: f64, active: bool, show: bool) {
     let area_left = PAD_LEFT;
+    // Re-apply the shared recording color on every render. The waveform views
+    // can be created before the persisted appearance setting is loaded, so
+    // setting this only during view construction can leave a stale color.
+    let color = recording_wave_color();
+    let cg: *mut AnyObject = unsafe { msg_send![&*color, CGColor] };
     for (i, bar) in views.bars.iter().enumerate() {
+        unsafe {
+            let _: () = msg_send![&*bar.layer, setBackgroundColor: cg];
+        }
         bar.view.setHidden(!show);
         bar.view.setFrame(NSRect {
             origin: NSPoint {
