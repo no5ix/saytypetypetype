@@ -110,12 +110,4 @@ html[data-overlay-theme="light"] .pill {
   }
 }
 
-/* Light-theme recording waveform stays saturated blue against the pale glass. */
-html[data-overlay-theme="light"] .recording-dot-light .bg-overlay-accent {
-  background-color: rgb(51, 110, 220);
-}
-@media (prefers-color-scheme: light) {
-  html[data-overlay-theme="system"] .recording-dot-light .bg-overlay-accent {
-    background-color: rgb(51, 110, 220);
-  }
-}
+/* Light-theme waveform color is resolved by the component class. */
