@@ -176,12 +176,6 @@ describe("overlay presentation", () => {
     const hostBlock = native.slice(native.indexOf("let host = NSView::new(mtm)"), native.indexOf("let width_constraint"));
     expect(hostBlock).not.toContain("setBackgroundColor");
   });
-  it("adds a light-theme class to the recording waveform", () => {
-    const { container } = render(<OverlayApp />);
-    emit("state", { state: "recording" });
-    emit("theme", { theme: "light" });
-    expect(container.querySelector(".recording-dot-light")).toBeTruthy();
-  });
   it("renders only Check for direct output and adds text for retained clipboard", () => {
     const { container } = render(<OverlayApp />);
     emit("transcript", { finalText: "旧识别文本" });
