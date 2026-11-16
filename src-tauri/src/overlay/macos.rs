@@ -542,10 +542,8 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
 
         let indicator = NSView::new(mtm);
         indicator.setWantsLayer(true);
-        // The live dictation dot uses a saturated blue in light mode for
-        // contrast against the pale glass; dark mode retains the green dot.
         // The indicator host is transparent while recording; only the child
-        // waveform bars are visible. Their CALayers are colored in layout_bars.
+        // waveform bars are visible. Their shared color is applied in layout_bars.
 
         let icon_layer = make_icon_layer();
         unsafe {
