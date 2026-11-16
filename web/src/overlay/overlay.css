@@ -109,5 +109,3 @@ html[data-overlay-theme="light"] .pill {
     transition: none;
   }
 }
-
-/* Light-theme waveform color is resolved by the component class. */
