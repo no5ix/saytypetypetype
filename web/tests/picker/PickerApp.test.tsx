@@ -253,8 +253,8 @@ describe("PickerApp borderless color surfaces", () => {
   });
 
   it("uses steady resting and hover colors for the light polish and translate cards", () => {
-    expect(css).toContain("--picker-card-polish: #d3e5f3");
-    expect(css).toContain("--picker-card-polish-hover: #c5dced");
+    expect(css).toContain("--picker-card-polish: #bfd6ea");
+    expect(css).toContain("--picker-card-polish-hover: #a9c9e3");
     expect(css).toContain("--picker-card-translate: #d1e8d9");
     expect(css).toContain("--picker-card-translate-hover: #c1decf");
     expect(css).toContain("--picker-card-native: #e0d4ef");
