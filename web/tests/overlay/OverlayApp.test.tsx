@@ -158,6 +158,12 @@ describe("overlay presentation", () => {
     expect(container.querySelector(".pill button, .pill-countdown, .pill kbd")).toBeNull();
     expect(screen.getByText("API Key 无效\n5 秒后输出原文")).toBeTruthy();
   });
+  it("keeps the native recording indicator blue in the light theme", () => {
+    const native = readFileSync(resolve(process.cwd(), "src-tauri/src/overlay/macos.rs"), "utf8");
+    expect(native).toContain("fn set_recording_dot_color(indicator: &NSView, model: &Model)");
+    expect(native).toContain("0.20, 0.43, 0.86, 1.0");
+    expect(native).toContain("set_recording_dot_color(&indicator, model)");
+  });
   it("uses a borderless shallow-blue surface for the dictation pill", () => {
     const css = readFileSync(resolve(process.cwd(), "web/src/overlay/overlay.css"), "utf8");
     expect(css).toContain("background: rgba(51, 99, 158, 0.38)");
