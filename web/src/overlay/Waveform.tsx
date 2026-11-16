@@ -2,7 +2,15 @@ import { useEffect, useRef } from "react";
 import type { OverlayLayoutMetrics } from "./bridge";
 
 /** WebView animations run independently of the ~10 Hz audio event cadence. */
-export function Waveform({ active, metrics }: { active: boolean; metrics: OverlayLayoutMetrics }) {
+export function Waveform({
+  active,
+  metrics,
+  className = "",
+}: {
+  active: boolean;
+  metrics: OverlayLayoutMetrics;
+  className?: string;
+}) {
   const bars = useRef<(HTMLSpanElement | null)[]>([]);
   const animations = useRef<Animation[]>([]);
   const rest = metrics.wave_min_h;
@@ -41,7 +49,7 @@ export function Waveform({ active, metrics }: { active: boolean; metrics: Overla
 
   return (
     <span
-      className="flex shrink-0 items-center"
+      className={`flex shrink-0 items-center ${className}`}
       style={{ height: metrics.wave_max_h, gap: metrics.wave_bar_gap }}
       aria-hidden="true"
     >
