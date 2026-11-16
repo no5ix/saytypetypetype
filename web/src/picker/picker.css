@@ -125,8 +125,14 @@ body,
   transition: filter 120ms ease, transform 120ms ease;
 }
 .picker-card[data-native-hovered="true"] {
-  filter: brightness(1.12);
+  /* Light-theme pastel fills are already bright; adding a brightness filter
+     pushes them toward white and looks like a color flash. Keep the hover lift,
+     but reserve brightness feedback for the darker palette. */
   transform: translateY(-1px);
+}
+[data-theme="dark"] .picker-card[data-native-hovered="true"],
+.picker-root:not([data-theme="light"]) .picker-card[data-native-hovered="true"] {
+  filter: brightness(1.12);
 }
 .picker-cancel[data-native-hovered="true"] {
   background: var(--color-fill-hover);
