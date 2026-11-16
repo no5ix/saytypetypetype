@@ -252,6 +252,12 @@ describe("PickerApp borderless color surfaces", () => {
     expect(css).toContain('.picker-cancel[data-native-hovered="true"]');
   });
 
+  it("does not apply brightness filtering to hovered cards in light mode", () => {
+    expect(css).toContain('[data-theme="dark"] .picker-card[data-native-hovered="true"]');
+    expect(css).toContain("transform: translateY(-1px)");
+    expect(css).not.toMatch(/\.picker-card\[data-native-hovered="true"\]\s*\{[^}]*filter:/s);
+  });
+
   it("keeps the waiting surface borderless too", async () => {
     h.view = null;
     const placeholder = render(<PickerApp />);
