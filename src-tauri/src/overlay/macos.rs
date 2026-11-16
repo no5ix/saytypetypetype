@@ -544,7 +544,9 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
         indicator.setWantsLayer(true);
         // The live dictation dot uses a saturated blue in light mode for
         // contrast against the pale glass; dark mode retains the green dot.
-        set_recording_dot_color(&indicator, model);
+        // The indicator host is transparent while recording; only the child
+        // waveform bars are visible. Their CALayers are colored in layout_bars.
+
         let icon_layer = make_icon_layer();
         unsafe {
             let ind_layer: *mut AnyObject = msg_send![&*indicator, layer];
@@ -582,7 +584,7 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
                 size: NSSize { width: WAVE_BAR_W, height: WAVE_MIN_H },
             }];
             let _: () = msg_send![&*layer, setCornerRadius: WAVE_CORNER_RADIUS];
-            let color = NSColor::colorWithSRGBRed_green_blue_alpha(76.0 / 255.0, 210.0 / 255.0, 142.0 / 255.0, 1.0);
+            let color = recording_wave_color(model);
             let cg: *mut AnyObject = msg_send![&*color, CGColor];
             let _: () = msg_send![&*layer, setBackgroundColor: cg];
             let parent: *mut AnyObject = msg_send![&*view, layer];
@@ -708,23 +710,6 @@ fn apply_variant(window: &AnyObject, variant: &str) {
 }
 
 /// Lucide Check / Info geometry in the same 24-unit view box as the web icons.
-fn set_recording_dot_color(indicator: &NSView, model: &Model) {
-    let color = if resolved_variant(model) == "light" {
-        NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.43, 0.86, 1.0)
-    } else {
-        NSColor::colorWithSRGBRed_green_blue_alpha(0.30, 0.82, 0.56, 1.0)
-    };
-    unsafe {
-        let layer: *mut AnyObject = msg_send![indicator, layer];
-        if layer.is_null() {
-            return;
-        }
-        let cg: *mut AnyObject = msg_send![&*color, CGColor];
-        let _: () = msg_send![layer, setBackgroundColor: cg];
-        let _: () = msg_send![layer, setCornerRadius: INDICATOR_W / 2.0];
-    }
-}
-
 fn make_icon_layer() -> Retained<AnyObject> {
     unsafe {
         let cls = AnyClass::get(c"CAShapeLayer").expect("CAShapeLayer");
@@ -898,6 +883,14 @@ fn set_corner(view: &NSView, radius: f64) {
 
 /// Fixed bar frames keep the waveform anchored while the pill grows.
 /// Capsule bounds animate around a fixed center, preserving rounded ends.
+fn recording_wave_color(model: &Model) -> Retained<NSColor> {
+    if model.theme == "light" {
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.43, 0.86, 1.0)
+    } else {
+        NSColor::colorWithSRGBRed_green_blue_alpha(76.0 / 255.0, 210.0 / 255.0, 142.0 / 255.0, 1.0)
+    }
+}
+
 fn layout_bars(views: &Views, pill_h: f64, active: bool, show: bool) {
     let area_left = PAD_LEFT;
     for (i, bar) in views.bars.iter().enumerate() {
