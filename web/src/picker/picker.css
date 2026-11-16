@@ -58,6 +58,12 @@ body,
   --picker-card-polish: rgba(218, 233, 246, 0.99);
   --picker-card-native: rgba(231, 221, 244, 0.99);
   --picker-card-translate: rgba(216, 236, 224, 0.99);
+  /* Warmer, slightly deeper resting fills for the two pastel cards that
+     previously produced the strongest perceived hover flash. */
+  --picker-card-polish: #d3e5f3;
+  --picker-card-polish-hover: #c5dced;
+  --picker-card-translate: #d1e8d9;
+  --picker-card-translate-hover: #c1decf;
 }
 
 .picker-surface {
@@ -143,3 +149,10 @@ body,
 .picker-card-native { background: var(--picker-card-native); }
 .picker-card-translate { background: var(--picker-card-translate); }
 .picker-card-default { background: var(--color-surface-card); }
+
+[data-theme="light"] .picker-card-polish[data-native-hovered="true"] {
+  background: var(--picker-card-polish-hover);
+}
+[data-theme="light"] .picker-card-translate[data-native-hovered="true"] {
+  background: var(--picker-card-translate-hover);
+}
