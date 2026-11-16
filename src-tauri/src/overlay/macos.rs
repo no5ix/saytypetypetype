@@ -542,6 +542,9 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
 
         let indicator = NSView::new(mtm);
         indicator.setWantsLayer(true);
+        // The live dictation dot uses a saturated blue in light mode for
+        // contrast against the pale glass; dark mode retains the green dot.
+        set_recording_dot_color(&indicator, model);
         let icon_layer = make_icon_layer();
         unsafe {
             let ind_layer: *mut AnyObject = msg_send![&*indicator, layer];
@@ -705,6 +708,23 @@ fn apply_variant(window: &AnyObject, variant: &str) {
 }
 
 /// Lucide Check / Info geometry in the same 24-unit view box as the web icons.
+fn set_recording_dot_color(indicator: &NSView, model: &Model) {
+    let color = if resolved_variant(model) == "light" {
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.43, 0.86, 1.0)
+    } else {
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.30, 0.82, 0.56, 1.0)
+    };
+    unsafe {
+        let layer: *mut AnyObject = msg_send![indicator, layer];
+        if layer.is_null() {
+            return;
+        }
+        let cg: *mut AnyObject = msg_send![&*color, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg];
+        let _: () = msg_send![layer, setCornerRadius: INDICATOR_W / 2.0];
+    }
+}
+
 fn make_icon_layer() -> Retained<AnyObject> {
     unsafe {
         let cls = AnyClass::get(c"CAShapeLayer").expect("CAShapeLayer");
