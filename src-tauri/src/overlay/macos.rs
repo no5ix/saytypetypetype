@@ -547,6 +547,9 @@ fn ensure_views(content: &NSView, model: &Model, mtm: MainThreadMarker) {
             let ind_layer: *mut AnyObject = msg_send![&*indicator, layer];
             if !ind_layer.is_null() { let _: () = msg_send![ind_layer, addSublayer: &*icon_layer]; }
         }
+        // Keep the active recording indicator visually distinct from the
+        // green success cue, including against the pale light-theme glass.
+        set_recording_dot_color(&indicator, &model);
 
         let container = unsafe {
             let raw: *mut NSView = msg_send![overlay_content_class(), new];
@@ -736,6 +739,25 @@ fn sync_foreground(views: &Views) {
     }
 }
 
+fn set_recording_dot_color(indicator: &NSView, model: &Model) {
+    let light = resolved_variant(model) == "light";
+    let color = if light {
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.43, 0.86, 1.0)
+    } else {
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.30, 0.82, 0.56, 1.0)
+    };
+    unsafe {
+        let layer: *mut AnyObject = msg_send![indicator, layer];
+        if layer.is_null() {
+            return;
+        }
+        let cg: *mut AnyObject = msg_send![&*color, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg];
+        let _: () = msg_send![layer, setCornerRadius: (INDICATOR_W / 2.0)];
+    }
+}
+
+/// Lucide Check / Info geometry in the same 24-unit view box as the web icons.
 fn set_icon(layer: &AnyObject, success: bool) {
     unsafe {
         let cls = AnyClass::get(c"NSBezierPath").expect("NSBezierPath");
