@@ -885,7 +885,7 @@ fn set_corner(view: &NSView, radius: f64) {
 /// Capsule bounds animate around a fixed center, preserving rounded ends.
 fn recording_wave_color(model: &Model) -> Retained<NSColor> {
     if model.theme == "light" {
-        NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.43, 0.86, 1.0)
+        NSColor::colorWithSRGBRed_green_blue_alpha(0.12, 0.32, 0.78, 1.0)
     } else {
         NSColor::colorWithSRGBRed_green_blue_alpha(76.0 / 255.0, 210.0 / 255.0, 142.0 / 255.0, 1.0)
     }
